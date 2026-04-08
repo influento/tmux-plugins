@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 // Catppuccin Mocha palette.
@@ -66,17 +67,16 @@ func (r *Renderer) ShowCursor() {
 }
 
 // SaveScreen captures the current screen content for later restoration.
-// Used when the pane is in alternate screen mode (we can't use alt screen switch).
 func SaveScreen(ps *PaneState) string {
 	return strings.Join(ps.Content, "\n")
 }
 
 // RestoreScreen writes back saved content to restore the display.
 func (r *Renderer) RestoreScreen(saved string, width, height int) {
-	r.write("\x1b[H") // cursor home
+	r.write("\x1b[H")
 	lines := strings.Split(saved, "\n")
 	for i := 0; i < height; i++ {
-		r.write("\x1b[K") // clear line
+		r.write("\x1b[K")
 		if i < len(lines) {
 			r.write(lines[i])
 		}
@@ -87,11 +87,10 @@ func (r *Renderer) RestoreScreen(saved string, width, height int) {
 }
 
 // RenderPane renders the pane content with matches highlighted and labels overlaid.
-// queryLen is the length of the search query (used to determine highlight width).
+// queryLen is the rune-length of the search query.
 func (r *Renderer) RenderPane(content []string, matches []Match, queryLen int, width, height int) {
 	mmap := MatchMap(matches)
 
-	// Build set of match positions covering the full query width.
 	matchCover := make(map[Position]bool)
 	for _, m := range matches {
 		for offset := 0; offset < queryLen; offset++ {
@@ -99,7 +98,6 @@ func (r *Renderer) RenderPane(content []string, matches []Match, queryLen int, w
 		}
 	}
 
-	// Build label overlay: positions covered by label characters.
 	type labelCell struct {
 		ch    byte
 		color string
@@ -116,14 +114,16 @@ func (r *Renderer) RenderPane(content []string, matches []Match, queryLen int, w
 		}
 	}
 
-	r.write("\x1b[H") // cursor home
+	r.write("\x1b[H")
 
 	for row := 0; row < height; row++ {
-		r.write("\x1b[K") // clear line
+		r.write("\x1b[K")
 		line := ""
 		if row < len(content) {
 			line = content[row]
 		}
+		runes := []rune(line)
+		runeCount := len(runes)
 
 		col := 0
 		for col < width {
@@ -136,18 +136,17 @@ func (r *Renderer) RenderPane(content []string, matches []Match, queryLen int, w
 			}
 
 			if _, isStart := mmap[pos]; isStart {
-				// Render the highlighted match text.
 				r.write(colorHit)
 				end := pos.Col + queryLen
-				if end > len(line) {
-					end = len(line)
+				if end > runeCount {
+					end = runeCount
 				}
 				for col < end && col < width {
 					if _, hasLabel := labelOverlay[Position{Row: row, Col: col}]; hasLabel {
 						break
 					}
-					if col < len(line) {
-						r.write(string(line[col]))
+					if col < runeCount {
+						r.write(string(runes[col]))
 					} else {
 						r.write(" ")
 					}
@@ -158,16 +157,17 @@ func (r *Renderer) RenderPane(content []string, matches []Match, queryLen int, w
 			}
 
 			if matchCover[pos] {
-				// Inside a match but not the start — already rendered.
 				col++
 				continue
 			}
 
-			// Non-matching character: dimmed.
-			if col < len(line) && line[col] != ' ' {
-				r.write(colorDim + string(line[col]) + colorRst)
-			} else if col < len(line) {
-				r.write(" ")
+			if col < runeCount {
+				ch := runes[col]
+				if ch != ' ' {
+					r.write(colorDim + string(ch) + colorRst)
+				} else {
+					r.write(" ")
+				}
 			}
 			col++
 		}
@@ -186,4 +186,9 @@ func (r *Renderer) RenderStatus(query string, matchCount int, height int) {
 		r.write(query)
 	}
 	r.write(colorDim + fmt.Sprintf("  [%d matches]", matchCount) + colorRst)
+}
+
+// runeLen returns the number of runes in s (used for query length).
+func runeLen(s string) int {
+	return utf8.RuneCountInString(s)
 }

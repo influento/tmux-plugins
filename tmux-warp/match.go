@@ -4,9 +4,10 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
-// Position represents a match location in the pane.
+// Position represents a match location in the pane (rune-based column).
 type Position struct {
 	Row int
 	Col int
@@ -21,7 +22,11 @@ type Match struct {
 // labelKeys are home-row keys used for labels, ordered by ergonomic preference.
 var labelKeys = []byte("jfhgkdlsa")
 
+// maxLabelsThreshold is the match count at or below which we enter label-select mode.
+const maxLabelsThreshold = 9
+
 // FindMatches finds all positions where query appears in the pane content.
+// Positions use rune-based column indices.
 func FindMatches(content []string, query string) []Position {
 	if query == "" {
 		return nil
@@ -30,28 +35,31 @@ func FindMatches(content []string, query string) []Position {
 	var positions []Position
 	for row, line := range content {
 		lowerLine := strings.ToLower(line)
-		start := 0
+		byteStart := 0
 		for {
-			idx := strings.Index(lowerLine[start:], lowerQuery)
+			idx := strings.Index(lowerLine[byteStart:], lowerQuery)
 			if idx < 0 {
 				break
 			}
-			positions = append(positions, Position{Row: row, Col: start + idx})
-			start += idx + 1
+			bytePos := byteStart + idx
+			runeCol := utf8.RuneCountInString(line[:bytePos])
+			positions = append(positions, Position{Row: row, Col: runeCol})
+			byteStart = bytePos + 1
 		}
 	}
 	return positions
 }
 
 // FindCharMatches finds all positions of a single character in the pane content.
+// Positions use rune-based column indices.
 func FindCharMatches(content []string, ch byte) []Position {
 	target := strings.ToLower(string(ch))
 	var positions []Position
 	for row, line := range content {
-		lowerLine := strings.ToLower(line)
-		for col := 0; col < len(lowerLine); col++ {
-			if string(lowerLine[col]) == target {
-				positions = append(positions, Position{Row: row, Col: col})
+		for col, r := range line {
+			if strings.ToLower(string(r)) == target {
+				runeCol := utf8.RuneCountInString(line[:col])
+				positions = append(positions, Position{Row: row, Col: runeCol})
 			}
 		}
 	}
@@ -59,8 +67,7 @@ func FindCharMatches(content []string, ch byte) []Position {
 }
 
 // AssignLabels assigns labels to matches sorted by distance from cursor.
-// skipChars contains characters that should not be used as labels (to avoid
-// misfiring when the user is still typing their search query).
+// skipChars contains characters that should not be used as labels.
 func AssignLabels(positions []Position, cursorX, cursorY int, skipChars string) []Match {
 	if len(positions) == 0 {
 		return nil
@@ -81,7 +88,6 @@ func AssignLabels(positions []Position, cursorX, cursorY int, skipChars string) 
 		return items[i].dist < items[j].dist
 	})
 
-	// Build available label keys, filtering out skip chars.
 	skipLower := strings.ToLower(skipChars)
 	var availKeys []byte
 	for _, k := range labelKeys {
@@ -104,7 +110,6 @@ func AssignLabels(positions []Position, cursorX, cursorY int, skipChars string) 
 }
 
 // generateLabels creates enough label strings for n matches using the given keys.
-// Uses single chars first, then two-char combinations if needed.
 func generateLabels(n int, keys []byte) []string {
 	if len(keys) == 0 {
 		return nil
@@ -112,7 +117,6 @@ func generateLabels(n int, keys []byte) []string {
 
 	var labels []string
 
-	// Single-char labels.
 	for _, k := range keys {
 		labels = append(labels, string(k))
 		if len(labels) >= n {
@@ -120,7 +124,6 @@ func generateLabels(n int, keys []byte) []string {
 		}
 	}
 
-	// Two-char labels.
 	for _, k1 := range keys {
 		for _, k2 := range keys {
 			labels = append(labels, string(k1)+string(k2))
@@ -133,7 +136,7 @@ func generateLabels(n int, keys []byte) []string {
 	return labels
 }
 
-// MatchMap builds a lookup from "row,col" to Match for quick rendering.
+// MatchMap builds a lookup from Position to Match for quick rendering.
 func MatchMap(matches []Match) map[Position]Match {
 	m := make(map[Position]Match, len(matches))
 	for _, match := range matches {

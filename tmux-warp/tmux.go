@@ -110,7 +110,7 @@ func sendKeys(paneID string, keys ...string) error {
 }
 
 func jumpToPosition(ps *PaneState, targetX, targetY int) error {
-	if !ps.InCopyMode || !ps.SelectionActive {
+	if !ps.InCopyMode {
 		if err := enterCopyMode(ps.PaneID); err != nil {
 			return err
 		}
