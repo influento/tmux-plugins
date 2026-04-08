@@ -35,3 +35,8 @@ jobs:
         run: |
           cd tmux-warp
           go build -ldflags "-s -w" -o tmux-warp-${{ matrix.goos }}-${{ matrix.goarch }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmux-warp-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: tmux-warp/tmux-warp-${{ matrix.goos }}-${{ matrix.goarch }}
