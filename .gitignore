@@ -1,0 +1,6 @@
+# Go binaries
+tmux-warp/tmux-warp
+tmux-warp/tmux-warp-*
+
+# OS
+.DS_Store
