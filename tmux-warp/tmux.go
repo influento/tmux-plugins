@@ -49,9 +49,11 @@ func capturePaneState() (*PaneState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse cursor_y: %w", err)
 	}
-	ps.ScrollPosition, err = strconv.Atoi(parts[4])
-	if err != nil {
-		return nil, fmt.Errorf("parse scroll_position: %w", err)
+	if parts[4] != "" {
+		ps.ScrollPosition, err = strconv.Atoi(parts[4])
+		if err != nil {
+			return nil, fmt.Errorf("parse scroll_position: %w", err)
+		}
 	}
 	ps.PaneWidth, err = strconv.Atoi(parts[5])
 	if err != nil {
