@@ -50,14 +50,14 @@ func ioctlSetTermios(fd uintptr, t *termios) error {
 	return nil
 }
 
-// RawTerminal manages raw mode on /dev/tty for single-char reads.
+// RawTerminal manages raw mode on a TTY for single-char reads.
 type RawTerminal struct {
 	file    *os.File
 	origios termios
 }
 
-func openRawTerminal() (*RawTerminal, error) {
-	f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
+func openRawTerminal(ttyPath string) (*RawTerminal, error) {
+	f, err := os.OpenFile(ttyPath, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}

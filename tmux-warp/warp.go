@@ -13,7 +13,7 @@ func runSearch(ps *PaneState) error {
 	}
 	defer renderer.Close()
 
-	term, err := openRawTerminal()
+	term, err := openRawTerminal(ps.TTYPath)
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func runChar(ps *PaneState, mode string) error {
 	}
 	defer renderer.Close()
 
-	term, err := openRawTerminal()
+	term, err := openRawTerminal(ps.TTYPath)
 	if err != nil {
 		return err
 	}
