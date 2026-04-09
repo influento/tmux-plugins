@@ -37,11 +37,11 @@ chmod +x ~/.local/bin/tmux-warp
 Then bind it in your `tmux.conf`:
 
 ```tmux
-bind s run-shell '~/.local/bin/tmux-warp --search'
-bind f run-shell '~/.local/bin/tmux-warp --char f'
-bind F run-shell '~/.local/bin/tmux-warp --char F'
-bind t run-shell '~/.local/bin/tmux-warp --char t'
-bind T run-shell '~/.local/bin/tmux-warp --char T'
+bind s run-shell -b '~/.local/bin/tmux-warp --search'
+bind f run-shell -b '~/.local/bin/tmux-warp --char f'
+bind F run-shell -b '~/.local/bin/tmux-warp --char F'
+bind t run-shell -b '~/.local/bin/tmux-warp --char t'
+bind T run-shell -b '~/.local/bin/tmux-warp --char T'
 ```
 
 ## Building from source
