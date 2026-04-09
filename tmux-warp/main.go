@@ -46,6 +46,8 @@ func parseFlags() (mode string, charMode string) {
 }
 
 func main() {
+	initDebugLog()
+	debugLog("starting tmux-warp %s, args=%v", version, os.Args)
 	if err := run(); err != nil {
 		fatal(err)
 	}

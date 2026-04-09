@@ -38,12 +38,18 @@ func runSearch(ps *PaneState) error {
 
 	query := ""
 
+	debugLog("search: paneID=%s tty=%s alt=%v copyMode=%v %dx%d cursor=%d,%d",
+		ps.PaneID, ps.TTYPath, ps.AlternateScreen, ps.InCopyMode,
+		ps.PaneWidth, ps.PaneHeight, ps.CursorX, ps.CursorY)
+
 	renderer.RenderPane(ps.Content, nil, 0, ps.PaneWidth, ps.PaneHeight)
 	renderer.RenderStatus("", 0, ps.PaneHeight)
 
 	for {
+		debugLog("search: waiting for input, query=%q", query)
 		ch, ok := input.ReadChar()
 		if !ok {
+			debugLog("search: input timeout/error")
 			cleanup()
 			return nil
 		}

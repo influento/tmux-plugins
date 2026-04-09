@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -33,26 +35,52 @@ func (pr *PromptReader) Close() error {
 func (pr *PromptReader) ReadChar() (byte, bool) {
 	tmpFile := filepath.Join(pr.tmpDir, fmt.Sprintf("key-%d", time.Now().UnixNano()))
 
-	// tmux command-prompt -1 reads exactly one key.
-	// %% is the tmux escape for a literal %, and '%1' captures the first argument.
-	cmd := fmt.Sprintf("run-shell \"printf '%%1' >> %s\"", tmpFile)
-	if _, err := tmuxCmd("command-prompt", "-t", pr.paneID, "-1", "-p", "", cmd); err != nil {
+	debugLog("ReadChar: spawning command-prompt, tmpFile=%s", tmpFile)
+
+	// Spawn command-prompt asynchronously (fire-and-forget like tmux-jump).
+	// command-prompt -1 reads exactly one key from the user via tmux's status line.
+	cmdStr := fmt.Sprintf("run-shell \"printf '%%1' >> %s\"", tmpFile)
+	cmd := exec.Command("tmux", "command-prompt", "-t", pr.paneID, "-1", "-p", "", cmdStr)
+	if err := cmd.Start(); err != nil {
+		debugLog("ReadChar: command-prompt start error: %v", err)
 		return 0, false
 	}
+	// Don't wait — command-prompt returns immediately, the prompt is async.
+	go cmd.Wait()
 
-	// Poll the temp file for the character (tmux writes it asynchronously).
+	debugLog("ReadChar: polling for input...")
+
+	// Poll the temp file for the character.
 	deadline := time.Now().Add(inputTimeout)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(tmpFile)
 		if err == nil && len(data) > 0 {
+			debugLog("ReadChar: got char %q (0x%02x)", string(data[0]), data[0])
 			os.Remove(tmpFile)
 			return data[0], true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	debugLog("ReadChar: timeout")
 	os.Remove(tmpFile)
 	return 0, false
+}
+
+var debugLogger *log.Logger
+
+func initDebugLog() {
+	f, err := os.OpenFile("/tmp/tmux-warp.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return
+	}
+	debugLogger = log.New(f, "", log.LstdFlags|log.Lmicroseconds)
+}
+
+func debugLog(format string, args ...any) {
+	if debugLogger != nil {
+		debugLogger.Printf(format, args...)
+	}
 }
 
 // IsCancel returns true if the byte is Escape (0x1b) or Ctrl+C (0x03).
