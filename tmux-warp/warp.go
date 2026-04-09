@@ -3,209 +3,110 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
-// runSearch implements the incremental search mode (flash `s` behavior).
-func runSearch(ps *PaneState) error {
-	renderer, err := newRenderer(ps.TTYPath)
+func run(tmpFile string) error {
+	ps, err := capturePaneState()
 	if err != nil {
-		return err
-	}
-	defer renderer.Close()
-
-	input, err := newPromptReader(ps.PaneID)
-	if err != nil {
-		return err
-	}
-	defer input.Close()
-
-	savedContent := ""
-	if ps.AlternateScreen {
-		savedContent = SaveScreen(ps)
-	} else {
-		renderer.EnterAltScreen()
-	}
-	renderer.HideCursor()
-
-	cleanup := func() {
-		renderer.ShowCursor()
-		if ps.AlternateScreen {
-			renderer.RestoreScreen(savedContent, ps.PaneWidth, ps.PaneHeight)
-		} else {
-			renderer.ExitAltScreen()
-		}
+		return fmt.Errorf("capture pane: %w", err)
 	}
 
-	query := ""
-
-	debugLog("search: paneID=%s tty=%s alt=%v copyMode=%v %dx%d cursor=%d,%d",
+	debugLog("paneID=%s tty=%s alt=%v copyMode=%v %dx%d cursor=%d,%d",
 		ps.PaneID, ps.TTYPath, ps.AlternateScreen, ps.InCopyMode,
 		ps.PaneWidth, ps.PaneHeight, ps.CursorX, ps.CursorY)
 
-	renderer.RenderPane(ps.Content, nil, 0, ps.PaneWidth, ps.PaneHeight)
-	renderer.RenderStatus("", 0, ps.PaneHeight)
-
-	for {
-		debugLog("search: waiting for input, query=%q", query)
-		ch, ok := input.ReadChar()
-		if !ok {
-			debugLog("search: input timeout/error")
-			cleanup()
-			return nil
-		}
-
-		if IsCancel(ch) {
-			cleanup()
-			return nil
-		}
-
-		if ch == 0x7f || ch == 0x08 {
-			if len(query) > 0 {
-				query = query[:len(query)-1]
-			}
-			if query == "" {
-				renderer.RenderPane(ps.Content, nil, 0, ps.PaneWidth, ps.PaneHeight)
-				renderer.RenderStatus("", 0, ps.PaneHeight)
-				continue
-			}
-		} else if ch >= 0x20 && ch <= 0x7e {
-			query += string(ch)
-		} else {
-			continue
-		}
-
-		positions := FindMatches(ps.Content, query)
-
-		if len(positions) == 0 {
-			renderer.RenderPane(ps.Content, nil, runeLen(query), ps.PaneWidth, ps.PaneHeight)
-			renderer.RenderStatus(query, 0, ps.PaneHeight)
-			continue
-		}
-
-		if len(positions) == 1 {
-			cleanup()
-			return jumpToPosition(ps, positions[0].Col, positions[0].Row)
-		}
-
-		matches := AssignLabels(positions, ps.CursorX, ps.CursorY, "")
-		renderer.RenderPane(ps.Content, matches, runeLen(query), ps.PaneWidth, ps.PaneHeight)
-		renderer.RenderStatus(query, len(matches), ps.PaneHeight)
-
-		if len(matches) <= maxLabelsThreshold {
-			target := readLabel(input, matches)
-			if target != nil {
-				cleanup()
-				return jumpToPosition(ps, target.Pos.Col, target.Pos.Row)
-			}
-			cleanup()
-			return nil
-		}
-	}
-}
-
-// readLabel reads one or two chars and returns the matching Match,
-// or nil if cancelled/timeout/no match.
-func readLabel(input *PromptReader, matches []Match) *Match {
-	ch, ok := input.ReadChar()
-	if !ok || IsCancel(ch) {
+	// Read first search char from the temp file (written by the shell wrapper's command-prompt).
+	debugLog("waiting for first char from %s", tmpFile)
+	firstChar, ok := readCharFromFile(tmpFile)
+	if !ok {
 		return nil
 	}
+	os.Remove(tmpFile)
 
-	if m := findMatchByLabel(matches, ch); m != nil {
-		return m
+	// Cancel existing copy mode if active.
+	if ps.InCopyMode {
+		tmuxCmd("send-keys", "-X", "-t", ps.PaneID, "cancel")
 	}
 
-	// Try two-char label.
-	ch2, ok := input.ReadChar()
-	if !ok || IsCancel(ch2) {
+	// Capture pane content.
+	content, err := captureContent(ps)
+	if err != nil {
+		return err
+	}
+
+	query := string(firstChar)
+	positions := FindMatches(content, query)
+
+	debugLog("first char=%q matches=%d", query, len(positions))
+
+	if len(positions) == 0 {
 		return nil
 	}
-	twoChar := string(ch) + string(ch2)
-	for i := range matches {
-		if matches[i].Label == twoChar {
-			return &matches[i]
-		}
+	if len(positions) == 1 {
+		return jumpToPosition(ps, positions[0].Col, positions[0].Row)
 	}
 
-	return nil
-}
-
-// runChar implements the char mode (flash f/F/t/T behavior).
-func runChar(ps *PaneState, mode string) error {
+	// Show overlay with labels and prompt for selection.
 	renderer, err := newRenderer(ps.TTYPath)
 	if err != nil {
 		return err
 	}
 	defer renderer.Close()
 
-	input, err := newPromptReader(ps.PaneID)
-	if err != nil {
-		return err
-	}
-	defer input.Close()
+	return runOverlayLoop(renderer, ps, content, query, positions)
+}
 
-	savedContent := ""
+func runOverlayLoop(renderer *Renderer, ps *PaneState, content []string, query string, positions []Position) error {
+	// Save/restore screen.
+	var savedScreen string
 	if ps.AlternateScreen {
-		savedContent = SaveScreen(ps)
+		// Capture with ANSI colors for proper restore.
+		out, err := tmuxCmd("capture-pane", "-ep", "-t", ps.PaneID)
+		if err != nil {
+			return fmt.Errorf("capture-pane colors: %w", err)
+		}
+		savedScreen = strings.TrimSuffix(out, "\n")
+		renderer.write("\x1b[2J\x1b[H") // clear screen
 	} else {
 		renderer.EnterAltScreen()
+		renderer.write("\x1b[H")
 	}
-	renderer.HideCursor()
 
 	cleanup := func() {
-		renderer.ShowCursor()
 		if ps.AlternateScreen {
-			renderer.RestoreScreen(savedContent, ps.PaneWidth, ps.PaneHeight)
+			renderer.write(colorRst + "\x1b[2J")
+			renderer.write(savedScreen)
+			renderer.write(fmt.Sprintf("\x1b[%d;%dH", ps.CursorY+1, ps.CursorX+1))
+			renderer.write(colorRst)
 		} else {
 			renderer.ExitAltScreen()
 		}
 	}
 
-	renderer.RenderPane(ps.Content, nil, 0, ps.PaneWidth, ps.PaneHeight)
-	renderer.RenderStatus(fmt.Sprintf("[%s] type a char", mode), 0, ps.PaneHeight)
-
-	ch, ok := input.ReadChar()
-	if !ok || IsCancel(ch) {
-		cleanup()
-		return nil
-	}
-
-	positions := FindCharMatches(ps.Content, ch)
-	if len(positions) == 0 {
-		cleanup()
-		return nil
-	}
-
-	adjustTarget := func(pos Position) Position {
-		switch mode {
-		case "t":
-			if pos.Col > 0 {
-				pos.Col--
-			}
-		case "T":
-			pos.Col++
-		}
-		return pos
-	}
-
-	if len(positions) == 1 {
-		target := adjustTarget(positions[0])
-		cleanup()
-		return jumpToPosition(ps, target.Col, target.Row)
-	}
-
+	// Render with labels and wait for label key.
 	matches := AssignLabels(positions, ps.CursorX, ps.CursorY, "")
-	renderer.RenderPane(ps.Content, matches, 1, ps.PaneWidth, ps.PaneHeight)
-	renderer.RenderStatus(fmt.Sprintf("[%s] %c -- press label", mode, ch), len(matches), ps.PaneHeight)
+	renderer.RenderOverlay(content, matches, runeLen(query), ps.PaneHeight)
 
-	target := readLabel(input, matches)
-	if target != nil {
-		adjusted := adjustTarget(target.Pos)
-		cleanup()
-		return jumpToPosition(ps, adjusted.Col, adjusted.Row)
+	debugLog("showing %d labels, waiting for label key", len(matches))
+
+	ch, ok := promptChar(ps.PaneID, "label:")
+	cleanup()
+
+	if !ok {
+		debugLog("label prompt timeout/cancel")
+		return nil
 	}
 
-	cleanup()
+	debugLog("label key=%q (0x%02x)", string(ch), ch)
+
+	target := findMatchByLabel(matches, ch)
+	if target != nil {
+		debugLog("jumping to row=%d col=%d", target.Pos.Row, target.Pos.Col)
+		return jumpToPosition(ps, target.Pos.Col, target.Pos.Row)
+	}
+
+	debugLog("no match for label %q", string(ch))
 	return nil
 }
 
@@ -219,25 +120,14 @@ func findMatchByLabel(matches []Match, ch byte) *Match {
 	return nil
 }
 
-func run() error {
-	mode, charMode := parseFlags()
-
-	ps, err := capturePaneState()
+func captureContent(ps *PaneState) ([]string, error) {
+	start := -ps.ScrollPosition
+	end := start + ps.PaneHeight - 1
+	out, err := tmuxCmd("capture-pane", "-p", "-t", ps.PaneID,
+		"-S", fmt.Sprintf("%d", start), "-E", fmt.Sprintf("%d", end))
 	if err != nil {
-		return fmt.Errorf("capture pane: %w", err)
+		return nil, fmt.Errorf("capture-pane: %w", err)
 	}
-
-	switch mode {
-	case "search":
-		return runSearch(ps)
-	case "char":
-		return runChar(ps, charMode)
-	default:
-		return fmt.Errorf("unknown mode: %s", mode)
-	}
-}
-
-func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "tmux-warp: %v\n", err)
-	os.Exit(1)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	return lines, nil
 }

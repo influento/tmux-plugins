@@ -11,60 +11,43 @@ import (
 
 const inputTimeout = 10 * time.Second
 
-// PromptReader reads single characters via tmux command-prompt and a temp file.
-// This avoids racing with the shell for TTY input.
-type PromptReader struct {
-	tmpDir string
-	paneID string
-}
-
-func newPromptReader(paneID string) (*PromptReader, error) {
-	dir, err := os.MkdirTemp("", "tmux-warp-*")
-	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
-	}
-	return &PromptReader{tmpDir: dir, paneID: paneID}, nil
-}
-
-func (pr *PromptReader) Close() error {
-	return os.RemoveAll(pr.tmpDir)
-}
-
-// ReadChar prompts for a single character using tmux command-prompt.
-// Returns the char and true on success, or (0, false) on timeout/cancel.
-func (pr *PromptReader) ReadChar() (byte, bool) {
-	tmpFile := filepath.Join(pr.tmpDir, fmt.Sprintf("key-%d", time.Now().UnixNano()))
-
-	debugLog("ReadChar: spawning command-prompt, tmpFile=%s", tmpFile)
-
-	// Spawn command-prompt asynchronously (fire-and-forget like tmux-jump).
-	// command-prompt -1 reads exactly one key from the user via tmux's status line.
-	cmdStr := fmt.Sprintf("run-shell \"printf '%%1' >> %s\"", tmpFile)
-	cmd := exec.Command("tmux", "command-prompt", "-t", pr.paneID, "-1", "-p", "", cmdStr)
-	if err := cmd.Start(); err != nil {
-		debugLog("ReadChar: command-prompt start error: %v", err)
-		return 0, false
-	}
-	// Don't wait — command-prompt returns immediately, the prompt is async.
-	go cmd.Wait()
-
-	debugLog("ReadChar: polling for input...")
-
-	// Poll the temp file for the character.
+// readCharFromFile polls a file until a byte appears (written by tmux command-prompt).
+func readCharFromFile(path string) (byte, bool) {
 	deadline := time.Now().Add(inputTimeout)
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(tmpFile)
+		data, err := os.ReadFile(path)
 		if err == nil && len(data) > 0 {
-			debugLog("ReadChar: got char %q (0x%02x)", string(data[0]), data[0])
-			os.Remove(tmpFile)
+			debugLog("readCharFromFile: got %q (0x%02x) from %s", string(data[0]), data[0], path)
 			return data[0], true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-
-	debugLog("ReadChar: timeout")
-	os.Remove(tmpFile)
+	debugLog("readCharFromFile: timeout on %s", path)
 	return 0, false
+}
+
+// promptChar spawns a tmux command-prompt -1 and polls for the result.
+// Used for label selection after the overlay is rendered.
+func promptChar(paneID string, prompt string) (byte, bool) {
+	dir, err := os.MkdirTemp("", "tmux-warp-*")
+	if err != nil {
+		return 0, false
+	}
+	defer os.RemoveAll(dir)
+
+	tmpFile := filepath.Join(dir, "key")
+	cmdStr := fmt.Sprintf("run-shell \"printf '%%1' >> %s\"", tmpFile)
+
+	debugLog("promptChar: spawning command-prompt prompt=%q tmpFile=%s", prompt, tmpFile)
+
+	cmd := exec.Command("tmux", "command-prompt", "-t", paneID, "-1", "-p", prompt, cmdStr)
+	if err := cmd.Start(); err != nil {
+		debugLog("promptChar: start error: %v", err)
+		return 0, false
+	}
+	go cmd.Wait()
+
+	return readCharFromFile(tmpFile)
 }
 
 var debugLogger *log.Logger
@@ -81,9 +64,4 @@ func debugLog(format string, args ...any) {
 	if debugLogger != nil {
 		debugLogger.Printf(format, args...)
 	}
-}
-
-// IsCancel returns true if the byte is Escape (0x1b) or Ctrl+C (0x03).
-func IsCancel(b byte) bool {
-	return b == 0x1b || b == 0x03
 }

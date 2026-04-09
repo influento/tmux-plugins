@@ -19,14 +19,9 @@ type Match struct {
 	Label string
 }
 
-// labelKeys are home-row keys used for labels, ordered by ergonomic preference.
 var labelKeys = []byte("jfhgkdlsa")
 
-// maxLabelsThreshold is the match count at or below which we enter label-select mode.
-const maxLabelsThreshold = 9
-
 // FindMatches finds all positions where query appears in the pane content.
-// Positions use rune-based column indices.
 func FindMatches(content []string, query string) []Position {
 	if query == "" {
 		return nil
@@ -50,24 +45,7 @@ func FindMatches(content []string, query string) []Position {
 	return positions
 }
 
-// FindCharMatches finds all positions of a single character in the pane content.
-// Positions use rune-based column indices.
-func FindCharMatches(content []string, ch byte) []Position {
-	target := strings.ToLower(string(ch))
-	var positions []Position
-	for row, line := range content {
-		for col, r := range line {
-			if strings.ToLower(string(r)) == target {
-				runeCol := utf8.RuneCountInString(line[:col])
-				positions = append(positions, Position{Row: row, Col: runeCol})
-			}
-		}
-	}
-	return positions
-}
-
 // AssignLabels assigns labels to matches sorted by distance from cursor.
-// skipChars contains characters that should not be used as labels.
 func AssignLabels(positions []Position, cursorX, cursorY int, skipChars string) []Match {
 	if len(positions) == 0 {
 		return nil
@@ -109,21 +87,17 @@ func AssignLabels(positions []Position, cursorX, cursorY int, skipChars string) 
 	return matches
 }
 
-// generateLabels creates enough label strings for n matches using the given keys.
 func generateLabels(n int, keys []byte) []string {
 	if len(keys) == 0 {
 		return nil
 	}
-
 	var labels []string
-
 	for _, k := range keys {
 		labels = append(labels, string(k))
 		if len(labels) >= n {
 			return labels[:n]
 		}
 	}
-
 	for _, k1 := range keys {
 		for _, k2 := range keys {
 			labels = append(labels, string(k1)+string(k2))
@@ -132,7 +106,6 @@ func generateLabels(n int, keys []byte) []string {
 			}
 		}
 	}
-
 	return labels
 }
 

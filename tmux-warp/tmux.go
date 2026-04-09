@@ -17,22 +17,18 @@ type PaneState struct {
 	PaneWidth       int
 	PaneHeight      int
 	AlternateScreen bool
-	SelectionActive bool
 	InCopyMode      bool
-	Content         []string // lines of visible pane text
 }
 
 func capturePaneState() (*PaneState, error) {
-	// Get pane info in one tmux display-message call.
-	// Format: pane_id|pane_tty|cursor_x|cursor_y|scroll_position|pane_width|pane_height|alternate_on|selection_active|pane_in_mode
-	format := "#{pane_id}|#{pane_tty}|#{cursor_x}|#{cursor_y}|#{scroll_position}|#{pane_width}|#{pane_height}|#{alternate_on}|#{selection_active}|#{pane_in_mode}"
+	format := "#{pane_id}|#{pane_tty}|#{cursor_x}|#{cursor_y}|#{scroll_position}|#{pane_width}|#{pane_height}|#{alternate_on}|#{pane_in_mode}"
 	out, err := tmuxCmd("display-message", "-p", format)
 	if err != nil {
 		return nil, fmt.Errorf("display-message: %w", err)
 	}
 
 	parts := strings.Split(strings.TrimSpace(out), "|")
-	if len(parts) != 10 {
+	if len(parts) != 9 {
 		return nil, fmt.Errorf("unexpected display-message output: %q", out)
 	}
 
@@ -64,20 +60,7 @@ func capturePaneState() (*PaneState, error) {
 		return nil, fmt.Errorf("parse pane_height: %w", err)
 	}
 	ps.AlternateScreen = parts[7] == "1"
-	ps.SelectionActive = parts[8] == "1"
-	ps.InCopyMode = parts[9] == "1"
-
-	// Capture visible pane content (plain text, no ANSI).
-	content, err := tmuxCmd("capture-pane", "-p", "-t", ps.PaneID)
-	if err != nil {
-		return nil, fmt.Errorf("capture-pane: %w", err)
-	}
-
-	ps.Content = strings.Split(content, "\n")
-	// Trim to pane height — capture-pane may include trailing empty lines.
-	if len(ps.Content) > ps.PaneHeight {
-		ps.Content = ps.Content[:ps.PaneHeight]
-	}
+	ps.InCopyMode = parts[8] == "1"
 
 	return ps, nil
 }
@@ -94,40 +77,40 @@ func tmuxCmd(args ...string) (string, error) {
 	return string(out), nil
 }
 
-func enterCopyMode(paneID string) error {
-	_, err := tmuxCmd("copy-mode", "-t", paneID)
-	return err
-}
-
-func sendKeys(paneID string, keys ...string) error {
-	for _, key := range keys {
-		args := []string{"send-keys", "-X", "-t", paneID, key}
-		if _, err := tmuxCmd(args...); err != nil {
-			return fmt.Errorf("send-keys %s: %w", key, err)
-		}
-	}
-	return nil
-}
-
 func jumpToPosition(ps *PaneState, targetX, targetY int) error {
-	if !ps.InCopyMode {
-		if err := enterCopyMode(ps.PaneID); err != nil {
-			return err
+	debugLog("jumpToPosition: entering copy mode and navigating to %d,%d", targetX, targetY)
+
+	if _, err := tmuxCmd("copy-mode", "-t", ps.PaneID); err != nil {
+		return err
+	}
+
+	// Navigate: top-left first, then move to target.
+	// Use -N for bulk moves instead of one-at-a-time.
+	cmds := [][]string{
+		{"send-keys", "-X", "-t", ps.PaneID, "start-of-line"},
+		{"send-keys", "-X", "-t", ps.PaneID, "top-line"},
+	}
+
+	// Workaround for tmux quirk when first line is empty (from tmux-jump).
+	cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", "200", "cursor-right"})
+	cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "start-of-line"})
+	cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "top-line"})
+
+	if ps.ScrollPosition > 0 {
+		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", ps.ScrollPosition), "cursor-up"})
+	}
+
+	// Move to target position using cursor-right with -N.
+	target := targetY*ps.PaneWidth + targetX
+	if target > 0 {
+		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", target), "cursor-right"})
+	}
+
+	for _, args := range cmds {
+		if _, err := tmuxCmd(args...); err != nil {
+			return fmt.Errorf("tmux %v: %w", args, err)
 		}
 	}
 
-	// Navigate to target: first go to top-left, then move to target position.
-	keys := []string{"top-line", "start-of-line"}
-
-	// Move down to target row.
-	for i := 0; i < targetY; i++ {
-		keys = append(keys, "cursor-down")
-	}
-
-	// Move right to target column.
-	for i := 0; i < targetX; i++ {
-		keys = append(keys, "cursor-right")
-	}
-
-	return sendKeys(ps.PaneID, keys...)
+	return nil
 }
