@@ -77,7 +77,7 @@ func tmuxCmd(args ...string) (string, error) {
 	return string(out), nil
 }
 
-func jumpToPosition(ps *PaneState, targetX, targetY int) error {
+func jumpToPosition(ps *PaneState, content []string, targetX, targetY int) error {
 	debugLog("jumpToPosition: entering copy mode and navigating to %d,%d", targetX, targetY)
 
 	if _, err := tmuxCmd("copy-mode", "-t", ps.PaneID); err != nil {
@@ -85,7 +85,6 @@ func jumpToPosition(ps *PaneState, targetX, targetY int) error {
 	}
 
 	// Navigate: top-left first, then move to target.
-	// Use -N for bulk moves instead of one-at-a-time.
 	cmds := [][]string{
 		{"send-keys", "-X", "-t", ps.PaneID, "start-of-line"},
 		{"send-keys", "-X", "-t", ps.PaneID, "top-line"},
@@ -100,10 +99,19 @@ func jumpToPosition(ps *PaneState, targetX, targetY int) error {
 		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", ps.ScrollPosition), "cursor-up"})
 	}
 
-	// Move to target position using cursor-right with -N.
-	target := targetY*ps.PaneWidth + targetX
-	if target > 0 {
-		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", target), "cursor-right"})
+	// Compute flat offset from actual line lengths (like tmux-jump).
+	// Each line in capture-pane output corresponds to one screen line,
+	// and cursor-right wraps at end of content, not at PaneWidth.
+	flatOffset := 0
+	for i := 0; i < targetY && i < len(content); i++ {
+		flatOffset += len([]rune(content[i])) + 1 // +1 for the newline
+	}
+	flatOffset += targetX
+
+	debugLog("jumpToPosition: flatOffset=%d (from content lines)", flatOffset)
+
+	if flatOffset > 0 {
+		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", flatOffset), "cursor-right"})
 	}
 
 	for _, args := range cmds {

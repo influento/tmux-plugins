@@ -91,22 +91,22 @@ func generateLabels(n int, keys []byte) []string {
 	if len(keys) == 0 {
 		return nil
 	}
-	var labels []string
-	for _, k := range keys {
-		labels = append(labels, string(k))
-		if len(labels) >= n {
-			return labels[:n]
-		}
+	// All labels must be the same length so a single keypress never
+	// matches early when multi-char labels exist (matches tmux-jump).
+	labels := make([]string, len(keys))
+	for i, k := range keys {
+		labels[i] = string(k)
 	}
-	for _, k1 := range keys {
-		for _, k2 := range keys {
-			labels = append(labels, string(k1)+string(k2))
-			if len(labels) >= n {
-				return labels[:n]
+	for len(labels) < n {
+		var next []string
+		for _, prefix := range labels {
+			for _, k := range keys {
+				next = append(next, prefix+string(k))
 			}
 		}
+		labels = next
 	}
-	return labels
+	return labels[:n]
 }
 
 // MatchMap builds a lookup from Position to Match for quick rendering.

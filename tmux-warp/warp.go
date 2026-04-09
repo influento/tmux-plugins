@@ -16,10 +16,10 @@ func run(tmpFile string) error {
 		ps.PaneID, ps.TTYPath, ps.AlternateScreen, ps.InCopyMode,
 		ps.PaneWidth, ps.PaneHeight, ps.CursorX, ps.CursorY)
 
-	// Read first search char from the temp file (written by the shell wrapper's command-prompt).
-	debugLog("waiting for first char from %s", tmpFile)
-	firstChar, ok := readCharFromFile(tmpFile)
-	if !ok {
+	// Read search query from the temp file (written by the shell wrapper's command-prompt).
+	debugLog("waiting for query from %s", tmpFile)
+	query, ok := readStringFromFile(tmpFile)
+	if !ok || query == "" {
 		return nil
 	}
 	os.Remove(tmpFile)
@@ -34,8 +34,6 @@ func run(tmpFile string) error {
 	if err != nil {
 		return err
 	}
-
-	query := string(firstChar)
 	positions := FindMatches(content, query)
 
 	debugLog("first char=%q matches=%d", query, len(positions))
@@ -44,7 +42,7 @@ func run(tmpFile string) error {
 		return nil
 	}
 	if len(positions) == 1 {
-		return jumpToPosition(ps, positions[0].Col, positions[0].Row)
+		return jumpToPosition(ps, content, positions[0].Col, positions[0].Row)
 	}
 
 	// Show overlay with labels and prompt for selection.
@@ -88,32 +86,55 @@ func runOverlayLoop(renderer *Renderer, ps *PaneState, content []string, query s
 	matches := AssignLabels(positions, ps.CursorX, ps.CursorY, "")
 	renderer.RenderOverlay(content, matches, runeLen(query), ps.PaneHeight)
 
-	debugLog("showing %d labels, waiting for label key", len(matches))
+	maxLabelLen := 0
+	for _, m := range matches {
+		if len(m.Label) > maxLabelLen {
+			maxLabelLen = len(m.Label)
+		}
+	}
 
-	ch, ok := promptChar(ps.PaneID, "label:")
+	debugLog("showing %d labels (maxLen=%d), waiting for label key", len(matches), maxLabelLen)
+
+	// Collect label chars one at a time, up to the max label length.
+	var label string
+	for len(label) < maxLabelLen {
+		ch, ok := promptChar("label:")
+		if !ok {
+			cleanup()
+			debugLog("label prompt timeout/cancel")
+			return nil
+		}
+		label += string(ch)
+		debugLog("label input so far: %q", label)
+
+		// Exact match — jump immediately.
+		if target := findMatchByLabel(matches, label); target != nil {
+			cleanup()
+			debugLog("jumping to row=%d col=%d", target.Pos.Row, target.Pos.Col)
+			return jumpToPosition(ps, content, target.Pos.Col, target.Pos.Row)
+		}
+
+		// Check if any labels still have this prefix — if not, bail.
+		hasPrefix := false
+		for _, m := range matches {
+			if len(m.Label) > len(label) && m.Label[:len(label)] == label {
+				hasPrefix = true
+				break
+			}
+		}
+		if !hasPrefix {
+			break
+		}
+	}
+
 	cleanup()
-
-	if !ok {
-		debugLog("label prompt timeout/cancel")
-		return nil
-	}
-
-	debugLog("label key=%q (0x%02x)", string(ch), ch)
-
-	target := findMatchByLabel(matches, ch)
-	if target != nil {
-		debugLog("jumping to row=%d col=%d", target.Pos.Row, target.Pos.Col)
-		return jumpToPosition(ps, target.Pos.Col, target.Pos.Row)
-	}
-
-	debugLog("no match for label %q", string(ch))
+	debugLog("no match for label %q", label)
 	return nil
 }
 
-func findMatchByLabel(matches []Match, ch byte) *Match {
-	key := string(ch)
+func findMatchByLabel(matches []Match, label string) *Match {
 	for i := range matches {
-		if matches[i].Label == key {
+		if matches[i].Label == label {
 			return &matches[i]
 		}
 	}

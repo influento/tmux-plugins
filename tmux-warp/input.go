@@ -6,29 +6,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 const inputTimeout = 10 * time.Second
 
-// readCharFromFile polls a file until a byte appears (written by tmux command-prompt).
-func readCharFromFile(path string) (byte, bool) {
+// readStringFromFile polls a file until content appears (written by tmux command-prompt).
+func readStringFromFile(path string) (string, bool) {
 	deadline := time.Now().Add(inputTimeout)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(path)
 		if err == nil && len(data) > 0 {
-			debugLog("readCharFromFile: got %q (0x%02x) from %s", string(data[0]), data[0], path)
-			return data[0], true
+			s := strings.TrimRight(string(data), "\n\r")
+			debugLog("readStringFromFile: got %q from %s", s, path)
+			return s, true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	debugLog("readCharFromFile: timeout on %s", path)
-	return 0, false
+	debugLog("readStringFromFile: timeout on %s", path)
+	return "", false
 }
 
 // promptChar spawns a tmux command-prompt -1 and polls for the result.
 // Used for label selection after the overlay is rendered.
-func promptChar(paneID string, prompt string) (byte, bool) {
+func promptChar(prompt string) (byte, bool) {
 	dir, err := os.MkdirTemp("", "tmux-warp-*")
 	if err != nil {
 		return 0, false
@@ -36,18 +38,22 @@ func promptChar(paneID string, prompt string) (byte, bool) {
 	defer os.RemoveAll(dir)
 
 	tmpFile := filepath.Join(dir, "key")
-	cmdStr := fmt.Sprintf("run-shell \"printf '%%1' >> %s\"", tmpFile)
+	cmdStr := fmt.Sprintf("run-shell 'printf %%1 >> %s'", tmpFile)
 
 	debugLog("promptChar: spawning command-prompt prompt=%q tmpFile=%s", prompt, tmpFile)
 
-	cmd := exec.Command("tmux", "command-prompt", "-t", paneID, "-1", "-p", prompt, cmdStr)
+	cmd := exec.Command("tmux", "command-prompt", "-1", "-p", prompt, cmdStr)
 	if err := cmd.Start(); err != nil {
 		debugLog("promptChar: start error: %v", err)
 		return 0, false
 	}
 	go cmd.Wait()
 
-	return readCharFromFile(tmpFile)
+	s, ok := readStringFromFile(tmpFile)
+	if !ok || len(s) == 0 {
+		return 0, false
+	}
+	return s[0], true
 }
 
 var debugLogger *log.Logger
