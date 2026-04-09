@@ -13,11 +13,11 @@ func runSearch(ps *PaneState) error {
 	}
 	defer renderer.Close()
 
-	term, err := openRawTerminal(ps.TTYPath)
+	input, err := newPromptReader(ps.PaneID)
 	if err != nil {
 		return err
 	}
-	defer term.Close()
+	defer input.Close()
 
 	savedContent := ""
 	if ps.AlternateScreen {
@@ -42,7 +42,7 @@ func runSearch(ps *PaneState) error {
 	renderer.RenderStatus("", 0, ps.PaneHeight)
 
 	for {
-		ch, ok := term.ReadChar()
+		ch, ok := input.ReadChar()
 		if !ok {
 			cleanup()
 			return nil
@@ -85,9 +85,8 @@ func runSearch(ps *PaneState) error {
 		renderer.RenderPane(ps.Content, matches, runeLen(query), ps.PaneWidth, ps.PaneHeight)
 		renderer.RenderStatus(query, len(matches), ps.PaneHeight)
 
-		// When matches are few enough, switch to label selection.
 		if len(matches) <= maxLabelsThreshold {
-			target := readLabel(term, matches)
+			target := readLabel(input, matches)
 			if target != nil {
 				cleanup()
 				return jumpToPosition(ps, target.Pos.Col, target.Pos.Row)
@@ -98,21 +97,20 @@ func runSearch(ps *PaneState) error {
 	}
 }
 
-// readLabel reads one or two chars from the terminal and returns the matching
-// Match, or nil if cancelled/timeout/no match.
-func readLabel(term *RawTerminal, matches []Match) *Match {
-	ch, ok := term.ReadChar()
+// readLabel reads one or two chars and returns the matching Match,
+// or nil if cancelled/timeout/no match.
+func readLabel(input *PromptReader, matches []Match) *Match {
+	ch, ok := input.ReadChar()
 	if !ok || IsCancel(ch) {
 		return nil
 	}
 
-	// Try single-char label.
 	if m := findMatchByLabel(matches, ch); m != nil {
 		return m
 	}
 
 	// Try two-char label.
-	ch2, ok := term.ReadChar()
+	ch2, ok := input.ReadChar()
 	if !ok || IsCancel(ch2) {
 		return nil
 	}
@@ -134,11 +132,11 @@ func runChar(ps *PaneState, mode string) error {
 	}
 	defer renderer.Close()
 
-	term, err := openRawTerminal(ps.TTYPath)
+	input, err := newPromptReader(ps.PaneID)
 	if err != nil {
 		return err
 	}
-	defer term.Close()
+	defer input.Close()
 
 	savedContent := ""
 	if ps.AlternateScreen {
@@ -160,7 +158,7 @@ func runChar(ps *PaneState, mode string) error {
 	renderer.RenderPane(ps.Content, nil, 0, ps.PaneWidth, ps.PaneHeight)
 	renderer.RenderStatus(fmt.Sprintf("[%s] type a char", mode), 0, ps.PaneHeight)
 
-	ch, ok := term.ReadChar()
+	ch, ok := input.ReadChar()
 	if !ok || IsCancel(ch) {
 		cleanup()
 		return nil
@@ -194,7 +192,7 @@ func runChar(ps *PaneState, mode string) error {
 	renderer.RenderPane(ps.Content, matches, 1, ps.PaneWidth, ps.PaneHeight)
 	renderer.RenderStatus(fmt.Sprintf("[%s] %c -- press label", mode, ch), len(matches), ps.PaneHeight)
 
-	target := readLabel(term, matches)
+	target := readLabel(input, matches)
 	if target != nil {
 		adjusted := adjustTarget(target.Pos)
 		cleanup()
