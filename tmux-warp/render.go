@@ -76,6 +76,14 @@ func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int
 		}
 	}
 
+	// Pre-build set of cells covered by matches (non-start positions).
+	matchCover := make(map[Position]bool)
+	for _, m := range matches {
+		for c := 1; c < queryLen; c++ {
+			matchCover[Position{Row: m.Pos.Row, Col: m.Pos.Col + c}] = true
+		}
+	}
+
 	var buf strings.Builder
 
 	for row := 0; row < height; row++ {
@@ -94,7 +102,7 @@ func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int
 				continue
 			}
 
-			if m, isStart := mmap[pos]; isStart {
+			if _, isStart := mmap[pos]; isStart {
 				buf.WriteString(colorHit)
 				end := col + queryLen
 				if end > len(runes) {
@@ -106,19 +114,10 @@ func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int
 					}
 					buf.WriteRune(runes[c])
 				}
-				_ = m
 				continue
 			}
 
-			// Check if this col is inside a match (not the start).
-			insideMatch := false
-			for _, m := range matches {
-				if m.Pos.Row == row && col > m.Pos.Col && col < m.Pos.Col+queryLen {
-					insideMatch = true
-					break
-				}
-			}
-			if insideMatch {
+			if matchCover[pos] {
 				continue
 			}
 
