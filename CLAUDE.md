@@ -6,25 +6,62 @@ Custom tmux plugins, written in Go, distributed as prebuilt binaries via GitHub 
 
 ```
 tmux-plugins/
-  <plugin-name>/       # self-contained Go module per plugin
-    main.go
+  tmux-warp/
+    tmux-warp.sh     # shell wrapper — handles tmux command-prompt input
+    main.go          # entry point — receives temp file path from wrapper
+    warp.go          # search overlay loop, label selection, screen save/restore
+    tmux.go          # tmux command helpers, pane state capture, cursor jump
+    match.go         # match finding, distance-based label assignment
+    render.go        # ANSI rendering to pane TTY (Catppuccin Mocha colors)
+    input.go         # temp file polling, command-prompt spawning, debug logging
     go.mod
   .github/workflows/
-    ci.yml             # build on every push
-    release.yml        # build + publish on tag push
+    ci.yml           # build + vet on every push
+    release.yml      # build + publish binaries on tag push (v*)
 ```
+
+## Plugin: tmux-warp
+
+Search-and-jump tool for tmux. Type a char, see matches with labels, press label to jump.
+
+### Architecture (follows tmux-jump pattern)
+
+1. **Shell wrapper** (`tmux-warp.sh`): calls `tmux command-prompt -1` to capture one
+   search char into a temp file, then invokes the Go binary with the temp file path
+2. **Go binary** (`tmux-warp`): polls temp file for the char, finds matches in pane
+   content, renders overlay with labels to pane TTY, spawns another `command-prompt`
+   for label selection, then jumps cursor via `tmux copy-mode` + `send-keys -X`
+
+Key constraint: binding MUST use `run-shell -b` (background) so tmux stays free to
+process `command-prompt` input. Without `-b`, tmux blocks and input never arrives.
+
+### How input works
+
+- Input goes through `tmux command-prompt -1` which captures one key via tmux's own
+  event loop — NOT by reading from the pane TTY (that races with the shell)
+- Result is written to a temp file via `run-shell "printf '%1' >> <file>"`
+- Go binary polls the temp file with 10ms sleep intervals, 10s timeout
+- For label selection after overlay is shown, Go spawns a new `command-prompt` via
+  `exec.Command` fire-and-forget (`cmd.Start()` + `go cmd.Wait()`)
+
+### Debug logging
+
+Binary writes to `/tmp/tmux-warp.log` — shows pane state, chars received, match
+counts, jump coordinates. Check this first when debugging.
 
 ## Build & Release
 
-- Local: `cd <plugin> && go build -o <plugin> .`
-- CI builds on every push (linux/amd64 + linux/arm64)
-- Tag push (`v*`) triggers release: builds binaries, creates GitHub Release with assets
-- Binary names: `<plugin>-linux-amd64`, `<plugin>-linux-arm64`
+- Local: `cd tmux-warp && go build -o tmux-warp .`
+- CI builds on every push (linux/amd64 + linux/arm64), uploads artifacts
+- Tag push (`v*`) triggers release with binaries as GitHub Release assets
+- Tags are auto-created by a `.git/hooks/pre-push` hook that increments patch version
+- Binary names: `tmux-warp-linux-amd64`, `tmux-warp-linux-arm64`
 
 ## How Dotfiles Consumes This
 
-The dotfiles repo downloads the latest binary from GitHub Releases and places it in
-`~/.local/bin/`. Binaries must be static, self-contained executables (no runtime deps).
+The dotfiles repo downloads the latest binary and shell wrapper, places them in
+`~/.local/bin/`. Both `tmux-warp` (binary) and `tmux-warp.sh` (wrapper) are needed.
+tmux.conf binds: `bind s run-shell -b '~/.local/bin/tmux-warp.sh'`
 
 ## Code Conventions
 
@@ -50,4 +87,5 @@ The dotfiles repo downloads the latest binary from GitHub Releases and places it
 
 ## References
 
-- tmux man page: `capture-pane`, `send-keys -X`, `copy-mode`, `display-message`
+- tmux man page: `capture-pane`, `send-keys -X`, `copy-mode`, `display-message`,
+  `command-prompt`
