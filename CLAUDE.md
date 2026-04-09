@@ -22,27 +22,34 @@ tmux-plugins/
 
 ## Plugin: tmux-warp
 
-Search-and-jump tool for tmux. Type a char, see matches with labels, press label to jump.
+Search-and-jump tool for tmux. Type a char or word, see matches with labels, press label to jump.
 
 ### Architecture (follows tmux-jump pattern)
 
-1. **Shell wrapper** (`tmux-warp.sh`): calls `tmux command-prompt -1` to capture one
-   search char into a temp file, then invokes the Go binary with the temp file path
-2. **Go binary** (`tmux-warp`): polls temp file for the char, finds matches in pane
-   content, renders overlay with labels to pane TTY, spawns another `command-prompt`
-   for label selection, then jumps cursor via `tmux copy-mode` + `send-keys -X`
+1. **Shell wrapper** (`tmux-warp.sh`): calls `tmux command-prompt` to capture search
+   query (char or word) into a temp file, then invokes the Go binary with the temp file path
+2. **Go binary** (`tmux-warp`): polls temp file for the query, finds matches in pane
+   content, renders overlay with labels to pane TTY, spawns `command-prompt -1`
+   for label selection (multi-char labels prompt iteratively), then jumps cursor
+   via `tmux copy-mode` + `send-keys -X`
 
 Key constraint: binding MUST use `run-shell -b` (background) so tmux stays free to
 process `command-prompt` input. Without `-b`, tmux blocks and input never arrives.
 
 ### How input works
 
-- Input goes through `tmux command-prompt -1` which captures one key via tmux's own
-  event loop — NOT by reading from the pane TTY (that races with the shell)
+- Search input goes through `tmux command-prompt` (no `-1`) which captures a full
+  string (char or word) via tmux's event loop — NOT by reading from the pane TTY
 - Result is written to a temp file via `run-shell "printf '%1' >> <file>"`
 - Go binary polls the temp file with 10ms sleep intervals, 10s timeout
-- For label selection after overlay is shown, Go spawns a new `command-prompt` via
+- For label selection after overlay is shown, Go spawns `command-prompt -1` via
   `exec.Command` fire-and-forget (`cmd.Start()` + `go cmd.Wait()`)
+- Multi-char labels: prompts iteratively, collecting one char at a time until an
+  exact label match is found or no labels share the prefix
+- `command-prompt` must NOT use `-t paneID` — it takes a target-client, not a pane;
+  passing a pane ID silently breaks input. Omit `-t` entirely (matches tmux-jump)
+- `run-shell` arg in `exec.Command` must use single quotes, not escaped double
+  quotes — there's no shell to process the escapes
 
 ### Debug logging
 
