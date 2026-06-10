@@ -37,7 +37,10 @@ func FindMatches(content []string, query string) []Position {
 				break
 			}
 			bytePos := byteStart + idx
-			runeCol := utf8.RuneCountInString(line[:bytePos])
+			// Count runes in lowerLine, not line: ToLower can change byte
+			// lengths (e.g. İ→i, K→k), so bytePos is only valid against
+			// lowerLine. Rune count is preserved, so the column matches.
+			runeCol := utf8.RuneCountInString(lowerLine[:bytePos])
 			positions = append(positions, Position{Row: row, Col: runeCol})
 			byteStart = bytePos + 1
 		}

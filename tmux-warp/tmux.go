@@ -102,11 +102,7 @@ func jumpToPosition(ps *PaneState, content []string, targetX, targetY int) error
 	// Compute flat offset from actual line lengths (like tmux-jump).
 	// Each line in capture-pane output corresponds to one screen line,
 	// and cursor-right wraps at end of content, not at PaneWidth.
-	flatOffset := 0
-	for i := 0; i < targetY && i < len(content); i++ {
-		flatOffset += len([]rune(content[i])) + 1 // +1 for the newline
-	}
-	flatOffset += targetX
+	flatOffset := computeFlatOffset(content, targetX, targetY)
 
 	debugLog("jumpToPosition: flatOffset=%d (from content lines)", flatOffset)
 
@@ -121,4 +117,17 @@ func jumpToPosition(ps *PaneState, content []string, targetX, targetY int) error
 	}
 
 	return nil
+}
+
+// computeFlatOffset returns the number of cursor-right steps to reach
+// (targetX, targetY) from the top-left of the captured content. Copy-mode
+// navigation moves one step per rune and one per line break (it wraps at the
+// end of content, not at the pane width), so we count runes — never bytes —
+// plus one newline per preceding line.
+func computeFlatOffset(content []string, targetX, targetY int) int {
+	offset := 0
+	for i := 0; i < targetY && i < len(content); i++ {
+		offset += len([]rune(content[i])) + 1 // +1 for the newline
+	}
+	return offset + targetX
 }
