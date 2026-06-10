@@ -53,8 +53,11 @@ process `command-prompt` input. Without `-b`, tmux blocks and input never arrive
 
 ### Debug logging
 
-Binary writes to `/tmp/tmux-warp.log` — shows pane state, chars received, match
-counts, jump coordinates. Check this first when debugging.
+Off by default. Set `TMUX_WARP_DEBUG=1` to enable. Logs go to
+`$XDG_RUNTIME_DIR/tmux-warp.log` (falling back to `$TMPDIR/tmux-warp-<uid>.log`),
+created with mode `0600` and `O_NOFOLLOW`; override the path with `TMUX_WARP_LOG`.
+Shows pane state, chars received, match counts, jump coordinates. Check this
+first when debugging.
 
 ## Build & Release
 
