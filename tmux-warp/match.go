@@ -46,7 +46,7 @@ func FindMatches(content []string, query string) []Position {
 }
 
 // AssignLabels assigns labels to matches sorted by distance from cursor.
-func AssignLabels(positions []Position, cursorX, cursorY int, skipChars string) []Match {
+func AssignLabels(positions []Position, cursorX, cursorY int) []Match {
 	if len(positions) == 0 {
 		return nil
 	}
@@ -66,15 +66,7 @@ func AssignLabels(positions []Position, cursorX, cursorY int, skipChars string) 
 		return items[i].dist < items[j].dist
 	})
 
-	skipLower := strings.ToLower(skipChars)
-	var availKeys []byte
-	for _, k := range labelKeys {
-		if !strings.ContainsRune(skipLower, rune(k)) {
-			availKeys = append(availKeys, k)
-		}
-	}
-
-	labels := generateLabels(len(items), availKeys)
+	labels := generateLabels(len(items), labelKeys)
 
 	matches := make([]Match, len(items))
 	for i, item := range items {

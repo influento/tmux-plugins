@@ -7,6 +7,8 @@ import (
 )
 
 func run(tmpFile string) error {
+	defer os.Remove(tmpFile)
+
 	ps, err := capturePaneState()
 	if err != nil {
 		return fmt.Errorf("capture pane: %w", err)
@@ -22,7 +24,6 @@ func run(tmpFile string) error {
 	if !ok || query == "" {
 		return nil
 	}
-	os.Remove(tmpFile)
 
 	// Cancel existing copy mode if active.
 	if ps.InCopyMode {
@@ -83,7 +84,7 @@ func runOverlayLoop(renderer *Renderer, ps *PaneState, content []string, query s
 	}
 
 	// Render with labels and wait for label key.
-	matches := AssignLabels(positions, ps.CursorX, ps.CursorY, "")
+	matches := AssignLabels(positions, ps.CursorX, ps.CursorY)
 	renderer.RenderOverlay(content, matches, runeLen(query), ps.PaneHeight)
 
 	maxLabelLen := 0
