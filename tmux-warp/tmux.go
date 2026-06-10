@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // PaneState holds the captured state of the tmux pane.
@@ -121,13 +122,53 @@ func jumpToPosition(ps *PaneState, content []string, targetX, targetY int) error
 
 // computeFlatOffset returns the number of cursor-right steps to reach
 // (targetX, targetY) from the top-left of the captured content. Copy-mode
-// navigation moves one step per rune and one per line break (it wraps at the
-// end of content, not at the pane width), so we count runes — never bytes —
-// plus one newline per preceding line.
+// navigation moves one step per grid cell and one per line break (it wraps at
+// the end of content, not at the pane width). A grid cell holds one base rune
+// plus any combining marks, so zero-width/combining runes share the previous
+// cell and must not be counted. Wide CJK/emoji runes occupy a single grid cell,
+// so they count as one — matching plain rune counting; only decomposed
+// combining sequences differ.
 func computeFlatOffset(content []string, targetX, targetY int) int {
 	offset := 0
 	for i := 0; i < targetY && i < len(content); i++ {
-		offset += len([]rune(content[i])) + 1 // +1 for the newline
+		offset += cellCount(content[i]) + 1 // +1 for the newline
 	}
-	return offset + targetX
+	if targetY < len(content) {
+		offset += cellCountPrefix(content[targetY], targetX)
+	} else {
+		offset += targetX
+	}
+	return offset
+}
+
+// cellCount counts grid cells in s (runes minus zero-width/combining marks).
+func cellCount(s string) int {
+	return cellCountPrefix(s, -1)
+}
+
+// cellCountPrefix counts grid cells among the first n runes of s. A negative n
+// counts the whole string.
+func cellCountPrefix(s string, n int) int {
+	cells, i := 0, 0
+	for _, r := range s {
+		if n >= 0 && i >= n {
+			break
+		}
+		if !isZeroWidth(r) {
+			cells++
+		}
+		i++
+	}
+	return cells
+}
+
+// isZeroWidth reports whether r occupies no grid column of its own — combining
+// marks (Unicode Mn/Me) and explicit zero-width characters merge into the
+// preceding cell.
+func isZeroWidth(r rune) bool {
+	switch r {
+	case '\u200b', '\u200c', '\u200d', '\ufeff': // ZWSP, ZWNJ, ZWJ, BOM
+		return true
+	}
+	return unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r)
 }

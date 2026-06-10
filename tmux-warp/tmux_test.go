@@ -18,6 +18,9 @@ func TestComputeFlatOffset(t *testing.T) {
 		{"row past end", 0, 99, content, 12},
 		// runes, not bytes: "é" is 2 bytes but 1 rune, +1 newline
 		{"multibyte line", 0, 1, []string{"é", "x"}, 2},
+		// combining mark shares a cell: "e" + U+0301 (combining acute) + "x"
+		// is 3 runes but 2 grid cells; jumping to 'x' (rune col 2) is 1 step.
+		{"combining mark", 2, 0, []string{"e\u0301x"}, 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
