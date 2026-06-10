@@ -2,13 +2,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 )
 
-func run(tmpFile string) error {
-	defer os.Remove(tmpFile)
-
+func run() error {
 	ps, err := capturePaneState()
 	if err != nil {
 		return fmt.Errorf("capture pane: %w", err)
@@ -18,12 +15,15 @@ func run(tmpFile string) error {
 		ps.PaneID, ps.TTYPath, ps.AlternateScreen, ps.InCopyMode,
 		ps.PaneWidth, ps.PaneHeight, ps.CursorX, ps.CursorY)
 
-	// Read search query from the temp file (written by the shell wrapper's command-prompt).
-	debugLog("waiting for query from %s", tmpFile)
-	query, ok := readStringFromFile(tmpFile)
+	// Read the search query from the @warp_query tmux option, set by the shell
+	// wrapper's command-prompt. Using a tmux option (not run-shell) means query
+	// characters like $ ; " ` are stored literally and never run through a shell.
+	debugLog("waiting for query from %s", optQuery)
+	query, ok := readOptionValue(optQuery)
 	if !ok || query == "" {
 		return nil
 	}
+	tmuxCmd("set-option", "-gu", optQuery) // clear after reading
 
 	// Cancel existing copy mode if active.
 	if ps.InCopyMode {

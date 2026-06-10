@@ -8,12 +8,12 @@ Custom tmux plugins, written in Go, distributed as prebuilt binaries via GitHub 
 tmux-plugins/
   tmux-warp/
     tmux-warp.sh     # shell wrapper — handles tmux command-prompt input
-    main.go          # entry point — receives temp file path from wrapper
+    main.go          # entry point — reads query from the @warp_query tmux option
     warp.go          # search overlay loop, label selection, screen save/restore
     tmux.go          # tmux command helpers, pane state capture, cursor jump
     match.go         # match finding, distance-based label assignment
     render.go        # ANSI rendering to pane TTY (Catppuccin Mocha colors)
-    input.go         # temp file polling, command-prompt spawning, debug logging
+    input.go         # tmux option polling, command-prompt spawning, debug logging
     go.mod
   .github/workflows/
     ci.yml           # build + vet on every push
@@ -26,12 +26,13 @@ Search-and-jump tool for tmux. Type a char or word, see matches with labels, pre
 
 ### Architecture (follows tmux-jump pattern)
 
-1. **Shell wrapper** (`tmux-warp.sh`): calls `tmux command-prompt` to capture search
-   query (char or word) into a temp file, then invokes the Go binary with the temp file path
-2. **Go binary** (`tmux-warp`): polls temp file for the query, finds matches in pane
-   content, renders overlay with labels to pane TTY, spawns `command-prompt -1`
-   for label selection (multi-char labels prompt iteratively), then jumps cursor
-   via `tmux copy-mode` + `send-keys -X`
+1. **Shell wrapper** (`tmux-warp.sh`): clears `@warp_query`, then calls
+   `tmux command-prompt` to store the search query (char or word) into the
+   `@warp_query` tmux option, then invokes the Go binary
+2. **Go binary** (`tmux-warp`): polls the `@warp_query` option for the query, finds
+   matches in pane content, renders overlay with labels to pane TTY, spawns
+   `command-prompt -1` for label selection into `@warp_label` (multi-char labels
+   prompt iteratively), then jumps cursor via `tmux copy-mode` + `send-keys -X`
 
 Key constraint: binding MUST use `run-shell -b` (background) so tmux stays free to
 process `command-prompt` input. Without `-b`, tmux blocks and input never arrives.
@@ -40,16 +41,23 @@ process `command-prompt` input. Without `-b`, tmux blocks and input never arrive
 
 - Search input goes through `tmux command-prompt` (no `-1`) which captures a full
   string (char or word) via tmux's event loop — NOT by reading from the pane TTY
-- Result is written to a temp file via `run-shell "printf '%1' >> <file>"`
-- Go binary polls the temp file with 10ms sleep intervals, 10s timeout
+- Result is stored via `set-option -g @warp_query '%1'` — NOT `run-shell`/`printf`.
+  command-prompt substitutes `%1` textually and re-parses the result, so sending it
+  through a shell (`run-shell`) lets query metacharacters (`$ ; " ` + backtick)
+  execute. A tmux option has no shell layer, so the query is stored literally.
+  (Residual: a literal `'` in the query can still break the option's tmux quoting —
+  accepted; do not paste untrusted text into the prompt.)
+- Go binary polls `show-options -gv @warp_query` with 10ms sleeps, 10s timeout; the
+  option is unset until submit (show-options exits non-zero), then holds the value.
+  The binary clears the option after reading; the wrapper also clears it before the
+  prompt to avoid a stale read
 - For label selection after overlay is shown, Go spawns `command-prompt -1` via
-  `exec.Command` fire-and-forget (`cmd.Start()` + `go cmd.Wait()`)
+  `exec.Command` fire-and-forget (`cmd.Start()` + `go cmd.Wait()`), storing the key
+  into `@warp_label` the same way
 - Multi-char labels: prompts iteratively, collecting one char at a time until an
   exact label match is found or no labels share the prefix
 - `command-prompt` must NOT use `-t paneID` — it takes a target-client, not a pane;
   passing a pane ID silently breaks input. Omit `-t` entirely (matches tmux-jump)
-- `run-shell` arg in `exec.Command` must use single quotes, not escaped double
-  quotes — there's no shell to process the escapes
 
 ### Debug logging
 
