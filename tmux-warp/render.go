@@ -57,14 +57,26 @@ func (r *Renderer) ExitAltScreen() {
 // RenderOverlay renders pane content with matches highlighted and labels overlaid.
 // This follows tmux-jump's approach: write directly to TTY with \n\r line endings.
 func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int, height int) {
+	r.write("\x1b[H") // cursor home
+	r.write(renderOverlayBuffer(content, matches, queryLen, height))
+	r.write(colorRst)
+}
+
+// renderOverlayBuffer builds the ANSI overlay string: content dimmed, matches
+// highlighted, and labels drawn on top. Label characters that extend past the
+// end of their line are still emitted, so multi-char labels on matches near the
+// right edge stay fully visible.
+func renderOverlayBuffer(content []string, matches []Match, queryLen, height int) string {
 	mmap := MatchMap(matches)
 
-	// Build label overlay: label chars at match positions.
+	// Build label overlay: label chars at match positions, plus the furthest
+	// column a label reaches on each row (so we can render past end-of-line).
 	type labelCell struct {
 		ch    byte
 		color string
 	}
 	labelOverlay := make(map[Position]labelCell)
+	labelRowEnd := make(map[int]int) // row -> exclusive max column reached by a label
 	for i, m := range matches {
 		if m.Label == "" {
 			continue
@@ -73,6 +85,9 @@ func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int
 		for j := 0; j < len(m.Label); j++ {
 			pos := Position{Row: m.Pos.Row, Col: m.Pos.Col + j}
 			labelOverlay[pos] = labelCell{ch: m.Label[j], color: color}
+			if pos.Col+1 > labelRowEnd[pos.Row] {
+				labelRowEnd[pos.Row] = pos.Col + 1
+			}
 		}
 	}
 
@@ -93,12 +108,24 @@ func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int
 		}
 		runes := []rune(line)
 
-		for col, ch := range runes {
+		// Render past end-of-line if a label's tail spills over.
+		maxCol := len(runes)
+		if e := labelRowEnd[row]; e > maxCol {
+			maxCol = e
+		}
+
+		for col := 0; col < maxCol; col++ {
 			pos := Position{Row: row, Col: col}
 
 			if lc, ok := labelOverlay[pos]; ok {
 				buf.WriteString(lc.color)
 				buf.WriteByte(lc.ch)
+				continue
+			}
+
+			// Past end-of-line but no label here: pad so columns stay aligned.
+			if col >= len(runes) {
+				buf.WriteByte(' ')
 				continue
 			}
 
@@ -122,7 +149,7 @@ func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int
 			}
 
 			buf.WriteString(colorDim)
-			buf.WriteRune(ch)
+			buf.WriteRune(runes[col])
 		}
 
 		// Use \n\r for proper TTY line wrapping (like tmux-jump).
@@ -131,9 +158,7 @@ func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int
 		}
 	}
 
-	r.write("\x1b[H") // cursor home
-	r.write(buf.String())
-	r.write(colorRst)
+	return buf.String()
 }
 
 func runeLen(s string) int {
