@@ -97,7 +97,6 @@ tmux.conf binds: `bind s run-shell -b '~/.local/bin/tmux-warp.sh'`
 - Quote all variable expansions
 
 ### Git
-- Never add `Co-Authored-By` trailers to git commits
 - Before every commit/push, audit the staged diff for sensitive information leaks:
   usernames, passwords, API keys, tokens, private IPs, email addresses, or any
   data that should not appear in a public repository. Flag any findings to the user
