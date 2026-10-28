@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/influento/tmux-plugins/internal/tmux"
 )
 
 // PaneState holds the captured state of the tmux pane.
@@ -66,16 +68,11 @@ func capturePaneState() (*PaneState, error) {
 	return ps, nil
 }
 
+// tmuxCmd runs one tmux command on the server this pane belongs to ($TMUX),
+// with internal/tmux's timeout, and returns its stdout.
 func tmuxCmd(args ...string) (string, error) {
-	cmd := exec.Command("tmux", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("tmux %s: %s", strings.Join(args, " "), string(exitErr.Stderr))
-		}
-		return "", err
-	}
-	return string(out), nil
+	var c tmux.Client
+	return c.Run(context.Background(), args...)
 }
 
 func jumpToPosition(ps *PaneState, content []string, targetX, targetY int) error {
@@ -100,50 +97,41 @@ func jumpToPosition(ps *PaneState, content []string, targetX, targetY int) error
 		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", ps.ScrollPosition), "cursor-up"})
 	}
 
-	// Compute flat offset from actual line lengths (like tmux-jump).
-	// Each line in capture-pane output corresponds to one screen line,
-	// and cursor-right wraps at end of content, not at PaneWidth.
-	flatOffset := computeFlatOffset(content, targetX, targetY)
+	// Down to the target row, then right to the target cell. Moving row by
+	// row keeps line ends out of the count: how many cursor-right steps a line
+	// break costs depends on mode-keys (vi stops on the last cell, emacs one
+	// past it), so a single flat offset lands in the wrong column.
+	down, right := jumpSteps(content, targetX, targetY)
+	debugLog("jumpToPosition: down=%d right=%d", down, right)
 
-	debugLog("jumpToPosition: flatOffset=%d (from content lines)", flatOffset)
-
-	if flatOffset > 0 {
-		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", flatOffset), "cursor-right"})
+	if down > 0 {
+		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", down), "cursor-down"})
+	}
+	cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "start-of-line"})
+	if right > 0 {
+		cmds = append(cmds, []string{"send-keys", "-X", "-t", ps.PaneID, "-N", fmt.Sprintf("%d", right), "cursor-right"})
 	}
 
 	for _, args := range cmds {
 		if _, err := tmuxCmd(args...); err != nil {
-			return fmt.Errorf("tmux %v: %w", args, err)
+			return err
 		}
 	}
 
 	return nil
 }
 
-// computeFlatOffset returns the number of cursor-right steps to reach
-// (targetX, targetY) from the top-left of the captured content. Copy-mode
-// navigation moves one step per grid cell and one per line break (it wraps at
-// the end of content, not at the pane width). A grid cell holds one base rune
-// plus any combining marks, so zero-width/combining runes share the previous
-// cell and must not be counted. Wide CJK/emoji runes occupy a single grid cell,
-// so they count as one — matching plain rune counting; only decomposed
-// combining sequences differ.
-func computeFlatOffset(content []string, targetX, targetY int) int {
-	offset := 0
-	for i := 0; i < targetY && i < len(content); i++ {
-		offset += cellCount(content[i]) + 1 // +1 for the newline
-	}
+// jumpSteps returns the cursor-down and cursor-right steps that reach
+// (targetX, targetY) from the top-left of the captured content. targetX is a
+// rune index into the row; copy mode moves one grid cell per step, and a grid
+// cell holds one base rune plus any combining marks, so zero-width and
+// combining runes share the previous cell and are not counted. Wide CJK and
+// emoji runes occupy a single grid cell, so they count as one.
+func jumpSteps(content []string, targetX, targetY int) (down, right int) {
 	if targetY < len(content) {
-		offset += cellCountPrefix(content[targetY], targetX)
-	} else {
-		offset += targetX
+		return targetY, cellCountPrefix(content[targetY], targetX)
 	}
-	return offset
-}
-
-// cellCount counts grid cells in s (runes minus zero-width/combining marks).
-func cellCount(s string) int {
-	return cellCountPrefix(s, -1)
+	return targetY, targetX
 }
 
 // cellCountPrefix counts grid cells among the first n runes of s. A negative n

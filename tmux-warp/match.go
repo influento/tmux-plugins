@@ -1,8 +1,9 @@
 package main
 
 import (
+	"cmp"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -65,8 +66,10 @@ func AssignLabels(positions []Position, cursorX, cursorY int) []Match {
 		dy := float64(p.Row - cursorY)
 		items[i] = posWithDist{pos: p, dist: math.Sqrt(dx*dx + dy*dy)}
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].dist < items[j].dist
+	// Stable, so matches at the same distance keep reading order and get the
+	// same labels on every run.
+	slices.SortStableFunc(items, func(a, b posWithDist) int {
+		return cmp.Compare(a.dist, b.dist)
 	})
 
 	labels := generateLabels(len(items), labelKeys)
@@ -102,13 +105,4 @@ func generateLabels(n int, keys []byte) []string {
 		labels = next
 	}
 	return labels[:n]
-}
-
-// MatchMap builds a lookup from Position to Match for quick rendering.
-func MatchMap(matches []Match) map[Position]Match {
-	m := make(map[Position]Match, len(matches))
-	for _, match := range matches {
-		m[match.Pos] = match
-	}
-	return m
 }

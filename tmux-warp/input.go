@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/influento/tmux-plugins/internal/tmux"
 )
 
 const inputTimeout = 10 * time.Second
@@ -23,43 +26,51 @@ const (
 
 // readOptionValue polls a global tmux user option until it is set, returning its
 // value. The command-prompt template sets the option on submit; until then the
-// option is unset and show-options exits non-zero, so we keep polling. Returns
-// false on timeout (e.g. the user cancelled the prompt without submitting).
-func readOptionValue(name string) (string, bool) {
+// option is unset, so we keep polling. ok is false on timeout (e.g. the user
+// cancelled the prompt without submitting). Any other tmux failure, such as a
+// server that is gone, is an error at once.
+func readOptionValue(name string) (string, bool, error) {
+	var c tmux.Client
 	deadline := time.Now().Add(inputTimeout)
 	for time.Now().Before(deadline) {
-		out, err := tmuxCmd("show-options", "-gv", name)
-		if err == nil {
-			s := strings.TrimRight(out, "\n\r")
-			debugLog("readOptionValue: %s=%q", name, s)
-			return s, true
+		v, set, err := c.Option(context.Background(), "-g", "", name)
+		if err != nil {
+			return "", false, err
+		}
+		if set {
+			v = strings.TrimRight(v, "\n\r")
+			debugLog("readOptionValue: %s=%q", name, v)
+			return v, true, nil
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	debugLog("readOptionValue: timeout on %s", name)
-	return "", false
+	return "", false, nil
 }
 
 // promptChar spawns a tmux command-prompt -1 and polls for the result.
 // Used for label selection after the overlay is rendered. The keypress is stored
 // in a tmux option (not run through a shell) and read back. If the prompt times
 // out, a late keypress harmlessly sets the option, which the next run clears.
-func promptChar(prompt string) (byte, bool) {
-	tmuxCmd("set-option", "-gu", optLabel) // clear any stale value
+func promptChar(prompt string) (byte, bool, error) {
+	if _, err := tmuxCmd("set-option", "-gu", optLabel); err != nil { // clear any stale value
+		return 0, false, err
+	}
 
 	debugLog("promptChar: spawning command-prompt prompt=%q", prompt)
+	// Not through tmuxCmd: without -b, command-prompt holds its client until
+	// the prompt is dismissed, and the answer is read by polling below.
 	cmd := exec.Command("tmux", "command-prompt", "-1", "-p", prompt, "set-option -g "+optLabel+" '%1'")
 	if err := cmd.Start(); err != nil {
-		debugLog("promptChar: start error: %v", err)
-		return 0, false
+		return 0, false, fmt.Errorf("command-prompt: %w", err)
 	}
-	go cmd.Wait()
+	go cmd.Wait() // reaps the prompt's client; the answer arrives through the option
 
-	s, ok := readOptionValue(optLabel)
-	if !ok || len(s) == 0 {
-		return 0, false
+	s, ok, err := readOptionValue(optLabel)
+	if err != nil || !ok || len(s) == 0 {
+		return 0, false, err
 	}
-	return s[0], true
+	return s[0], true, nil
 }
 
 var debugLogger *log.Logger

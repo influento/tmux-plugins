@@ -2,31 +2,30 @@ package main
 
 import "testing"
 
-func TestComputeFlatOffset(t *testing.T) {
-	content := []string{"abc", "de", "fghi"}
+func TestJumpSteps(t *testing.T) {
+	content := []string{"abc", "", "fghi"}
 	tests := []struct {
-		name    string
-		targetX int
-		targetY int
-		content []string
-		want    int
+		name      string
+		content   []string
+		x, y      int
+		wantDown  int
+		wantRight int
 	}{
-		{"origin", 0, 0, content, 0},
-		// row 2, col 1 ('g'): (3+1) + (2+1) + 1
-		{"mid", 1, 2, content, 8},
-		// targetY past the end is clamped to len(content): (3+1)+(2+1)+(4+1)
-		{"row past end", 0, 99, content, 12},
-		// runes, not bytes: "é" is 2 bytes but 1 rune, +1 newline
-		{"multibyte line", 0, 1, []string{"é", "x"}, 2},
-		// combining mark shares a cell: "e" + U+0301 (combining acute) + "x"
-		// is 3 runes but 2 grid cells; jumping to 'x' (rune col 2) is 1 step.
-		{"combining mark", 2, 0, []string{"e\u0301x"}, 1},
+		{"origin", content, 0, 0, 0, 0},
+		{"after an empty row", content, 1, 2, 2, 1},
+		{"row past end keeps x", content, 3, 99, 99, 3},
+		// runes, not bytes: "é" is 2 bytes but 1 rune
+		{"multibyte", []string{"éx"}, 1, 0, 0, 1},
+		// a combining mark shares a cell: "e" + U+0301 + "x" is 3 runes but
+		// 2 grid cells; 'x' (rune col 2) is 1 step right
+		{"combining mark", []string{"éx"}, 2, 0, 0, 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := computeFlatOffset(tc.content, tc.targetX, tc.targetY); got != tc.want {
-				t.Errorf("computeFlatOffset(%q, %d, %d) = %d, want %d",
-					tc.content, tc.targetX, tc.targetY, got, tc.want)
+			down, right := jumpSteps(tc.content, tc.x, tc.y)
+			if down != tc.wantDown || right != tc.wantRight {
+				t.Errorf("jumpSteps(%q, %d, %d) = %d, %d; want %d, %d",
+					tc.content, tc.x, tc.y, down, right, tc.wantDown, tc.wantRight)
 			}
 		})
 	}

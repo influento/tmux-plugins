@@ -42,8 +42,12 @@ func (r *Renderer) Close() error {
 	return r.ttyFile.Close()
 }
 
+// write draws on the pane's terminal. A failed write leaves a stale overlay
+// at worst, so it is logged, not returned.
 func (r *Renderer) write(s string) {
-	r.ttyFile.WriteString(s)
+	if _, err := r.ttyFile.WriteString(s); err != nil {
+		debugLog("write tty: %v", err)
+	}
 }
 
 func (r *Renderer) EnterAltScreen() {
@@ -63,14 +67,14 @@ func (r *Renderer) RenderOverlay(content []string, matches []Match, queryLen int
 }
 
 // renderOverlayBuffer builds the ANSI overlay string: content dimmed, matches
-// highlighted, and labels drawn on top. Label characters that extend past the
-// end of their line are still emitted, so multi-char labels on matches near the
-// right edge stay fully visible.
+// highlighted, and labels drawn on top. Every column of a row is drawn once,
+// so the text keeps its place: a label replaces the head of its match and the
+// rest of the match stays. Label characters that extend past the end of their
+// line are still emitted, so multi-char labels on matches near the right edge
+// stay fully visible.
 func renderOverlayBuffer(content []string, matches []Match, queryLen, height int) string {
-	mmap := MatchMap(matches)
-
-	// Build label overlay: label chars at match positions, plus the furthest
-	// column a label reaches on each row (so we can render past end-of-line).
+	// Label characters at match positions, plus the furthest column a label
+	// reaches on each row (so we can render past end-of-line).
 	type labelCell struct {
 		ch    byte
 		color string
@@ -91,17 +95,24 @@ func renderOverlayBuffer(content []string, matches []Match, queryLen, height int
 		}
 	}
 
-	// Pre-build set of cells covered by matches (non-start positions).
-	matchCover := make(map[Position]bool)
+	// Cells covered by a match, its first cell included.
+	inMatch := make(map[Position]bool)
 	for _, m := range matches {
-		for c := 1; c < queryLen; c++ {
-			matchCover[Position{Row: m.Pos.Row, Col: m.Pos.Col + c}] = true
+		for c := range queryLen {
+			inMatch[Position{Row: m.Pos.Row, Col: m.Pos.Col + c}] = true
 		}
 	}
 
 	var buf strings.Builder
+	color := "" // the colour last written, so runs of one colour share it
+	setColor := func(c string) {
+		if c != color {
+			buf.WriteString(c)
+			color = c
+		}
+	}
 
-	for row := 0; row < height; row++ {
+	for row := range height {
 		line := ""
 		if row < len(content) {
 			line = content[row]
@@ -109,47 +120,25 @@ func renderOverlayBuffer(content []string, matches []Match, queryLen, height int
 		runes := []rune(line)
 
 		// Render past end-of-line if a label's tail spills over.
-		maxCol := len(runes)
-		if e := labelRowEnd[row]; e > maxCol {
-			maxCol = e
-		}
+		maxCol := max(len(runes), labelRowEnd[row])
 
-		for col := 0; col < maxCol; col++ {
+		for col := range maxCol {
 			pos := Position{Row: row, Col: col}
-
-			if lc, ok := labelOverlay[pos]; ok {
-				buf.WriteString(lc.color)
+			lc, isLabel := labelOverlay[pos]
+			switch {
+			case isLabel:
+				setColor(lc.color)
 				buf.WriteByte(lc.ch)
-				continue
-			}
-
-			// Past end-of-line but no label here: pad so columns stay aligned.
-			if col >= len(runes) {
+			case col >= len(runes):
+				// Past end-of-line but no label here: pad so columns stay aligned.
 				buf.WriteByte(' ')
-				continue
+			case inMatch[pos]:
+				setColor(colorHit)
+				buf.WriteRune(runes[col])
+			default:
+				setColor(colorDim)
+				buf.WriteRune(runes[col])
 			}
-
-			if _, isStart := mmap[pos]; isStart {
-				buf.WriteString(colorHit)
-				end := col + queryLen
-				if end > len(runes) {
-					end = len(runes)
-				}
-				for c := col; c < end; c++ {
-					if _, hasLabel := labelOverlay[Position{Row: row, Col: c}]; hasLabel {
-						break
-					}
-					buf.WriteRune(runes[c])
-				}
-				continue
-			}
-
-			if matchCover[pos] {
-				continue
-			}
-
-			buf.WriteString(colorDim)
-			buf.WriteRune(runes[col])
 		}
 
 		// Use \n\r for proper TTY line wrapping (like tmux-jump).

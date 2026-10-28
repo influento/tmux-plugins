@@ -1,6 +1,14 @@
-# Go binaries
-tmux-warp/tmux-warp
-tmux-warp/tmux-warp-*
+# Build output (make build, make dist)
+/bin/
+/dist/
+
+# Binaries built in place with go build
+/tmux-warp/tmux-warp
+/tmux-agent/tmux-agent
+/tmux-revive/tmux-revive
+
+# Personal Claude Code skills, linked from dotfiles
+/.claude/skills/go-*
 
 # OS
 .DS_Store

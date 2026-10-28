@@ -19,15 +19,22 @@ func run() error {
 	// wrapper's command-prompt. Using a tmux option (not run-shell) means query
 	// characters like $ ; " ` are stored literally and never run through a shell.
 	debugLog("waiting for query from %s", optQuery)
-	query, ok := readOptionValue(optQuery)
+	query, ok, err := readOptionValue(optQuery)
+	if err != nil {
+		return fmt.Errorf("read query: %w", err)
+	}
 	if !ok || query == "" {
 		return nil
 	}
-	tmuxCmd("set-option", "-gu", optQuery) // clear after reading
+	if _, err := tmuxCmd("set-option", "-gu", optQuery); err != nil { // clear after reading
+		debugLog("clear %s: %v", optQuery, err)
+	}
 
 	// Cancel existing copy mode if active.
 	if ps.InCopyMode {
-		tmuxCmd("send-keys", "-X", "-t", ps.PaneID, "cancel")
+		if _, err := tmuxCmd("send-keys", "-X", "-t", ps.PaneID, "cancel"); err != nil {
+			debugLog("cancel copy mode: %v", err)
+		}
 	}
 
 	// Capture pane content.
@@ -75,7 +82,9 @@ func runOverlayLoop(renderer *Renderer, ps *PaneState, content []string, query s
 	cleanup := func() {
 		if ps.AlternateScreen {
 			renderer.write(colorRst + "\x1b[2J")
-			renderer.write(savedScreen)
+			// Raw-mode programs turn off output processing, so a bare \n
+			// would not return to column 0.
+			renderer.write(strings.ReplaceAll(savedScreen, "\n", "\r\n"))
 			renderer.write(fmt.Sprintf("\x1b[%d;%dH", ps.CursorY+1, ps.CursorX+1))
 			renderer.write(colorRst)
 		} else {
@@ -99,7 +108,11 @@ func runOverlayLoop(renderer *Renderer, ps *PaneState, content []string, query s
 	// Collect label chars one at a time, up to the max label length.
 	var label string
 	for len(label) < maxLabelLen {
-		ch, ok := promptChar("label:")
+		ch, ok, err := promptChar("label:")
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("label prompt: %w", err)
+		}
 		if !ok {
 			cleanup()
 			debugLog("label prompt timeout/cancel")

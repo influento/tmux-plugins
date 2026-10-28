@@ -1,42 +1,63 @@
 name: CI
 
+# One job in an Arch Linux container, so the tests run against the tmux the
+# workstations run (ubuntu-latest ships an older one), and the release is
+# built by the same toolchain the tests just ran. The official image is
+# amd64 only; the arm64 binaries are cross-compiled and never run here.
+#
+# Every push and pull request runs vet and the tests. A v* tag, pushed by
+# `make release`, also builds the assets and publishes the release.
+
 on:
   push:
     branches: ['**']
+    tags: ['v*']
   pull_request:
 
+permissions:
+  contents: write
+
+env:
+  # The dotfiles commit whose bash scripts the characterization tests run.
+  # It stays valid after the cutover deletes the scripts from dotfiles.
+  DOTFILES_REF: e4fa368842a1330d174f8270b29cb380719ef4db
+
 jobs:
-  build:
+  test-and-release:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
+    container: archlinux:base-devel
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tmux-warp/go.mod
-
-      - name: Vet
+      - name: Install packages
         run: |
-          cd tmux-warp
-          go vet ./...
+          pacman -Syu --noconfirm --needed go tmux git fzf zsh python util-linux
+          tmux -V
+          go version
 
-      - name: Build
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: influento/dotfiles
+          ref: ${{ env.DOTFILES_REF }}
+          path: .dotfiles
+
+      # As a normal user: root skews file-mode and lock tests.
+      - name: Vet and test
+        run: |
+          useradd -m tester
+          chown -R tester: "$GITHUB_WORKSPACE"
+          su tester -c 'cd "$GITHUB_WORKSPACE" && make test DOTFILES="$GITHUB_WORKSPACE/.dotfiles" TMUXTEST_REQUIRE=1'
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
-        run: |
-          cd tmux-warp
-          go build -ldflags "-s -w" -o tmux-warp-${{ matrix.goos }}-${{ matrix.goarch }} .
+          TMUXTEST_REQUIRE: '1'
 
-      - uses: actions/upload-artifact@v4
+      - name: Build release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: su tester -c 'cd "$GITHUB_WORKSPACE" && make dist VERSION="${{ github.ref_name }}"'
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          name: tmux-warp-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: tmux-warp/tmux-warp-${{ matrix.goos }}-${{ matrix.goarch }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
