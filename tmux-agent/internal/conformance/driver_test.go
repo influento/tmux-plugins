@@ -104,18 +104,15 @@ type Driver interface {
 	KnownBug(name string) string
 }
 
-// drivers returns the implementations to check. The bash scripts need a
-// dotfiles checkout; the Go driver joins in P0 step 2.
+// drivers returns the implementations to check: tmux-agent always, and the
+// bash scripts when there is a dotfiles checkout.
 func drivers(t *testing.T) []Driver {
 	t.Helper()
-	var ds []Driver
+	ds := []Driver{&goDriver{}}
 	if dir := os.Getenv("TMUX_PLUGINS_DOTFILES"); dir != "" {
 		ds = append(ds, &bashDriver{dotfiles: dir})
 	} else if os.Getenv("TMUXTEST_REQUIRE") != "" {
 		t.Fatal("TMUX_PLUGINS_DOTFILES is not set (TMUXTEST_REQUIRE is)")
-	}
-	if len(ds) == 0 {
-		t.Skip("no implementation to check: set TMUX_PLUGINS_DOTFILES for the bash scripts")
 	}
 	return ds
 }

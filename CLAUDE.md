@@ -139,11 +139,32 @@ created with mode `0600` and `O_NOFOLLOW`; override the path with
 `TMUX_WARP_LOG`. Shows pane state, chars received, match counts, jump steps.
 Check this first when debugging.
 
-## Plugins: tmux-agent and tmux-revive
+## Plugin: tmux-agent
 
-Being built in P0. Step 1 (this layout, CI, harness, characterization
-tests) is done; step 2, the tmux-agent port, is next. Their `main.go` only
-answers `--version` so far. Rules already fixed for them:
+Shows what each agent pane needs (flags, status counts, pickers, jump,
+notifications) and starts agents through one launcher, `tmux-agent run`.
+Ported from dotfiles' tmux-attention and claude-tmux in P0 step 2.
+`tmux-agent --help` lists the subcommands.
+
+Packages in `tmux-agent/internal/`:
+
+- `attention`: the core. Flags in the `@attention*` pane options, status
+  counts, sweep, list, borders, jump, notifications. Knows no agent.
+- `agent`: the agent layer. Neutral events, the hook handler, the launcher,
+  the nested-agent rule, the title sweep. Knows no particular agent.
+- `agent/claude`: the Claude Code adapter: hook mapping, one-shot and resume
+  arguments, the window title from the first prompt.
+- `store`: one JSON record per session in
+  `$XDG_STATE_HOME/tmux-agent/sessions/<agent>/<id>.json` (mode 0600, never
+  deleted), and the lock.
+- `ui`: fzf, notify-send, swaymsg. `cli`: the subcommands, wiring the rest.
+- `selftest`: lets a test binary stand in for tmux-agent.
+- `conformance`: one suite, two drivers: the Go code, and dotfiles' bash
+  scripts (characterization). `contract`: the launcher in a real pane with
+  a stub agent: exit codes, signals, Ctrl-C, Ctrl-Z, one-shot, resume,
+  nested agents.
+
+Rules:
 
 - `tmux-agent hook <agent>` prints nothing on stdout (Claude Code adds hook
   stdout to the model's context), recovers panics and exits 0 (exit 2 from
@@ -152,6 +173,34 @@ answers `--version` so far. Rules already fixed for them:
 - tmux-init sets hooks only at a fixed index: `[10]` tmux-agent, `[20]`
   tmux-revive. Never `set-hook -u` without an index: it clears the whole
   array.
+- A pane's live record is in pane options (`@agent*`, and `@revive_cmd` for
+  tmux-revive); the window title an agent set is `@agent_title`.
+- A client has focus when `#{client_flags}` contains `focused`; tmux 3.8 has
+  no `client_focused`.
+- The launcher re-execs itself with the agent's name as argv[0]: tmux names
+  a pane after the argv[0] of the terminal's foreground process group
+  leader. It catches Ctrl-C and Ctrl-\, passes SIGTERM and SIGHUP on, stops
+  itself when the agent stops itself (Ctrl-Z in a TUI), and dies from the
+  agent's signal.
+- A hook counts for a run only when its nearest agent process is the run's
+  own; a launcher started inside an agent runs the agent in its place.
+- A one-shot run (`claude -p`) is flagged working at launch and done or
+  failed at exit by the launcher; its own hooks only name the session.
+- A non-zero exit is a done flag with reason `failed: <cause>`, not a state
+  of its own.
+- A conformance case's expectation changes only after you show that the
+  bash script behaves differently.
+- In tests, the sandbox runs the test binary as tmux-agent
+  (`selftest.Install`). Under `-race` those runs skip the race runtime's 1 s
+  sleep at exit (`GORACE=atexit_sleep_ms=0`), and any race they report
+  fails the test.
+
+## Plugin: tmux-revive
+
+P0 step 3. Its `main.go` only answers `--version` so far. Rules already
+fixed:
+
+- tmux-init sets its hooks only at `[20]` (see above).
 - A tmux-revive save that cannot reach the server, or finds no sessions,
   writes nothing: `kill-server` runs `session-closed` hooks as the server
   goes down. There is no `after-kill-session` hook in tmux 3.8.
@@ -173,7 +222,10 @@ tmux.conf binds: `bind s run-shell '~/.local/bin/tmux-warp.sh'`
 - Before you write or change Go code, load the Go skill that fits the task with the Skill tool: go-fundamentals (types, naming, design), go-reliability (errors, concurrency, context, tests), go-infra (database, security, performance), go-tooling (CLI, linting, dependencies, Go versions).
 - tmux calls go through `internal/tmux`, which puts a timeout on each. The
   one exception is tmux-warp's label `command-prompt`, which holds its client
-  until answered and is started without waiting.
+  until answered and is started without waiting. `Option` returns ok=false
+  only for an unset `@option`; any other failure is an error. An argument
+  that ends in `;` is escaped, since tmux reads it as a command separator;
+  only a lone `;` separates commands.
 
 ### Shell scripts
 - All scripts use `#!/usr/bin/env bash` shebang

@@ -124,6 +124,10 @@ func isUnsetOption(err error) bool {
 	return ok && exit.ExitCode() == 1 && strings.HasPrefix(te.Stderr, "invalid option: ")
 }
 
+// argv is the tmux command line for args. An argument that is exactly ";"
+// separates commands. tmux also takes a trailing ";" on any other argument as
+// a separator and drops it, so a value such as a flag reason "x;" would lose
+// its semicolon; argv escapes it, and tmux stores it as given.
 func (c *Client) argv(args []string) []string {
 	var argv []string
 	if c.Socket != "" {
@@ -132,5 +136,11 @@ func (c *Client) argv(args []string) []string {
 	if c.Config != "" {
 		argv = append(argv, "-f", c.Config)
 	}
-	return append(argv, args...)
+	for _, a := range args {
+		if a != ";" && strings.HasSuffix(a, ";") {
+			a = a[:len(a)-1] + `\;`
+		}
+		argv = append(argv, a)
+	}
+	return argv
 }

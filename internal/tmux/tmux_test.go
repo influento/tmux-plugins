@@ -36,6 +36,28 @@ func TestOption(t *testing.T) {
 	}
 }
 
+// Values keep a trailing semicolon, which tmux would otherwise read as a
+// command separator; a lone ";" still separates commands.
+func TestTrailingSemicolonIsLiteral(t *testing.T) {
+	srv := tmuxtest.Start(t, tmuxtest.Options{})
+	ctx := context.Background()
+	c := srv.Client
+	for _, v := range []string{"a;", `a\;`, "a;;", "question: why;"} {
+		if _, err := c.Run(ctx, "set-option", "-g", "@x", v); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, err := c.Option(ctx, "-g", "", "@x"); err != nil || got != v {
+			t.Errorf("stored %q, read back %q (%v)", v, got, err)
+		}
+	}
+	if _, err := c.Run(ctx, "set-option", "-g", "@a", "1", ";", "set-option", "-g", "@b", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.Display(ctx, "", "#{@a}#{@b}"); err != nil || got != "12" {
+		t.Errorf("two commands: %q (%v), want 12", got, err)
+	}
+}
+
 func TestDisplay(t *testing.T) {
 	srv := tmuxtest.Start(t, tmuxtest.Options{Session: "s1"})
 	got, err := srv.Client.Display(context.Background(), "s1", "#{session_name}:#{window_index}")

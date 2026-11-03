@@ -3,7 +3,8 @@
 //
 // Each case runs on a private tmux server through a Driver, one per
 // implementation. The bash driver runs the scripts from the dotfiles checkout
-// named by TMUX_PLUGINS_DOTFILES; the Go driver runs the tmux-agent binary.
+// named by TMUX_PLUGINS_DOTFILES; the Go driver runs tmux-agent (the test
+// binary itself, through package selftest).
 // Commands, the title option and the record format may differ between the
 // two; the drivers translate, and the cases check only what a user sees:
 // flags, counts, names, notifications, and whether a conversation would

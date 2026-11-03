@@ -212,9 +212,20 @@ func TestListOrderAndDetails(t *testing.T) {
 		e.setAge(t, needsOld, 2*time.Hour)
 		e.setAge(t, needsNew, 90*time.Second)
 		e.setAge(t, done, 3*24*time.Hour)
+		set := time.Now()
 		e.setAge(t, working, 5*time.Second)
 
 		rows := e.d.List(t, e.Server)
+		// The list reads the clock after setAge did: the seconds that passed
+		// in between count too.
+		workingAge := "5s"
+		for _, r := range rows {
+			for k := range int(time.Since(set)/time.Second) + 2 {
+				if r.Pane == working && r.Age == fmt.Sprintf("%ds", 5+k) {
+					workingAge = r.Age
+				}
+			}
+		}
 		var got []string
 		for _, r := range rows {
 			if strings.HasPrefix(r.Target, "ov-") {
@@ -226,7 +237,7 @@ func TestListOrderAndDetails(t *testing.T) {
 			fmt.Sprintf("0 %s ? needs-you 2h", needsOld),
 			fmt.Sprintf("0 %s ? Bash(make) 1m", needsNew),
 			fmt.Sprintf("1 %s ✓ turn ended 3d", done),
-			fmt.Sprintf("2 %s ● working 5s", working),
+			fmt.Sprintf("2 %s ● working %s", working, workingAge),
 			fmt.Sprintf("3 %s   idle · fix the tests -", idle),
 			fmt.Sprintf("3 %s   flag dropped · working · claude exited -", gone),
 			fmt.Sprintf("4 %s   sh -", shell),
