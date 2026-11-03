@@ -186,6 +186,11 @@ Rules:
   own; a launcher started inside an agent runs the agent in its place.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
+- tmux-agent draws the flags: every change sets `@attention_mark` on the
+  pane and `@attention_win_mark` on its window (the window shows its
+  best-ranked pane), a ready-to-print glyph in its `@attention_fg_*` colour,
+  or nothing. `tmux-init` redraws every mark and the counts, so prefix r
+  applies new colours.
 - A non-zero exit is a done flag with reason `failed: <cause>` and the pane
   option `@attention_failed`; its window gets `@attention_win_failed`. It
   still behaves as done (seen clears it, it ranks as done) but shows a ✗ in
@@ -219,13 +224,13 @@ and checks them against `SHA256SUMS`. (Until the P0 cutover it still follows
 `<tag>/tmux-warp/tmux-warp.sh`, which therefore stays at that path.)
 tmux.conf binds: `bind s run-shell '~/.local/bin/tmux-warp.sh'`
 
-tmux-agent writes options; dotfiles' tmux.conf draws them. tmux-agent
-renders `@attention_status` (the counts) itself. The pane border and the
-window list are formats in tmux.conf that read `@attention` (pane) and
-`@attention_win` (window), with `@attention_fg_*` for colours. At the
-cutover these formats need a case for a failed done: `@attention_failed`
-(pane) and `@attention_win_failed` (window) mean ✗ in `@attention_fg_failed`
-in place of ✓.
+tmux-agent renders what tmux.conf prints: `@attention_status` (the counts)
+in the status line, `@attention_mark` in the pane border and
+`@attention_win_mark` in the window list. tmux.conf only sets the colours
+(`@attention_fg_needs_you`, `_done`, `_failed`, `_working`, `_dim`) and
+places the three options. Until the cutover, dotfiles' formats still build
+the glyphs from `@attention` and `@attention_win` (they draw a failed run as
+a plain ✓); at the cutover they print the marks instead.
 
 ## Code Conventions
 
@@ -238,7 +243,10 @@ in place of ✓.
   until answered and is started without waiting. `Option` returns ok=false
   only for an unset `@option`; any other failure is an error. An argument
   that ends in `;` is escaped, since tmux reads it as a command separator;
-  only a lone `;` separates commands.
+  only a lone `;` separates commands. tmux 3.8 refuses a command line over
+  about 16 KiB or 1,000 arguments ("command too long"): a list that grows
+  with the number of panes or windows goes in batches (attention's
+  `runAll`).
 
 ### Shell scripts
 - All scripts use `#!/usr/bin/env bash` shebang

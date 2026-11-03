@@ -494,8 +494,8 @@ var tmuxHooks = []struct{ event, command string }{
 }
 
 // tmuxInit sets tmux-agent's hooks at its own index, so prefix r leaves no
-// duplicates and tmux-revive's index stays untouched, then renders the
-// counts.
+// duplicates and tmux-revive's index stays untouched, then draws every
+// mark and the counts in the theme's colours now.
 func (a *app) tmuxInit(ctx context.Context) error {
 	var args []string
 	for _, h := range tmuxHooks {
@@ -508,7 +508,7 @@ func (a *app) tmuxInit(ctx context.Context) error {
 	if _, err := a.tmux.Run(ctx, args...); err != nil {
 		return err
 	}
-	return a.core.Status(ctx)
+	return a.core.Redraw(ctx)
 }
 
 // TmuxHookEvents lists the events tmux-init sets, for tests.

@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -168,12 +169,100 @@ func (c *Core) read(ctx context.Context, pane string) (st State, reason string, 
 	return State(f[0]), f[1], f[2] == "1", nil
 }
 
-// failedArgs sets or unsets a pane's failed mark, ending with a separator.
-func failedArgs(pane string, failed bool) []string {
-	if failed {
-		return []string{"set-option", "-p", "-t", pane, "@attention_failed", "1", ";"}
+// Mark is what a tmux format draws for a flag: its glyph in its colour and
+// a space, or nothing for idle. Every pane keeps its own in @attention_mark
+// and every window its roll-up's in @attention_win_mark, so tmux.conf draws
+// the flags without knowing them.
+func Mark(s State, failed bool, col Colours) string {
+	glyph, colour := s.Glyph(), ""
+	switch {
+	case s == Done && failed:
+		glyph, colour = FailedGlyph, col.Failed
+	case s == Done:
+		colour = col.Done
+	case s == NeedsYou:
+		colour = col.NeedsYou
+	case s == Working:
+		colour = col.Working
+	default:
+		return ""
 	}
-	return []string{"set-option", "-pu", "-t", pane, "@attention_failed", ";"}
+	return "#[fg=" + colour + "]" + glyph + " "
+}
+
+// optArgs sets an option at scope (-p or -w), or unsets it when value is
+// empty. Like every *Args helper it ends with a separator; runAll drops the
+// last one.
+func optArgs(scope, target, name, value string) []string {
+	if value == "" {
+		return []string{"set-option", scope + "u", "-t", target, name, ";"}
+	}
+	return []string{"set-option", scope, "-t", target, name, value, ";"}
+}
+
+func one(b bool) string {
+	if b {
+		return "1"
+	}
+	return ""
+}
+
+// markArgs sets a pane's failed mark and its drawn mark for a flag.
+func markArgs(pane string, s State, failed bool, col Colours) []string {
+	return append(optArgs("-p", pane, "@attention_failed", one(failed)),
+		optArgs("-p", pane, "@attention_mark", Mark(s, failed, col))...)
+}
+
+// tmux refuses a command line over about 16 KiB or 1,000 arguments
+// ("command too long"); runAll sends batches well under both.
+const (
+	batchBytes = 8 << 10
+	batchArgs  = 400
+)
+
+// runAll runs commands built by the *Args helpers, as few tmux calls as
+// tmux accepts. It stops at the first call that fails.
+func (c *Core) runAll(ctx context.Context, args []string) error {
+	var batch []string
+	size := 0
+	for _, cmd := range commands(args) {
+		n := len(cmd)
+		for _, a := range cmd {
+			n += len(a)
+		}
+		if len(batch) > 0 && (size+n > batchBytes || len(batch)+len(cmd) >= batchArgs) {
+			if _, err := c.Tmux.Run(ctx, batch...); err != nil {
+				return err
+			}
+			batch, size = nil, 0
+		}
+		if len(batch) > 0 {
+			batch = append(batch, ";")
+		}
+		batch = append(batch, cmd...)
+		size += n + 2
+	}
+	if len(batch) == 0 {
+		return nil
+	}
+	_, err := c.Tmux.Run(ctx, batch...)
+	return err
+}
+
+// commands splits args at each lone ";", as tmux does.
+func commands(args []string) [][]string {
+	var cmds [][]string
+	for len(args) > 0 {
+		i := slices.Index(args, ";")
+		if i < 0 {
+			i = len(args)
+		}
+		if i > 0 {
+			cmds = append(cmds, args[:i])
+		}
+		args = args[min(i+1, len(args)):]
+	}
+	return cmds
 }
 
 // Set flags the pane. It returns the state before, and whether the state
@@ -194,12 +283,17 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 		if reason == f.Reason && failed == f.Failed {
 			return cur, false, nil
 		}
-		args := append(failedArgs(pane, f.Failed), "set-option", "-p", "-t", pane, "@attention_reason", f.Reason)
-		if _, err := c.Tmux.Run(ctx, args...); err != nil || failed == f.Failed {
+		args := []string{"set-option", "-p", "-t", pane, "@attention_reason", f.Reason}
+		if failed == f.Failed {
+			_, err := c.Tmux.Run(ctx, args...)
 			return cur, false, err
 		}
-		// The mark changed, and with it the window's mark and the counts.
-		if err := c.rollUp(ctx, pane); err != nil {
+		// The failed mark changed, and with it the window's and the counts.
+		col := c.colours(ctx)
+		if err := c.runAll(ctx, append(markArgs(pane, f.State, f.Failed, col), args...)); err != nil {
+			return cur, false, err
+		}
+		if err := c.rollUp(ctx, pane, col); err != nil {
 			return cur, false, err
 		}
 		return cur, false, c.Status(ctx)
@@ -211,7 +305,8 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 		"set-option", "-p", "-t", pane, "@attention_at", at, ";",
 		"set-option", "-pu", "-t", pane, "@attention_gone", ";",
 	}
-	args = append(args, failedArgs(pane, f.Failed)...)
+	col := c.colours(ctx)
+	args = append(args, markArgs(pane, f.State, f.Failed, col)...)
 	if f.Owner != "" {
 		args = append(args, "set-option", "-p", "-t", pane, "@attention_owner", f.Owner)
 	} else {
@@ -220,7 +315,7 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 	if _, err := c.Tmux.Run(ctx, args...); err != nil {
 		return cur, false, err
 	}
-	if err := c.rollUp(ctx, pane); err != nil {
+	if err := c.rollUp(ctx, pane, col); err != nil {
 		return cur, true, err
 	}
 	if err := c.Status(ctx); err != nil {
@@ -235,7 +330,7 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 // unflagArgs unsets a pane's flag options.
 func unflagArgs(pane string) []string {
 	var args []string
-	for _, o := range []string{"@attention", "@attention_reason", "@attention_at", "@attention_owner", "@attention_failed"} {
+	for _, o := range []string{"@attention", "@attention_reason", "@attention_at", "@attention_owner", "@attention_failed", "@attention_mark"} {
 		args = append(args, "set-option", "-pu", "-t", pane, o, ";")
 	}
 	return args
@@ -251,7 +346,7 @@ func (c *Core) Clear(ctx context.Context, pane string) error {
 	if _, err := c.Tmux.Run(ctx, args...); err != nil {
 		return err
 	}
-	if err := c.rollUp(ctx, pane); err != nil {
+	if err := c.rollUp(ctx, pane, c.colours(ctx)); err != nil {
 		return err
 	}
 	return c.Status(ctx)
@@ -276,16 +371,24 @@ func (c *Core) Seen(ctx context.Context, pane string) error {
 	return c.Clear(ctx, pane)
 }
 
-// rollUp sets the window's flag to the highest-ranked flag of its panes,
-// and marks it failed when that flag is done and one of its done panes
-// failed.
-func (c *Core) rollUp(ctx context.Context, pane string) error {
-	out, err := c.Tmux.Output(ctx, "list-panes", "-t", pane, "-F", "#{@attention}"+sep+"#{@attention_failed}")
+// paneFlags is the format rollUpArgs reads, one line per pane.
+const paneFlags = "#{@attention}" + sep + "#{@attention_failed}"
+
+// rollUp sets the flag of the window that holds pane from its panes' flags.
+func (c *Core) rollUp(ctx context.Context, pane string, col Colours) error {
+	out, err := c.Tmux.Output(ctx, "list-panes", "-t", pane, "-F", paneFlags)
 	if err != nil {
 		return err
 	}
+	return c.runAll(ctx, rollUpArgs(pane, lines(out), col))
+}
+
+// rollUpArgs sets a window's flag to the highest-ranked flag of its panes
+// (paneFlags lines), marks it failed when that flag is done and one of its
+// done panes failed, and sets its drawn mark.
+func rollUpArgs(window string, panes []string, col Colours) []string {
 	best, failed := Idle, false
-	for _, l := range lines(out) {
+	for _, l := range panes {
 		f := split(l, 2)
 		st := State(f[0])
 		if st != Idle && st.Rank() < best.Rank() {
@@ -293,17 +396,41 @@ func (c *Core) rollUp(ctx context.Context, pane string) error {
 		}
 		failed = failed || (st == Done && f[1] == "1")
 	}
-	args := []string{"set-option", "-wu", "-t", pane, "@attention_win", ";"}
-	if best != Idle {
-		args = []string{"set-option", "-w", "-t", pane, "@attention_win", string(best), ";"}
+	failed = failed && best == Done
+	return slices.Concat(
+		optArgs("-w", window, "@attention_win", string(best)),
+		optArgs("-w", window, "@attention_win_failed", one(failed)),
+		optArgs("-w", window, "@attention_win_mark", Mark(best, failed, col)),
+	)
+}
+
+// Redraw draws every pane's and window's mark again, in the theme's
+// colours now. A mark keeps the colours it was drawn in, so tmux-init runs
+// this when the config is loaded.
+func (c *Core) Redraw(ctx context.Context) error {
+	col := c.colours(ctx)
+	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", "#{window_id}"+sep+"#{pane_id}"+sep+paneFlags)
+	if err != nil {
+		return err
 	}
-	if best == Done && failed {
-		args = append(args, "set-option", "-w", "-t", pane, "@attention_win_failed", "1")
-	} else {
-		args = append(args, "set-option", "-wu", "-t", pane, "@attention_win_failed")
+	var args, windows []string
+	panes := map[string][]string{}
+	for _, l := range lines(out) {
+		f := split(l, 4)
+		win, pane, st := f[0], f[1], State(f[2])
+		args = append(args, optArgs("-p", pane, "@attention_mark", Mark(st, st == Done && f[3] == "1", col))...)
+		if _, ok := panes[win]; !ok {
+			windows = append(windows, win)
+		}
+		panes[win] = append(panes[win], f[2]+sep+f[3])
 	}
-	_, err = c.Tmux.Run(ctx, args...)
-	return err
+	for _, w := range windows {
+		args = append(args, rollUpArgs(w, panes[w], col)...)
+	}
+	if err := c.runAll(ctx, args); err != nil && !isGone(err) {
+		return err
+	}
+	return c.Status(ctx)
 }
 
 // Sweep drops every flag whose owner is no longer the pane's command and
@@ -315,6 +442,7 @@ func (c *Core) Sweep(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	dropped := false
+	var col *Colours
 	for _, l := range lines(out) {
 		f := split(l, 4)
 		id, st, owner, cmd := f[0], f[1], f[2], f[3]
@@ -328,7 +456,11 @@ func (c *Core) Sweep(ctx context.Context) (bool, error) {
 			}
 			return dropped, err
 		}
-		if err := c.rollUp(ctx, id); err != nil && !isGone(err) {
+		if col == nil {
+			cc := c.colours(ctx)
+			col = &cc
+		}
+		if err := c.rollUp(ctx, id, *col); err != nil && !isGone(err) {
 			return true, err
 		}
 		dropped = true

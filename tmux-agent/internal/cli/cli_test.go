@@ -23,10 +23,16 @@ func run(t *testing.T, args ...string) (stdout string, code int) {
 
 // tmux-init sets one hook per event at [10], and running it again replaces
 // them: no duplicates, and other indexes, such as tmux-revive's [20] and the
-// user's own, stay.
+// user's own, stay. It also redraws the marks in the theme's colours, as
+// after prefix r with new colours.
 func TestTmuxInit(t *testing.T) {
 	s := tmuxtest.Start(t, tmuxtest.Options{Session: "proj-a"})
-	s.InPane(t, s.Display(t, "proj-a:0.0", "#{pane_id}"))
+	pane := s.Display(t, "proj-a:0.0", "#{pane_id}")
+	s.InPane(t, pane)
+	if _, code := run(t, "flag", "done", "--failed"); code != 0 {
+		t.Fatalf("flag exit = %d", code)
+	}
+	s.MustTmux(t, "set-option", "-g", "@attention_fg_failed", "#aa0000")
 	s.MustTmux(t, "set-hook", "-g", "pane-focus-in[0]", "display-message mine")
 	s.MustTmux(t, "set-hook", "-g", "pane-focus-in[20]", "display-message revive")
 	for range 2 {
@@ -55,6 +61,10 @@ func TestTmuxInit(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("pane-focus-in hooks = %q, want %q kept", out, want)
 		}
+	}
+	marks := s.Display(t, pane, "#{@attention_mark}|#{@attention_win_mark}")
+	if want := "#[fg=#aa0000]✗ |#[fg=#aa0000]✗ "; marks != want {
+		t.Errorf("marks after tmux-init = %q, want %q", marks, want)
 	}
 }
 

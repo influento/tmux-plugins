@@ -176,3 +176,45 @@ func TestRenderSessionRows(t *testing.T) {
 			NeedsYou.Rank(), Done.Rank(), Done.Rank())
 	}
 }
+
+func TestMark(t *testing.T) {
+	col := Colours{NeedsYou: "red", Done: "green", Failed: "maroon", Working: "blue"}
+	for _, c := range []struct {
+		s      State
+		failed bool
+		want   string
+	}{
+		{NeedsYou, false, "#[fg=red]? "},
+		{Working, false, "#[fg=blue]● "},
+		{Done, false, "#[fg=green]✓ "},
+		{Done, true, "#[fg=maroon]✗ "},
+		{Working, true, "#[fg=blue]● "},
+		{Idle, false, ""},
+		{Idle, true, ""},
+	} {
+		if got := Mark(c.s, c.failed, col); got != c.want {
+			t.Errorf("Mark(%s, %v) = %q, want %q", c.s, c.failed, got, c.want)
+		}
+	}
+}
+
+func TestCommands(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   []string
+		want [][]string
+	}{
+		{"none", nil, nil},
+		{"one", []string{"a", "b"}, [][]string{{"a", "b"}}},
+		{"trailing separator", []string{"a", ";"}, [][]string{{"a"}}},
+		{"two, empty between", []string{"a", ";", ";", "b", "c", ";"}, [][]string{{"a"}, {"b", "c"}}},
+		{"escaped semicolon is an argument", []string{"a", "b;", ";", "c"}, [][]string{{"a", "b;"}, {"c"}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := commands(c.in)
+			if !slices.EqualFunc(got, c.want, slices.Equal) {
+				t.Errorf("commands(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
