@@ -67,7 +67,16 @@ func newEnv(t *testing.T, config string) *env {
 		tmux:    &tmux.Client{Socket: filepath.Join(sockDir, "default"), Env: sb.Environ()},
 		store:   &snapshot.Store{Dir: filepath.Join(sb.StateHome, "tmux-revive")},
 	}
-	t.Cleanup(func() { e.tmux.Run(context.Background(), "kill-server") })
+	t.Cleanup(func() {
+		e.tmux.Run(context.Background(), "kill-server")
+		// Saves that hooks started may still be writing into the sandbox,
+		// which is removed next.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := revive.WaitIdle(ctx, filepath.Join(sb.RuntimeDir, "tmux-revive")); err != nil {
+			t.Errorf("saves still running after the test: %v", err)
+		}
+	})
 	return e
 }
 

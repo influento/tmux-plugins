@@ -26,6 +26,13 @@ type Driver interface {
 	Restores(t *testing.T, sb *tmuxtest.Sandbox) int
 }
 
+// settler is a driver whose programs may go on writing into the sandbox
+// after a test, such as saves that hooks started. Settle waits for them,
+// once the server is gone, so they do not race the sandbox's removal.
+type settler interface {
+	Settle(t *testing.T, sb *tmuxtest.Sandbox)
+}
+
 // drivers are the implementations to check: tmux-revive always, and the
 // bash script when a dotfiles checkout is named.
 func drivers(t *testing.T) []Driver {
@@ -65,7 +72,12 @@ func each(t *testing.T, fn func(t *testing.T, e *env)) {
 				d:       d,
 				server:  &tmux.Client{Socket: filepath.Join(sockDir, "default"), Env: sb.Environ()},
 			}
-			t.Cleanup(func() { e.server.Run(context.Background(), "kill-server") })
+			t.Cleanup(func() {
+				e.server.Run(context.Background(), "kill-server")
+				if s, ok := d.(settler); ok {
+					s.Settle(t, sb)
+				}
+			})
 			fn(t, e)
 		})
 	}

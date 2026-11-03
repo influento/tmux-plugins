@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
+	"github.com/influento/tmux-plugins/tmux-revive/internal/revive"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/selftest"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/snapshot"
 )
@@ -60,6 +62,17 @@ func (d *goDriver) Saved(t *testing.T, sb *tmuxtest.Sandbox, sessions ...string)
 }
 
 func (d *goDriver) Command() string { return "exec tmux-revive attach" }
+
+// Settle waits for the saves that hooks started: the client's attach
+// starts one, which can still be writing a snapshot as the test ends.
+func (d *goDriver) Settle(t *testing.T, sb *tmuxtest.Sandbox) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := revive.WaitIdle(ctx, filepath.Join(sb.RuntimeDir, "tmux-revive")); err != nil {
+		t.Errorf("saves still running after the test: %v", err)
+	}
+}
 
 // Restores counts the restores in tmux-revive's log.
 func (d *goDriver) Restores(t *testing.T, sb *tmuxtest.Sandbox) int {
