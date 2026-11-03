@@ -4,11 +4,18 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
+
+	"github.com/influento/tmux-plugins/internal/lockfile"
 )
 
 // fallbackSession is where a terminal lands on a server with no work in
 // it.
 const fallbackSession = "main"
+
+// afterRestore is the time the steps after a restore get, whatever time
+// the restore itself used.
+const afterRestore = 30 * time.Second
 
 // Attach is the terminal's entry point, run before a client attaches. It
 // restores the newest snapshot once per server, before any shell exists,
@@ -23,7 +30,7 @@ const fallbackSession = "main"
 //   - the terminal lands on the session used last, never on one matching
 //     @skip_sessions, and on main when there is nothing else.
 func (r *Reviver) Attach(ctx context.Context) (string, error) {
-	unlock, err := lock(ctx, r.lockPath("attach"))
+	unlock, err := lockfile.Lock(ctx, r.lockPath("attach"))
 	if err != nil {
 		return "", err
 	}
@@ -40,6 +47,11 @@ func (r *Reviver) Attach(ctx context.Context) (string, error) {
 			rep, err := r.restoreLatest(ctx)
 			errs = append(errs, err)
 			target = rep.Target
+			// Typing may have used up ctx. What is left must still run, or
+			// the terminal lands on a new main beside the restored sessions.
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), afterRestore)
+			defer cancel()
 		}
 		if err := r.markReady(ctx); err != nil && !errors.Is(err, errNoServer) {
 			errs = append(errs, err)

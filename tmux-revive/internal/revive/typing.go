@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Timing of typing into restored shells. Shells in restored panes start
@@ -25,7 +26,10 @@ const (
 	pollEvery    = 40 * time.Millisecond
 )
 
-var errNotTyped = errors.New("the shell never showed the typed command")
+var (
+	errNotTyped = errors.New("the shell never showed the typed command")
+	errControl  = errors.New("the command holds a newline or another control character")
+)
 
 // typeAll types each task's command into its pane, several panes at once.
 // It returns how many were typed, and the labels of those that were not.
@@ -65,6 +69,11 @@ type cursor struct {
 // Enter is pressed only after the whole text shows on the prompt line, so
 // a command whose text the shell dropped is typed again, never run twice.
 func (r *Reviver) typeInto(ctx context.Context, pane, text, shell string) error {
+	// The shell acts on a control character as it arrives: a newline runs
+	// the text before it before the check below, and again on each retry.
+	if strings.ContainsFunc(text, unicode.IsControl) {
+		return errControl
+	}
 	ctx, cancel := context.WithTimeout(ctx, typeTimeout)
 	defer cancel()
 	for attempt := 1; ; attempt++ {
@@ -92,21 +101,38 @@ func (r *Reviver) typeInto(ctx context.Context, pane, text, shell string) error 
 	}
 }
 
+// stateFormat is the pane's process and cursor, as parseState reads them.
+const stateFormat = "#{pane_pid} #{cursor_x} #{cursor_y} #{history_size}"
+
+func parseState(s string) (pid int, at cursor, err error) {
+	f := strings.Fields(s)
+	if len(f) != 4 {
+		return 0, cursor{}, fmt.Errorf("display-message: unexpected output %q", s)
+	}
+	return atoi(f[0]), cursor{x: atoi(f[1]), y: atoi(f[2]), history: atoi(f[3])}, nil
+}
+
+// paneState reads the pane's process and cursor.
+func (r *Reviver) paneState(ctx context.Context, pane string) (pid int, at cursor, err error) {
+	out, err := r.Tmux.Display(ctx, pane, stateFormat)
+	if err != nil {
+		return 0, cursor{}, err
+	}
+	return parseState(out)
+}
+
 // paneInfo reads the pane's process and cursor, and the visible screen,
 // in one call.
 func (r *Reviver) paneInfo(ctx context.Context, pane string) (pid int, at cursor, screen string, err error) {
 	out, err := r.Tmux.Run(ctx,
-		"display-message", "-p", "-t", pane, "#{pane_pid} #{cursor_x} #{cursor_y} #{history_size}", ";",
+		"display-message", "-p", "-t", pane, stateFormat, ";",
 		"capture-pane", "-p", "-t", pane)
 	if err != nil {
 		return 0, cursor{}, "", err
 	}
 	head, screen, _ := strings.Cut(out, "\n")
-	f := strings.Fields(head)
-	if len(f) != 4 {
-		return 0, cursor{}, "", errors.New("display-message: unexpected output")
-	}
-	return atoi(f[0]), cursor{x: atoi(f[1]), y: atoi(f[2]), history: atoi(f[3])}, screen, nil
+	pid, at, err = parseState(head)
+	return pid, at, screen, err
 }
 
 // waitPrompt waits until a shell is in the pane's foreground and its
@@ -146,7 +172,7 @@ func (r *Reviver) waitEcho(ctx context.Context, pane string, at cursor, text str
 	ctx, cancel := context.WithTimeout(ctx, echoWait)
 	defer cancel()
 	for {
-		_, now, _, err := r.paneInfo(ctx, pane)
+		_, now, err := r.paneState(ctx, pane)
 		if err != nil {
 			return false
 		}
@@ -168,7 +194,7 @@ func (r *Reviver) waitStart(ctx context.Context, pane, shell string) {
 	ctx, cancel := context.WithTimeout(ctx, startWait)
 	defer cancel()
 	for {
-		pid, _, _, err := r.paneInfo(ctx, pane)
+		pid, _, err := r.paneState(ctx, pane)
 		if err != nil || !shellUp(pid, shell) {
 			return
 		}

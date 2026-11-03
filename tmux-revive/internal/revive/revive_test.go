@@ -567,3 +567,112 @@ func TestWaitIdleReturns(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A command with a newline in it is not typed: the shell would run its
+// first line at once, before the check that the text arrived whole, and
+// each retry would run it again.
+func TestCommandWithNewlineIsNotTyped(t *testing.T) {
+	e := newEnv(t, "")
+	e.writeSnapshot(t, []snapshot.Session{oneShell("proj-a", "1", e.Home, "claude one\nclaude two")})
+	out := e.revive(t, "restore")
+	if !strings.Contains(out, "not typed") || !strings.Contains(out, "proj-a:0.0") {
+		t.Errorf("restore said:\n%s", out)
+	}
+	time.Sleep(time.Second) // a run would show by now
+	if c := e.Calls("claude"); len(c) != 0 {
+		t.Errorf("claude ran %d times, want never: %v", len(c), c)
+	}
+}
+
+// One window tmux refuses costs only that window: the windows after it
+// and every split are still made.
+func TestRestoreGoesOnPastARefusedWindow(t *testing.T) {
+	e := newEnv(t, "")
+	two := func(index int, id string) snapshot.Window {
+		return snapshot.Window{Index: index, ID: "w" + id, AutoRename: true, Width: 100, Height: 30, Panes: []snapshot.Pane{
+			{Index: 0, ID: "p" + id + "a", Cwd: e.Home, Active: true},
+			{Index: 1, ID: "p" + id + "b", Cwd: e.Home},
+		}}
+	}
+	refused := two(-1, "2") // tmux: "can't find window: -1"
+	e.writeSnapshot(t, []snapshot.Session{{Name: "proj-a", Windows: []snapshot.Window{two(0, "1"), refused, two(2, "3")}}})
+	out, err := e.Cmd(t, "tmux-revive", "restore").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "create windows") {
+		t.Errorf("restore: err=%v, want the refused window reported:\n%s", err, out)
+	}
+	got := e.mustTmux(t, "list-panes", "-s", "-t", "=proj-a", "-F", "#{window_index} #{@revive_pane}")
+	want := "0 p1a\n0 p1b\n2 p3a\n2 p3b"
+	if got != want {
+		t.Errorf("panes:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A restore whose typing runs past its deadline still marks the server
+// ready: a server left unmarked never saves again.
+func TestRestorePastItsDeadlineMarksReady(t *testing.T) {
+	e := newEnv(t, "")
+	sleeper := filepath.Join(e.Bin, "noprompt")
+	if err := os.WriteFile(sleeper, []byte("#!/bin/sh\nexec sleep 1000\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(e.ConfigHome, "tmux", "tmux.conf")
+	if err := os.WriteFile(conf, []byte(baseConfig+"set -g default-shell "+sleeper+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.writeSnapshot(t, []snapshot.Session{oneShell("proj-a", "1", e.Home, "claude --resume "+sessionUUID)})
+	snap, en := e.latest(t)
+	r := &revive.Reviver{Tmux: e.tmux, Store: e.store, LockDir: filepath.Join(e.RuntimeDir, "tmux-revive"),
+		Stopping: func(context.Context) bool { return false }}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	rep, _ := r.Restore(ctx, snap, en)
+	if len(rep.NotTyped) != 1 {
+		t.Errorf("not typed = %v, want the one pane with no shell", rep.NotTyped)
+	}
+	if got := e.mustTmux(t, "show-options", "-gv", "@revive_ready"); got != "1" {
+		t.Errorf("@revive_ready = %q, want 1", got)
+	}
+}
+
+// A restored pane whose id a live pane already has (the pane moved to
+// another window since) gets no id of its own: two panes with one id
+// would write one scrollback file.
+func TestRestoreKeepsPaneIDsUnique(t *testing.T) {
+	e := newEnv(t, "")
+	e.start(t, "proj-a", e.Home)
+	e.mustTmux(t, "set-option", "-p", "-t", "=proj-a:0.0", "@revive_pane", "pdup")
+	snap := &snapshot.Snapshot{Version: snapshot.Version, Time: time.Now().Add(-time.Hour),
+		Sessions: []snapshot.Session{oneShell("proj-b", "dup", e.Home, "")}}
+	en, err := e.store.Write(snap, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.revive(t, "restore", "--from", filepath.Base(en.Path))
+	e.saveNow(t)
+	got := strings.Split(e.mustTmux(t, "list-panes", "-a", "-F", "#{@revive_pane}"), "\n")
+	slices.Sort(got)
+	if len(got) != 2 || got[0] == got[1] || !slices.Contains(got, "pdup") {
+		t.Errorf("pane ids = %q, want pdup and a new one", got)
+	}
+}
+
+// A pane with nothing above its prompt has no scrollback: the prompt line
+// is not saved, or a restore would show it twice.
+func TestCaptureOfAFreshPaneIsEmpty(t *testing.T) {
+	e := newEnv(t, "")
+	e.start(t, "proj-a", e.Home)
+	e.saveNow(t)
+	id := e.mustTmux(t, "display-message", "-p", "-t", "=proj-a:0.0", "#{@revive_pane}")
+	tmuxtest.WaitFor(t, 10*time.Second, "the prompt", func() bool {
+		out, err := e.tmux.Output(context.Background(), "display-message", "-p", "-t", "=proj-a:0.0", "#{cursor_x}")
+		return err == nil && out != "0"
+	})
+	e.revive(t, "capture")
+	path, err := e.store.ScrollbackPath(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path); err != nil || len(b) != 0 {
+		t.Errorf("scrollback = %q, %v; want an empty file", b, err)
+	}
+}

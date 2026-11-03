@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/revive"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/snapshot"
@@ -447,7 +448,7 @@ func (a *app) scrollbackLoop() error {
 	socket, _, _ := strings.Cut(a.getenv("TMUX"), ",")
 	h := fnv.New64a()
 	h.Write([]byte(socket))
-	unlock, ok, err := revive.TryLock(filepath.Join(a.r.LockDir, fmt.Sprintf("scrollback-%x.lock", h.Sum64())))
+	unlock, ok, err := lockfile.TryLock(filepath.Join(a.r.LockDir, fmt.Sprintf("scrollback-%x.lock", h.Sum64())))
 	if err != nil || !ok {
 		return err
 	}

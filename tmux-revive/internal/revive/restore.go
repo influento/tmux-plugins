@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/lockfile"
+	"github.com/influento/tmux-plugins/internal/shell"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/snapshot"
 )
@@ -38,7 +41,7 @@ type Report struct {
 // started.
 func (r *Reviver) Restore(ctx context.Context, snap *snapshot.Snapshot, from snapshot.Entry) (Report, error) {
 	rep, err := func() (Report, error) {
-		unlock, err := lock(ctx, r.lockPath("save"))
+		unlock, err := lockfile.Lock(ctx, r.lockPath("save"))
 		if err != nil {
 			return Report{From: from}, err
 		}
@@ -53,7 +56,10 @@ func (r *Reviver) Restore(ctx context.Context, snap *snapshot.Snapshot, from sna
 	}()
 	r.logRestore(rep, err)
 	if len(rep.Sessions) > 0 || rep.Windows > 0 {
-		if _, serr := r.Save(ctx, 0); serr != nil {
+		// Typing may have used up ctx; the save after a restore still runs.
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterRestore)
+		defer cancel()
+		if _, serr := r.Save(sctx, 0); serr != nil {
 			err = errors.Join(err, serr)
 		}
 	}
@@ -95,31 +101,31 @@ func (rep Report) Summary() string {
 		fmt.Fprintf(&b, "commands typed: %d\n", rep.Typed)
 	}
 	if len(rep.NotTyped) > 0 {
-		fmt.Fprintf(&b, "not typed (no shell prompt): %s\n", strings.Join(rep.NotTyped, ", "))
+		fmt.Fprintf(&b, "not typed (the log says why): %s\n", strings.Join(rep.NotTyped, ", "))
 	}
 	return b.String()
 }
 
-// liveState is what the running server has, by session name and window id.
+// liveState is what the running server has, by session name and window
+// and pane id.
 type liveState struct {
-	running  bool
 	sessions map[string]map[int]bool // window indexes in use, per session
 	ids      map[string]bool         // @revive_id of every window
+	panes    map[string]bool         // @revive_pane of every pane
 }
 
 func (r *Reviver) readLive(ctx context.Context) (liveState, error) {
-	l := liveState{sessions: map[string]map[int]bool{}, ids: map[string]bool{}}
-	out, err := r.Tmux.Output(ctx, "list-windows", "-a", "-F",
-		"#{session_name}"+sep+"#{window_index}"+sep+"#{"+OptWindowID+"}")
+	l := liveState{sessions: map[string]map[int]bool{}, ids: map[string]bool{}, panes: map[string]bool{}}
+	out, err := r.Tmux.Output(ctx, "list-panes", "-a", "-F",
+		"#{session_name}"+sep+"#{window_index}"+sep+"#{"+OptWindowID+"}"+sep+"#{"+OptPaneID+"}")
 	if err := noServer(err); errors.Is(err, errNoServer) {
 		return l, nil
 	} else if err != nil {
 		return l, err
 	}
-	l.running = true
 	for line := range strings.SplitSeq(out, "\n") {
 		f := strings.Split(line, sep)
-		if len(f) != 3 {
+		if len(f) != 4 {
 			continue
 		}
 		if l.sessions[f[0]] == nil {
@@ -128,6 +134,9 @@ func (r *Reviver) readLive(ctx context.Context) (liveState, error) {
 		l.sessions[f[0]][atoi(f[1])] = true
 		if f[2] != "" {
 			l.ids[f[2]] = true
+		}
+		if f[3] != "" {
+			l.panes[f[3]] = true
 		}
 	}
 	return l, nil
@@ -138,7 +147,9 @@ type restoreWindow struct {
 	session string
 	first   bool // the first window of a new session: new-session makes it
 	w       snapshot.Window
-	panes   []string // tmux pane ids, in the saved order
+	// panes are the tmux pane ids, one per saved pane in its order; "" for
+	// a pane that could not be made. The window exists when panes[0] does.
+	panes []string
 }
 
 // typeTask is a command to type into a restored pane.
@@ -160,7 +171,18 @@ func (r *Reviver) restoreLocked(ctx context.Context, snap *snapshot.Snapshot) (R
 			if len(w.Panes) == 0 || (w.ID != "" && live.ids[w.ID]) {
 				continue
 			}
-			wins = append(wins, &restoreWindow{session: sess.Name, first: first, w: w})
+			// A live pane may hold a saved pane's id: it moved to another
+			// window since. The restored copy gets a new id at the next save,
+			// and no scrollback, so that no two panes write one file.
+			w.Panes = slices.Clone(w.Panes)
+			for i := range w.Panes {
+				if id := w.Panes[i].ID; live.panes[id] {
+					w.Panes[i].ID = ""
+				} else if id != "" {
+					live.panes[id] = true
+				}
+			}
+			wins = append(wins, &restoreWindow{session: sess.Name, first: first, w: w, panes: make([]string, len(w.Panes))})
 			if first {
 				rep.Sessions = append(rep.Sessions, sess.Name)
 				first = false
@@ -171,118 +193,163 @@ func (r *Reviver) restoreLocked(ctx context.Context, snap *snapshot.Snapshot) (R
 		rep.Target = r.target(ctx, snap)
 		return rep, nil
 	}
+	var errs []error
 
 	// New sessions first: the first one starts the server when none runs,
 	// and tmux.conf is loaded before the rest.
-	var args []string
+	var (
+		cmds [][]string
+		made []*restoreWindow
+	)
 	for _, rw := range wins {
 		if !rw.first {
 			continue
 		}
 		p := rw.w.Panes[0]
-		args = append(args, "new-session", "-d", "-s", escapeFormat(rw.session),
-			"-x", strconv.Itoa(max(rw.w.Width, 10)), "-y", strconv.Itoa(max(rw.w.Height, 5)))
-		args = append(args, r.paneArgs(rw.w, p, true)...)
-		args = append(args, "-P", "-F", "#{pane_id} #{window_index}")
-		args = appendCommand(args, r.paneCommand(p))
-		args = append(args, ";")
+		cmd := []string{"new-session", "-d", "-s", escapeFormat(rw.session),
+			"-x", strconv.Itoa(max(rw.w.Width, 10)), "-y", strconv.Itoa(max(rw.w.Height, 5))}
+		cmd = append(cmd, r.paneArgs(rw.w, p, true)...)
+		cmd = append(cmd, "-P", "-F", "#{pane_id} #{window_index}")
+		cmds = append(cmds, appendCommand(cmd, r.paneCommand(p)))
+		made = append(made, rw)
 	}
-	if len(args) > 0 {
-		out, err := r.Tmux.RunAll(ctx, args...)
-		lines := outLines(out)
-		i := 0
-		for _, rw := range wins {
-			if !rw.first || i >= len(lines) {
-				continue
-			}
-			id, idx, _ := strings.Cut(lines[i], " ")
-			rw.panes = []string{id}
-			if live.sessions[rw.session] == nil {
-				live.sessions[rw.session] = map[int]bool{}
-			}
-			live.sessions[rw.session][atoi(idx)] = true
-			i++
+	lines, err := r.create(ctx, cmds)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("create sessions: %w", err))
+	}
+	for i, line := range lines {
+		if line == "" {
+			continue
 		}
-		if err != nil {
-			return r.finish(ctx, snap, wins, rep, fmt.Errorf("create sessions: %w", err))
+		rw := made[i]
+		id, idx, _ := strings.Cut(line, " ")
+		rw.panes[0] = id
+		if live.sessions[rw.session] == nil {
+			live.sessions[rw.session] = map[int]bool{}
 		}
+		live.sessions[rw.session][atoi(idx)] = true
 	}
 
-	// The other windows, each at its saved index when that is free.
-	args = nil
+	// The other windows, each at its saved index when that is free, in the
+	// sessions that exist.
+	cmds, made = nil, nil
 	for _, rw := range wins {
-		if rw.first {
+		used, ok := live.sessions[rw.session]
+		if rw.first || !ok {
 			continue
 		}
 		target := "=" + rw.session + ":"
-		if used := live.sessions[rw.session]; !used[rw.w.Index] {
+		if !used[rw.w.Index] {
 			target += strconv.Itoa(rw.w.Index)
 			used[rw.w.Index] = true
 		}
 		p := rw.w.Panes[0]
-		args = append(args, "new-window", "-d", "-t", target)
-		args = append(args, r.paneArgs(rw.w, p, true)...)
-		args = append(args, "-P", "-F", "#{pane_id}")
-		args = appendCommand(args, r.paneCommand(p))
-		args = append(args, ";")
+		cmd := []string{"new-window", "-d", "-t", target}
+		cmd = append(cmd, r.paneArgs(rw.w, p, true)...)
+		cmd = append(cmd, "-P", "-F", "#{pane_id}")
+		cmds = append(cmds, appendCommand(cmd, r.paneCommand(p)))
+		made = append(made, rw)
 	}
-	if len(args) > 0 {
-		out, err := r.Tmux.RunAll(ctx, args...)
-		lines := outLines(out)
-		i := 0
-		for _, rw := range wins {
-			if rw.first || i >= len(lines) {
-				continue
-			}
-			rw.panes = []string{lines[i]}
-			i++
-		}
-		if err != nil {
-			return r.finish(ctx, snap, wins, rep, fmt.Errorf("create windows: %w", err))
-		}
+	lines, err = r.create(ctx, cmds)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("create windows: %w", err))
+	}
+	for i, line := range lines {
+		made[i].panes[0] = line
 	}
 
 	// The other panes. Each split goes right after the window's first
 	// pane, so splitting in reverse order leaves the panes in saved order,
 	// which is the order select-layout gives them their cells. A tiled
 	// layout after each split keeps every pane big enough to split.
-	args = nil
+	type paneAt struct {
+		rw *restoreWindow
+		k  int
+	}
+	cmds = nil
+	var where []paneAt
 	for _, rw := range wins {
-		if len(rw.panes) == 0 {
+		if rw.panes[0] == "" {
 			continue
 		}
 		for k := len(rw.w.Panes) - 1; k >= 1; k-- {
 			p := rw.w.Panes[k]
-			args = append(args, "split-window", "-d", "-t", rw.panes[0])
-			args = append(args, r.paneArgs(rw.w, p, false)...)
-			args = append(args, "-P", "-F", "#{pane_id}")
-			args = appendCommand(args, r.paneCommand(p))
-			args = append(args, ";", "select-layout", "-t", rw.panes[0], "tiled", ";")
+			cmd := []string{"split-window", "-d", "-t", rw.panes[0]}
+			cmd = append(cmd, r.paneArgs(rw.w, p, false)...)
+			cmd = append(cmd, "-P", "-F", "#{pane_id}")
+			cmd = appendCommand(cmd, r.paneCommand(p))
+			cmds = append(cmds, append(cmd, ";", "select-layout", "-t", rw.panes[0], "tiled"))
+			where = append(where, paneAt{rw, k})
 		}
 	}
-	if len(args) > 0 {
+	lines, err = r.create(ctx, cmds)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("split panes: %w", err))
+	}
+	for i, line := range lines {
+		where[i].rw.panes[where[i].k] = line
+	}
+	return r.finish(ctx, snap, wins, rep, errors.Join(errs...))
+}
+
+// create runs commands that each make one window or pane and print one
+// line, and returns each command's line: "" for one that failed. tmux
+// stops a command line at its first failing command, so after a failure
+// the next command runs on its own, which tells whether it fails, and the
+// rest go on in a new batch: one command tmux refuses costs only itself.
+// A command may bring others after it (a layout); its line still counts.
+func (r *Reviver) create(ctx context.Context, cmds [][]string) ([]string, error) {
+	lines := make([]string, 0, len(cmds))
+	var errs []error
+	for len(lines) < len(cmds) {
+		rest := cmds[len(lines):]
+		var args []string
+		for _, c := range rest {
+			args = append(append(args, c...), ";")
+		}
 		out, err := r.Tmux.RunAll(ctx, args...)
-		lines := outLines(out)
-		i := 0
-		for _, rw := range wins {
-			if len(rw.panes) == 0 {
-				continue
+		got := outLines(out)
+		lines = append(lines, got[:min(len(got), len(rest))]...)
+		if err == nil || len(lines) == len(cmds) {
+			if err != nil {
+				errs = append(errs, err)
 			}
-			n := len(rw.w.Panes) - 1
-			got := lines[min(i, len(lines)):min(i+n, len(lines))]
-			i += n
-			// got holds panes N-1 … 1; the saved order is 1 … N-1.
-			rest := slices.Clone(got)
-			slices.Reverse(rest)
-			if len(rest) == n {
-				rw.panes = append(rw.panes, rest...)
-			}
+			break
+		}
+		if !refused(err) {
+			// A timeout, or a server gone: tmux may still be running the
+			// batch, so nothing in it runs again.
+			errs = append(errs, err)
+			break
+		}
+		out, err = r.Tmux.Run(ctx, cmds[len(lines)]...)
+		line := ""
+		if got := outLines(out); len(got) > 0 {
+			line = got[0]
 		}
 		if err != nil {
-			return r.finish(ctx, snap, wins, rep, fmt.Errorf("split panes: %w", err))
+			errs = append(errs, err)
+			if !refused(err) {
+				lines = append(lines, line)
+				break
+			}
 		}
+		lines = append(lines, line)
 	}
-	return r.finish(ctx, snap, wins, rep, nil)
+	for len(lines) < len(cmds) {
+		lines = append(lines, "")
+	}
+	return lines, errors.Join(errs...)
+}
+
+// refused reports whether tmux ran and refused a command; not a timeout,
+// and not a server that is gone.
+func refused(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(noServer(err), errNoServer) {
+		return false
+	}
+	_, ok := errors.AsType[*exec.ExitError](err)
+	return ok
 }
 
 // finish lays out, marks and selects what was created, types the
@@ -296,13 +363,19 @@ func (r *Reviver) finish(ctx context.Context, snap *snapshot.Snapshot, wins []*r
 		newSession[name] = true
 	}
 	for _, rw := range wins {
-		if len(rw.panes) == 0 {
+		first := rw.panes[0]
+		if first == "" {
 			continue
 		}
+		made := 0
+		for _, id := range rw.panes {
+			if id != "" {
+				made++
+			}
+		}
 		rep.Windows++
-		rep.Panes += len(rw.panes)
-		first := rw.panes[0]
-		if len(rw.panes) == len(rw.w.Panes) && rw.w.Layout != "" {
+		rep.Panes += made
+		if made == len(rw.w.Panes) && rw.w.Layout != "" {
 			args = append(args, "select-layout", "-t", first, rw.w.Layout, ";")
 		}
 		auto := "off"
@@ -314,8 +387,13 @@ func (r *Reviver) finish(ctx context.Context, snap *snapshot.Snapshot, wins []*r
 			"set-option", "-w", "-t", first, "automatic-rename", auto, ";")
 		active := first
 		for i, id := range rw.panes {
+			if id == "" {
+				continue
+			}
 			p := rw.w.Panes[i]
-			args = append(args, "set-option", "-p", "-t", id, OptPaneID, p.ID, ";")
+			if p.ID != "" {
+				args = append(args, "set-option", "-p", "-t", id, OptPaneID, p.ID, ";")
+			}
 			if p.Command != "" {
 				// Kept until the command runs and its program replaces it, so
 				// a restore cut short tries again next time.
@@ -326,7 +404,7 @@ func (r *Reviver) finish(ctx context.Context, snap *snapshot.Snapshot, wins []*r
 			}
 			text := p.Command
 			if text == "" && len(p.Program) > 0 {
-				text = shellJoin(p.Program)
+				text = shell.Join(p.Program)
 			}
 			if text != "" {
 				label := fmt.Sprintf("%s:%d.%d", rw.session, rw.w.Index, p.Index)
@@ -334,7 +412,7 @@ func (r *Reviver) finish(ctx context.Context, snap *snapshot.Snapshot, wins []*r
 			}
 		}
 		args = append(args, "select-pane", "-t", active, ";")
-		if rw.w.Zoomed && len(rw.panes) > 1 {
+		if rw.w.Zoomed && made > 1 {
 			zoom = append(zoom, "resize-pane", "-Z", "-t", active, ";")
 		}
 		if rw.w.Active && newSession[rw.session] {
@@ -348,8 +426,8 @@ func (r *Reviver) finish(ctx context.Context, snap *snapshot.Snapshot, wins []*r
 			errs = append(errs, fmt.Errorf("zoom: %w", err))
 		}
 	}
-	shell, _ := r.option(ctx, "default-shell", "")
-	rep.Typed, rep.NotTyped = r.typeAll(ctx, tasks, shell)
+	shellPath, _ := r.option(ctx, "default-shell", "")
+	rep.Typed, rep.NotTyped = r.typeAll(ctx, tasks, shellPath)
 	rep.Target = r.target(ctx, snap)
 	return rep, errors.Join(errs...)
 }
@@ -413,7 +491,7 @@ func (r *Reviver) paneCommand(p snapshot.Pane) string {
 	if _, err := os.Stat(path); err != nil {
 		return ""
 	}
-	return "exec " + shellQuote(r.Self) + " paint " + shellQuote(path)
+	return "exec " + shell.Quote(r.Self) + " paint " + shell.Quote(path)
 }
 
 func appendCommand(args []string, cmd string) []string {

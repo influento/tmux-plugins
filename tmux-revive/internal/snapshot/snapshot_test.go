@@ -232,3 +232,44 @@ func TestLogMovesAsideWhenLarge(t *testing.T) {
 		t.Errorf("log.old: %v", err)
 	}
 }
+
+// Temporary files a crash left behind go; one being written now stays.
+func TestPruneRemovesStaleTemps(t *testing.T) {
+	st := &Store{Dir: t.TempDir()}
+	if _, err := st.Write(snapOf(sess("proj-a", win("w1", pane("p1", "/a")))), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.WriteScrollback("p1", []byte("a\n")); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	var stale, fresh []string
+	for _, dir := range []string{st.snapDir(), st.scrollDir()} {
+		s, f := filepath.Join(dir, ".tmp-1"), filepath.Join(dir, ".tmp-2")
+		for _, p := range []string{s, f} {
+			if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Chtimes(s, old, old); err != nil {
+			t.Fatal(err)
+		}
+		stale, fresh = append(stale, s), append(fresh, f)
+	}
+	if _, err := st.Write(snapOf(sess("proj-b", win("w2", pane("p2", "/b")))), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PruneScrollback(nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range stale {
+		if _, err := os.Lstat(p); err == nil {
+			t.Errorf("%s is still there", p)
+		}
+	}
+	for _, p := range fresh {
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("%s was removed: %v", p, err)
+		}
+	}
+}

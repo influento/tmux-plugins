@@ -154,7 +154,7 @@ func (s *Store) prune() error {
 	if err != nil {
 		return err
 	}
-	var errs []error
+	errs := []error{removeStaleTemps(s.snapDir())}
 	for len(es) > s.keep() {
 		if err := os.Remove(es[0].Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			errs = append(errs, err)
@@ -205,7 +205,7 @@ func (s *Store) PruneScrollback(live map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	var errs []error
+	errs := []error{removeStaleTemps(s.scrollDir())}
 	for _, de := range des {
 		id, ok := strings.CutSuffix(de.Name(), ".txt")
 		if !ok || keep[id] || live[id] {
@@ -259,6 +259,36 @@ func (s *Store) Logf(now time.Time, format string, args ...any) {
 func exists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
+}
+
+// staleTemp is the age at which a temporary file is one a crash left
+// behind: a write keeps its own for well under a second.
+const staleTemp = time.Hour
+
+// removeStaleTemps removes the temporary files that writes cut short by a
+// crash left in dir.
+func removeStaleTemps(dir string) error {
+	des, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, de := range des {
+		if !strings.HasPrefix(de.Name(), ".tmp-") {
+			continue
+		}
+		fi, err := de.Info()
+		if err != nil || time.Since(fi.ModTime()) < staleTemp {
+			continue // gone already, or a write in progress
+		}
+		if err := os.Remove(filepath.Join(dir, de.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // writeAtomic writes data to a temporary file in dir and renames it to

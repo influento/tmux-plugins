@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/snapshot"
 )
 
@@ -61,7 +62,7 @@ func (s SaveResult) String() string {
 // tmux after this change. settle is a wait before reading tmux, during
 // which further changes join this save.
 func (r *Reviver) Save(ctx context.Context, settle time.Duration) (SaveResult, error) {
-	unqueue, ok, err := TryLock(r.lockPath("queue"))
+	unqueue, ok, err := lockfile.TryLock(r.lockPath("queue"))
 	if err != nil {
 		return 0, err
 	}
@@ -72,7 +73,7 @@ func (r *Reviver) Save(ctx context.Context, settle time.Duration) (SaveResult, e
 		unqueue()
 		return 0, err
 	}
-	unlock, err := lock(ctx, r.lockPath("save"))
+	unlock, err := lockfile.Lock(ctx, r.lockPath("save"))
 	unqueue() // the next change may now wait behind this save
 	if err != nil {
 		return 0, err
@@ -85,7 +86,7 @@ func (r *Reviver) Save(ctx context.Context, settle time.Duration) (SaveResult, e
 // lockDir. A save that starts later finds what it finds then.
 func WaitIdle(ctx context.Context, lockDir string) error {
 	for _, name := range []string{"queue", "save"} {
-		unlock, err := lock(ctx, filepath.Join(lockDir, name+".lock"))
+		unlock, err := lockfile.Lock(ctx, filepath.Join(lockDir, name+".lock"))
 		if err != nil {
 			return err
 		}
@@ -157,7 +158,7 @@ func (r *Reviver) Forget(ctx context.Context, session string) error {
 	if _, err := r.Tmux.Run(ctx, "set-option", "-t", "="+session+":", OptForgotten, "1"); err != nil {
 		return err
 	}
-	unlock, err := lock(ctx, r.lockPath("save"))
+	unlock, err := lockfile.Lock(ctx, r.lockPath("save"))
 	if err != nil {
 		return err
 	}

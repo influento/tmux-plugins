@@ -79,23 +79,6 @@ func TestProgramAndShell(t *testing.T) {
 	}
 }
 
-func TestShellJoin(t *testing.T) {
-	for _, c := range []struct {
-		in   []string
-		want string
-	}{
-		{[]string{"nvim", "notes.md"}, "nvim notes.md"},
-		{[]string{"less", "a file"}, "less 'a file'"},
-		{[]string{"ssh", "host-b", "it's"}, `ssh host-b 'it'\''s'`},
-		{[]string{"man", ""}, "man ''"},
-		{[]string{"echo", "$HOME;rm"}, "echo '$HOME;rm'"},
-	} {
-		if got := shellJoin(c.in); got != c.want {
-			t.Errorf("shellJoin(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
 func TestCleanScrollback(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"", ""},

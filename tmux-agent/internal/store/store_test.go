@@ -1,12 +1,9 @@
 package store
 
 import (
-	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestUpdateMergesAndKeepsMode(t *testing.T) {
@@ -73,27 +70,6 @@ func TestUpdateReplacesDamagedRecord(t *testing.T) {
 	if r, _, err := s.Load("agent-a", "id"); err != nil || r.State != "done" {
 		t.Errorf("record = %+v (%v)", r, err)
 	}
-}
-
-func TestLockIsExclusiveAndTimesOut(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "run", "lock")
-	unlock, err := Lock(context.Background(), p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// flock locks belong to the open file, so a second open in the same
-	// process waits like another process would.
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if _, err := Lock(ctx, p); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second Lock: %v, want a deadline error", err)
-	}
-	unlock()
-	unlock2, err := Lock(context.Background(), p)
-	if err != nil {
-		t.Fatalf("Lock after unlock: %v", err)
-	}
-	unlock2()
 }
 
 func TestDirs(t *testing.T) {

@@ -2,7 +2,8 @@ package agent
 
 import (
 	"regexp"
-	"strings"
+
+	"github.com/influento/tmux-plugins/internal/shell"
 )
 
 // uuidRe is the shape a session id must have before it goes into a
@@ -17,21 +18,5 @@ func ReviveCommand(a Agent, session string) (cmd string, ok bool) {
 	if !isResumer || !uuidRe.MatchString(session) {
 		return "", false
 	}
-	words := append([]string{"tmux-agent", "run", a.Name()}, r.ResumeArgs(session)...)
-	for i, w := range words {
-		words[i] = ShellQuote(w)
-	}
-	return strings.Join(words, " "), true
-}
-
-// safeWord is a word a POSIX shell and zsh take as it is.
-var safeWord = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
-
-// ShellQuote quotes s for a POSIX shell or zsh, and leaves plain words
-// alone.
-func ShellQuote(s string) string {
-	if safeWord.MatchString(s) {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return shell.Join(append([]string{"tmux-agent", "run", a.Name()}, r.ResumeArgs(session)...)), true
 }

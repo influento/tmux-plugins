@@ -21,7 +21,7 @@ func (r *Reviver) Capture(ctx context.Context) error {
 		return nil
 	}
 	out, err := r.Tmux.Output(ctx, "list-panes", "-a", "-F", strings.Join([]string{
-		"#{pane_id}", "#{" + OptPaneID + "}", "#{alternate_on}", "#{cursor_y}", "#{" + OptReady + "}",
+		"#{pane_id}", "#{" + OptPaneID + "}", "#{alternate_on}", "#{cursor_y}", "#{history_size}", "#{" + OptReady + "}",
 	}, sep))
 	if err := noServer(err); errors.Is(err, errNoServer) {
 		return nil
@@ -32,10 +32,10 @@ func (r *Reviver) Capture(ctx context.Context) error {
 	var errs []error
 	for _, line := range outLines(out) {
 		f := strings.Split(line, sep)
-		if len(f) != 5 || f[1] == "" {
+		if len(f) != 6 || f[1] == "" {
 			continue
 		}
-		if f[4] != "1" {
+		if f[5] != "1" {
 			return nil // not restored yet: its panes have no ids worth keeping
 		}
 		live[f[1]] = true
@@ -43,11 +43,16 @@ func (r *Reviver) Capture(ctx context.Context) error {
 			continue
 		}
 		// Up to the line above the cursor: the cursor's line is the prompt,
-		// and the restored shell draws a new one.
-		text, err := r.Tmux.Output(ctx, "capture-pane", "-p", "-e", "-J", "-t", f[0],
-			"-S", "-"+strconv.Itoa(lines), "-E", strconv.Itoa(atoi(f[3])-1))
-		if err != nil {
-			continue // the pane closed since list-panes
+		// and the restored shell draws a new one. With the cursor on the top
+		// line and no history there is nothing above it, and tmux would read
+		// -E -1 as the top line itself.
+		var text string
+		if y := atoi(f[3]); y > 0 || atoi(f[4]) > 0 {
+			text, err = r.Tmux.Output(ctx, "capture-pane", "-p", "-e", "-J", "-t", f[0],
+				"-S", "-"+strconv.Itoa(lines), "-E", strconv.Itoa(y-1))
+			if err != nil {
+				continue // the pane closed since list-panes
+			}
 		}
 		if _, err := r.Store.WriteScrollback(f[1], cleanScrollback(text)); err != nil {
 			errs = append(errs, err)

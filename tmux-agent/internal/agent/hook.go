@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/store"
@@ -63,7 +64,7 @@ func (e *Env) lock(ctx context.Context) func() {
 	}
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	unlock, err := store.Lock(ctx, e.LockPath)
+	unlock, err := lockfile.Lock(ctx, e.LockPath)
 	if err != nil {
 		e.logf("going on without the lock: %v", err)
 		return func() {}

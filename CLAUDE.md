@@ -11,6 +11,8 @@ tmux-plugins/
   Makefile             # build, vet, test, dist, dev/undev, release
   internal/tmux/       # shared tmux client (timeouts on every call, batches)
     tmuxtest/          # private-server test harness, self-install of test binaries
+  internal/shell/      # quoting words for a POSIX shell or zsh
+  internal/lockfile/   # flock locks: Lock waits until ctx ends, TryLock does not
   tmux-warp/           # search-and-jump; tmux-warp.sh stays at this path
   tmux-agent/          # agent flags, pickers, hooks, launcher (P0 step 2)
     internal/          # its packages; the compiler keeps them from tmux-revive
@@ -248,7 +250,8 @@ Rules:
   down. There is no `after-kill-session` hook in tmux 3.8. A save that
   loses panes while systemd reports `stopping` (system or `--user`) writes
   nothing either.
-- Saves wait for `@revive_ready`. Attach and restore set it once the
+- Saves wait for `@revive_ready`. Attach and restore set it, even past
+  their deadline, once the
   saved state is back, or once they find live work they must not restore
   onto; tmux-init sets it only on a server that already has sessions
   (prefix r, the first run after an upgrade). At server start tmux.conf
@@ -262,10 +265,14 @@ Rules:
   newest snapshot, so resizes and `cd` do not push older states out.
 - `forget-session` marks the session `@revive_forgotten` and saves before
   the session goes, so it stays closed after a restore.
-- Restore adds only what is missing, by session name and window id. It
-  types `@revive_cmd` once into a pane: it waits for the shell's prompt,
-  sends the text literally, checks the text shows, then sends Enter; it
-  clears the line and tries again on a timeout. A program on the
+- Restore adds only what is missing, by session name and window id. A
+  restored pane whose `@revive_pane` a live pane holds gets a new id and no
+  scrollback. A session, window or pane tmux refuses costs only itself; the
+  rest are still made. It types `@revive_cmd` once into a pane: it waits
+  for the shell's prompt, sends the text literally, checks the text shows,
+  then sends Enter; it clears the line and tries again on a timeout. Text
+  with a newline or another control character is not typed (the shell
+  would act on it as it arrives) and shows as not typed. A program on the
   `@revive_programs` list starts again; a pane with scrollback runs
   `tmux-revive paint`, which prints it and execs the login shell.
 - Names and folders that go into `-s`, `-n` or `-c` escape `#` as `##`;

@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/shell"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/agent"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/agent/claude"
@@ -370,7 +371,7 @@ func (a *app) pick(ctx context.Context) error {
 		return err
 	}
 	// The picker waits on the user; only the tmux calls are bounded.
-	choice, err := ui.Pick(context.WithoutCancel(ctx), rows, agent.ShellQuote(a.self))
+	choice, err := ui.Pick(context.WithoutCancel(ctx), rows, shell.Quote(a.self))
 	if err != nil || choice == "" {
 		return err
 	}
@@ -404,7 +405,7 @@ func (a *app) popup(ctx context.Context, client string) error {
 	}
 	w, h := ui.PopupSize(rows, cw, ch)
 	args := append(append([]string{"display-popup"}, clientArgs...),
-		"-E", "-w", strconv.Itoa(w), "-h", strconv.Itoa(h), agent.ShellQuote(a.self)+" pick")
+		"-E", "-w", strconv.Itoa(w), "-h", strconv.Itoa(h), shell.Quote(a.self)+" pick")
 	_, err = a.tmux.Run(ctx, args...)
 	return err
 }

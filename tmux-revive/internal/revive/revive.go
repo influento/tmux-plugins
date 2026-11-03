@@ -20,7 +20,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/influento/tmux-plugins/internal/tmux"
@@ -210,8 +209,11 @@ func (r *Reviver) ScrollbackInterval(ctx context.Context) int {
 	return r.intOption(ctx, OptScrollbackInterval, DefaultScrollbackInterval)
 }
 
+// markReady sets @revive_ready. It runs even when ctx has ended, as when
+// typing used up the time attach had: a server left unmarked never saves.
+// The tmux client's own timeout bounds it.
 func (r *Reviver) markReady(ctx context.Context) error {
-	_, err := r.Tmux.Run(ctx, "set-option", "-g", OptReady, "1")
+	_, err := r.Tmux.Run(context.WithoutCancel(ctx), "set-option", "-g", OptReady, "1")
 	return noServer(err)
 }
 
@@ -229,55 +231,6 @@ func (r *Reviver) lockPath(name string) string {
 	return filepath.Join(r.LockDir, name+".lock")
 }
 
-// TryLock takes the lock at path if it is free. ok is false when another
-// process holds it.
-func TryLock(path string) (unlock func(), ok bool, err error) {
-	f, err := openLock(path)
-	if err != nil {
-		return nil, false, err
-	}
-	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if errors.Is(err, syscall.EWOULDBLOCK) {
-		f.Close()
-		return nil, false, nil
-	}
-	if err != nil {
-		f.Close()
-		return nil, false, fmt.Errorf("lock %s: %w", path, err)
-	}
-	return func() { f.Close() }, true, nil
-}
-
-// lock takes the lock at path, waiting until ctx ends.
-func lock(ctx context.Context, path string) (unlock func(), err error) {
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		unlock, ok, err := TryLock(path)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			return unlock, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("lock %s: %w", path, ctx.Err())
-		case <-tick.C:
-		}
-	}
-}
-
-// openLock opens a lock file. Go opens it close-on-exec, so a tmux server
-// started while it is held never inherits it: a server holding the lock
-// would hold it for good.
-func openLock(path string) (*os.File, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
-}
-
 // sleep waits d, or until ctx ends.
 func sleep(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
@@ -291,22 +244,4 @@ func sleep(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-// shellQuote quotes s for a POSIX shell or zsh, and leaves plain words
-// alone.
-func shellQuote(s string) string {
-	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-") == "" {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// shellJoin quotes each word and joins them into one command line.
-func shellJoin(words []string) string {
-	q := make([]string, len(words))
-	for i, w := range words {
-		q[i] = shellQuote(w)
-	}
-	return strings.Join(q, " ")
 }

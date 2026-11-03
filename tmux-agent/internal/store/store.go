@@ -8,7 +8,6 @@
 package store
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"syscall"
 	"time"
 )
 
@@ -140,34 +138,4 @@ func (s *Store) Save(sess Session) error {
 		return err
 	}
 	return nil
-}
-
-// Lock takes the exclusive lock in file path, waiting until ctx ends. The
-// lock goes with the process, so a crashed holder never blocks the next.
-func Lock(ctx context.Context, path string) (unlock func(), err error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	tick := time.NewTicker(5 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return func() { f.Close() }, nil
-		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
-			f.Close()
-			return nil, fmt.Errorf("lock %s: %w", path, err)
-		}
-		select {
-		case <-ctx.Done():
-			f.Close()
-			return nil, fmt.Errorf("lock %s: %w", path, ctx.Err())
-		case <-tick.C:
-		}
-	}
 }
