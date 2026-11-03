@@ -129,14 +129,18 @@ func (c *Core) Notification(ctx context.Context, pane string, s State) (title, b
 	if err != nil || visible {
 		return "", "", false, err
 	}
-	name, err := c.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{window_name}")
+	out, err := c.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{window_name}"+sep+"#{@attention_failed}")
 	if err != nil {
 		return "", "", false, err
 	}
-	switch s {
-	case NeedsYou:
+	f := split(out, 2)
+	name, failed := f[0], f[1] == "1"
+	switch {
+	case s == NeedsYou:
 		return name + " needs you", or(reason, "waiting for a decision"), true, nil
-	case Done:
+	case s == Done && failed:
+		return name + " failed", or(strings.TrimPrefix(reason, FailedPrefix), "no reason given"), true, nil
+	case s == Done:
 		return name + " is done", or(reason, "turn ended"), true, nil
 	}
 	return "", "", false, nil

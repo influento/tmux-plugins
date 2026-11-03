@@ -206,7 +206,7 @@ func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
 	switch {
 	case killed:
 	case code != 0:
-		_, _, flagErr = e.Core.Set(ctx, e.Pane, attention.Flag{State: attention.Done, Reason: "failed: " + desc})
+		_, _, flagErr = e.Core.Set(ctx, e.Pane, attention.Flag{State: attention.Done, Reason: attention.FailedPrefix + desc, Failed: true})
 	case oneShot:
 		_, _, flagErr = e.Core.Set(ctx, e.Pane, attention.Flag{State: attention.Done, Reason: "finished"})
 	default:

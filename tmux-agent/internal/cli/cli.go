@@ -28,8 +28,9 @@ import (
 const usage = `usage:
   tmux-agent run AGENT [ARGS...]       start an agent through the launcher
   tmux-agent hook AGENT                handle one hook event (JSON on stdin)
-  tmux-agent flag STATE [--reason TEXT] [--pane ID] [--owner CMD] [--quiet]
+  tmux-agent flag STATE [--reason TEXT] [--pane ID] [--owner CMD] [--quiet] [--failed]
                                        flag a pane: needs-you, done, working or clear;
+                                       --failed marks a done flag as a failure;
                                        prints the previous state when it changed
   tmux-agent seen [PANE]               done → idle; run when a pane gets focus
   tmux-agent list [--json]             every pane, flagged first
@@ -276,6 +277,7 @@ func (a *app) flag(ctx context.Context, args []string) error {
 	paneArg := fs.String("pane", "", "")
 	owner := fs.String("owner", "", "")
 	quiet := fs.Bool("quiet", false, "")
+	failed := fs.Bool("failed", false, "")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() > 0 {
 		return errUsage
 	}
@@ -290,7 +292,7 @@ func (a *app) flag(ctx context.Context, args []string) error {
 	if !ok {
 		return errUsage
 	}
-	prev, changed, err := a.core.Set(ctx, p, attention.Flag{State: st, Reason: *reason, Owner: *owner, Quiet: *quiet})
+	prev, changed, err := a.core.Set(ctx, p, attention.Flag{State: st, Reason: *reason, Owner: *owner, Quiet: *quiet, Failed: *failed})
 	if err != nil {
 		return err
 	}

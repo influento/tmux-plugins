@@ -248,11 +248,20 @@ func (e *env) run(t *testing.T) int {
 	return n
 }
 
+// wantFlag checks the pane's flag, and that it is marked failed exactly
+// when its reason says so.
 func (e *env) wantFlag(t *testing.T, state, reason string) {
 	t.Helper()
 	gotState, gotReason := e.opt(t, "@attention"), e.opt(t, "@attention_reason")
 	if gotState != state || gotReason != reason {
 		t.Errorf("flag = %q %q, want %q %q", gotState, gotReason, state, reason)
+	}
+	wantMark := ""
+	if strings.HasPrefix(reason, "failed: ") {
+		wantMark = "1"
+	}
+	if got := e.opt(t, "@attention_failed"); got != wantMark {
+		t.Errorf("@attention_failed = %q, want %q", got, wantMark)
 	}
 }
 
@@ -556,12 +565,16 @@ func TestRunEnd(t *testing.T) {
 }
 
 // A one-shot run is one turn: working from launch, done or failed at exit,
-// with one notification. Its own hooks only name the session, and it leaves
+// with one notification that says which. Its own hooks only name the session, and it leaves
 // no resume command.
 func TestRunOneShot(t *testing.T) {
 	for _, c := range []struct {
 		name, code, reason string
-	}{{"finished", "0", "finished"}, {"failed", "2", "failed: exit 2"}} {
+		note               notification
+	}{
+		{"finished", "0", "finished", notification{"w-a is done", "finished"}},
+		{"failed", "2", "failed: exit 2", notification{"w-a failed", "exit 2"}},
+	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			e := newEnv(t)
@@ -581,7 +594,7 @@ func TestRunOneShot(t *testing.T) {
 				t.Errorf("exit code = %d, want %s", rc, c.code)
 			}
 			e.wantFlag(t, "done", c.reason)
-			e.wantNotification(t, notification{"w-a is done", c.reason})
+			e.wantNotification(t, c.note)
 			e.wantOpt(t, "@revive_cmd", "")
 		})
 	}

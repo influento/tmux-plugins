@@ -120,7 +120,16 @@ type Flag struct {
 	Reason string
 	Owner  string // the command the flag lives with; empty for none
 	Quiet  bool   // no notification
+	// Failed marks a done flag as a run that failed. It is still done: seen
+	// clears it and it ranks as done; it only looks different.
+	Failed bool
 }
+
+// FailedGlyph marks a failed done flag where done shows its own glyph.
+const FailedGlyph = "✗"
+
+// FailedPrefix starts the reason of a run that failed: "failed: exit 3".
+const FailedPrefix = "failed: "
 
 // sep separates fields in tmux formats. A tab would do, but reasons and
 // names are free text.
@@ -144,30 +153,56 @@ func lines(out string) []string {
 
 // FlagOf returns the pane's state and reason.
 func (c *Core) FlagOf(ctx context.Context, pane string) (State, string, error) {
-	out, err := c.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{@attention}"+sep+"#{@attention_reason}")
+	st, reason, _, err := c.read(ctx, pane)
+	return st, reason, err
+}
+
+// read returns the pane's state, reason and failed mark.
+func (c *Core) read(ctx context.Context, pane string) (st State, reason string, failed bool, err error) {
+	out, err := c.Tmux.Output(ctx, "display-message", "-p", "-t", pane,
+		"#{@attention}"+sep+"#{@attention_reason}"+sep+"#{@attention_failed}")
 	if err != nil {
-		return Idle, "", err
+		return Idle, "", false, err
 	}
-	f := split(out, 2)
-	return State(f[0]), f[1], nil
+	f := split(out, 3)
+	return State(f[0]), f[1], f[2] == "1", nil
+}
+
+// failedArgs sets or unsets a pane's failed mark, ending with a separator.
+func failedArgs(pane string, failed bool) []string {
+	if failed {
+		return []string{"set-option", "-p", "-t", pane, "@attention_failed", "1", ";"}
+	}
+	return []string{"set-option", "-pu", "-t", pane, "@attention_failed", ";"}
 }
 
 // Set flags the pane. It returns the state before, and whether the state
-// changed: setting the same state again only updates the reason, and sends
-// nothing.
+// changed: setting the same state again only updates the reason and the
+// failed mark, and sends nothing.
 func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, changed bool, err error) {
 	if _, ok := ParseState(string(f.State)); !ok {
 		return Idle, false, fmt.Errorf("set: invalid state %q", f.State)
 	}
-	cur, reason, err := c.FlagOf(ctx, pane)
+	if f.Failed && f.State != Done {
+		return Idle, false, fmt.Errorf("set: only a done flag can be failed, not %s", f.State)
+	}
+	cur, reason, failed, err := c.read(ctx, pane)
 	if err != nil {
 		return Idle, false, err
 	}
 	if cur == f.State {
-		if reason != f.Reason {
-			_, err = c.Tmux.Run(ctx, "set-option", "-p", "-t", pane, "@attention_reason", f.Reason)
+		if reason == f.Reason && failed == f.Failed {
+			return cur, false, nil
 		}
-		return cur, false, err
+		args := append(failedArgs(pane, f.Failed), "set-option", "-p", "-t", pane, "@attention_reason", f.Reason)
+		if _, err := c.Tmux.Run(ctx, args...); err != nil || failed == f.Failed {
+			return cur, false, err
+		}
+		// The mark changed, and with it the window's mark and the counts.
+		if err := c.rollUp(ctx, pane); err != nil {
+			return cur, false, err
+		}
+		return cur, false, c.Status(ctx)
 	}
 	at := strconv.FormatInt(c.now().Unix(), 10)
 	args := []string{
@@ -176,6 +211,7 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 		"set-option", "-p", "-t", pane, "@attention_at", at, ";",
 		"set-option", "-pu", "-t", pane, "@attention_gone", ";",
 	}
+	args = append(args, failedArgs(pane, f.Failed)...)
 	if f.Owner != "" {
 		args = append(args, "set-option", "-p", "-t", pane, "@attention_owner", f.Owner)
 	} else {
@@ -199,7 +235,7 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 // unflagArgs unsets a pane's flag options.
 func unflagArgs(pane string) []string {
 	var args []string
-	for _, o := range []string{"@attention", "@attention_reason", "@attention_at", "@attention_owner"} {
+	for _, o := range []string{"@attention", "@attention_reason", "@attention_at", "@attention_owner", "@attention_failed"} {
 		args = append(args, "set-option", "-pu", "-t", pane, o, ";")
 	}
 	return args
@@ -240,23 +276,33 @@ func (c *Core) Seen(ctx context.Context, pane string) error {
 	return c.Clear(ctx, pane)
 }
 
-// rollUp sets the window's flag to the highest-ranked flag of its panes.
+// rollUp sets the window's flag to the highest-ranked flag of its panes,
+// and marks it failed when that flag is done and one of its done panes
+// failed.
 func (c *Core) rollUp(ctx context.Context, pane string) error {
-	out, err := c.Tmux.Output(ctx, "list-panes", "-t", pane, "-F", "#{@attention}")
+	out, err := c.Tmux.Output(ctx, "list-panes", "-t", pane, "-F", "#{@attention}"+sep+"#{@attention_failed}")
 	if err != nil {
 		return err
 	}
-	best := Idle
+	best, failed := Idle, false
 	for _, l := range lines(out) {
-		if st := State(l); st != Idle && st.Rank() < best.Rank() {
+		f := split(l, 2)
+		st := State(f[0])
+		if st != Idle && st.Rank() < best.Rank() {
 			best = st
 		}
+		failed = failed || (st == Done && f[1] == "1")
 	}
-	if best == Idle {
-		_, err = c.Tmux.Run(ctx, "set-option", "-wu", "-t", pane, "@attention_win")
+	args := []string{"set-option", "-wu", "-t", pane, "@attention_win", ";"}
+	if best != Idle {
+		args = []string{"set-option", "-w", "-t", pane, "@attention_win", string(best), ";"}
+	}
+	if best == Done && failed {
+		args = append(args, "set-option", "-w", "-t", pane, "@attention_win_failed", "1")
 	} else {
-		_, err = c.Tmux.Run(ctx, "set-option", "-w", "-t", pane, "@attention_win", string(best))
+		args = append(args, "set-option", "-wu", "-t", pane, "@attention_win_failed")
 	}
+	_, err = c.Tmux.Run(ctx, args...)
 	return err
 }
 
@@ -299,37 +345,43 @@ func isGone(err error) bool {
 
 // Colours are the theme colours of the counts and glyphs.
 type Colours struct {
-	NeedsYou, Done, Working, Dim string
+	NeedsYou, Done, Failed, Working, Dim string
 }
 
 // colours reads the theme options, with plain colour names for unset ones.
 func (c *Core) colours(ctx context.Context) Colours {
 	out, err := c.Tmux.Output(ctx, "display-message", "-p",
-		"#{@attention_fg_needs_you}"+sep+"#{@attention_fg_done}"+sep+"#{@attention_fg_working}"+sep+"#{@attention_fg_dim}")
+		"#{@attention_fg_needs_you}"+sep+"#{@attention_fg_done}"+sep+"#{@attention_fg_working}"+sep+
+			"#{@attention_fg_dim}"+sep+"#{@attention_fg_failed}")
 	if err != nil {
 		out = ""
 	}
-	f := split(out, 4)
-	return Colours{NeedsYou: or(f[0], "red"), Done: or(f[1], "green"), Working: or(f[2], "blue"), Dim: or(f[3], "default")}
+	f := split(out, 5)
+	return Colours{
+		NeedsYou: or(f[0], "red"), Done: or(f[1], "green"), Working: or(f[2], "blue"),
+		Dim: or(f[3], "default"), Failed: or(f[4], "red"),
+	}
 }
 
-// Counts are the number of panes in each state.
+// Counts are the number of panes in each state. Done leaves out the
+// failed ones, which Failed counts.
 type Counts struct {
-	NeedsYou, Done, Working int
+	NeedsYou, Done, Failed, Working int
 }
 
 // RenderStatus is the status-bar text for the counts: needs you, working,
-// done, then a separator; empty when nothing is flagged.
+// failed, done, then a separator; empty when nothing is flagged.
 func RenderStatus(n Counts, col Colours) string {
 	var b strings.Builder
-	part := func(count int, colour string, s State) {
+	part := func(count int, colour, glyph string) {
 		if count > 0 {
-			fmt.Fprintf(&b, "#[fg=%s]%s %d  ", colour, s.Glyph(), count)
+			fmt.Fprintf(&b, "#[fg=%s]%s %d  ", colour, glyph, count)
 		}
 	}
-	part(n.NeedsYou, col.NeedsYou, NeedsYou)
-	part(n.Working, col.Working, Working)
-	part(n.Done, col.Done, Done)
+	part(n.NeedsYou, col.NeedsYou, NeedsYou.Glyph())
+	part(n.Working, col.Working, Working.Glyph())
+	part(n.Failed, col.Failed, FailedGlyph)
+	part(n.Done, col.Done, Done.Glyph())
 	if b.Len() > 0 {
 		fmt.Fprintf(&b, "#[fg=%s]│", col.Dim)
 	}
@@ -342,17 +394,22 @@ func (c *Core) Status(ctx context.Context) error {
 	if _, err := c.Sweep(ctx); err != nil {
 		return err
 	}
-	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", "#{@attention}")
+	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", "#{@attention}"+sep+"#{@attention_failed}")
 	if err != nil {
 		return err
 	}
 	var n Counts
 	for _, l := range lines(out) {
-		switch State(l) {
+		f := split(l, 2)
+		switch State(f[0]) {
 		case NeedsYou:
 			n.NeedsYou++
 		case Done:
-			n.Done++
+			if f[1] == "1" {
+				n.Failed++
+			} else {
+				n.Done++
+			}
 		case Working:
 			n.Working++
 		}

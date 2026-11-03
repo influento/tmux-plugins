@@ -37,7 +37,7 @@ func TestStateRankOrder(t *testing.T) {
 }
 
 func TestRenderStatus(t *testing.T) {
-	col := Colours{NeedsYou: "red", Done: "green", Working: "blue", Dim: "default"}
+	col := Colours{NeedsYou: "red", Done: "green", Failed: "maroon", Working: "blue", Dim: "default"}
 	for _, c := range []struct {
 		name string
 		n    Counts
@@ -47,6 +47,8 @@ func TestRenderStatus(t *testing.T) {
 		{"needs you, working, then done", Counts{NeedsYou: 2, Done: 1, Working: 3},
 			"#[fg=red]? 2  #[fg=blue]● 3  #[fg=green]✓ 1  #[fg=default]│"},
 		{"done only", Counts{Done: 4}, "#[fg=green]✓ 4  #[fg=default]│"},
+		{"failed before done", Counts{Done: 1, Failed: 2, Working: 1},
+			"#[fg=blue]● 1  #[fg=maroon]✗ 2  #[fg=green]✓ 1  #[fg=default]│"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := RenderStatus(c.n, col); got != c.want {
@@ -79,6 +81,7 @@ func TestDescribe(t *testing.T) {
 	}{
 		{"flag with a reason", Row{State: "needs-you", Reason: "Bash(make)", At: now - 120}, true, 0, "Bash(make)", "2m"},
 		{"flag without a reason", Row{State: "done"}, true, 1, "done", "-"},
+		{"failed run", Row{State: "done", Failed: true, Reason: "failed: exit 3"}, true, 1, "failed: exit 3", "-"},
 		{"dropped flag", Row{Gone: "done"}, true, 3, "flag dropped · done", "-"},
 		{"idle agent", Row{Title: "✳ fix the tests"}, true, 3, "idle · fix the tests", "-"},
 		{"plain pane", Row{Command: "zsh"}, false, 4, "zsh", "-"},
@@ -88,6 +91,13 @@ func TestDescribe(t *testing.T) {
 			describe(&r, now, c.agent)
 			if r.Rank != c.rank || r.Detail != c.detail || r.Age != c.age {
 				t.Errorf("row = rank %d %q %q, want rank %d %q %q", r.Rank, r.Detail, r.Age, c.rank, c.detail, c.age)
+			}
+			if wantGlyph := State(c.row.State).Glyph(); c.row.Failed {
+				if r.Glyph != FailedGlyph {
+					t.Errorf("glyph = %q, want %q", r.Glyph, FailedGlyph)
+				}
+			} else if r.Glyph != wantGlyph {
+				t.Errorf("glyph = %q, want %q", r.Glyph, wantGlyph)
 			}
 		})
 	}
@@ -128,21 +138,22 @@ func TestSortRows(t *testing.T) {
 }
 
 func TestRenderSessionRows(t *testing.T) {
-	col := Colours{NeedsYou: "#ff0000", Done: "green", Working: "#0000ff"}
-	sessions := []string{"proj-a", "proj-b", "a-long-session-name"}
+	col := Colours{NeedsYou: "#ff0000", Done: "green", Working: "#0000ff", Failed: "#00ff00"}
+	sessions := []string{"proj-a", "proj-b", "a-long-session-name", "proj-c"}
 	windows := []Window{
 		{Session: "proj-a", Name: "w-a"},
 		{Session: "proj-a", Name: "w-build", State: Done},
 		{Session: "proj-b", Name: "a-window-name-longer-than-16", State: NeedsYou},
 		{Session: "proj-b", Name: "w-b", State: Working},
-		{Session: "proj-c", Name: "skipped"},
+		{Session: "proj-c", Name: "w-c", State: Done, Failed: true},
+		{Session: "proj-d", Name: "skipped"},
 	}
 	rows := RenderSessionRows(sessions, windows, col)
 	var order []string
 	for _, r := range rows {
 		order = append(order, r.Session)
 	}
-	if want := []string{"proj-b", "proj-a", "a-long-session-name"}; !slices.Equal(order, want) {
+	if want := []string{"proj-b", "proj-a", "proj-c", "a-long-session-name"}; !slices.Equal(order, want) {
 		t.Fatalf("order = %q, want %q: flagged sessions first, by best rank", order, want)
 	}
 	red, blue := "\x1b[38;2;255;0;0m", "\x1b[38;2;0;0;255m"
@@ -152,13 +163,16 @@ func TestRenderSessionRows(t *testing.T) {
 		// A named colour has no escape.
 		"proj-a":              "proj-a         " + "  w-a" + "                " + "✓ \x1b[0mw-build",
 		"a-long-session-name": "a-long-session ",
+		// A failed run ranks as done, with its own mark.
+		"proj-c": "proj-c         \x1b[38;2;0;255;0m✗ \x1b[0mw-c",
 	}
 	for _, r := range rows {
 		if r.Display != want[r.Session] {
 			t.Errorf("%s row = %q, want %q", r.Session, r.Display, want[r.Session])
 		}
 	}
-	if rows[0].Rank != NeedsYou.Rank() || rows[1].Rank != Done.Rank() || rows[2].Rank != 9 {
-		t.Errorf("ranks = %d %d %d, want %d %d 9", rows[0].Rank, rows[1].Rank, rows[2].Rank, NeedsYou.Rank(), Done.Rank())
+	if rows[0].Rank != NeedsYou.Rank() || rows[1].Rank != Done.Rank() || rows[2].Rank != Done.Rank() || rows[3].Rank != 9 {
+		t.Errorf("ranks = %d %d %d %d, want %d %d %d 9", rows[0].Rank, rows[1].Rank, rows[2].Rank, rows[3].Rank,
+			NeedsYou.Rank(), Done.Rank(), Done.Rank())
 	}
 }

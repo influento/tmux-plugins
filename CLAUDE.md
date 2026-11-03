@@ -186,8 +186,13 @@ Rules:
   own; a launcher started inside an agent runs the agent in its place.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
-- A non-zero exit is a done flag with reason `failed: <cause>`, not a state
-  of its own.
+- A non-zero exit is a done flag with reason `failed: <cause>` and the pane
+  option `@attention_failed`; its window gets `@attention_win_failed`. It
+  still behaves as done (seen clears it, it ranks as done) but shows a ✗ in
+  `@attention_fg_failed`, counts apart in the status, and notifies as
+  "<window> failed". `tmux-agent flag done --failed` sets it by hand.
+- An agent with no adapter gets only what the launcher knows: no flag while
+  it runs, nothing on exit 0, failed on any other exit.
 - A conformance case's expectation changes only after you show that the
   bash script behaves differently.
 - In tests, the sandbox runs the test binary as tmux-agent
@@ -213,6 +218,14 @@ and checks them against `SHA256SUMS`. (Until the P0 cutover it still follows
 `releases/latest` and fetches the wrapper from the tree at
 `<tag>/tmux-warp/tmux-warp.sh`, which therefore stays at that path.)
 tmux.conf binds: `bind s run-shell '~/.local/bin/tmux-warp.sh'`
+
+tmux-agent writes options; dotfiles' tmux.conf draws them. tmux-agent
+renders `@attention_status` (the counts) itself. The pane border and the
+window list are formats in tmux.conf that read `@attention` (pane) and
+`@attention_win` (window), with `@attention_fg_*` for colours. At the
+cutover these formats need a case for a failed done: `@attention_failed`
+(pane) and `@attention_win_failed` (window) mean ✗ in `@attention_fg_failed`
+in place of ✓.
 
 ## Code Conventions
 

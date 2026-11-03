@@ -55,6 +55,7 @@ type Row struct {
 	Title   string `json:"-"`                // the pane title
 	Gone    string `json:"gone,omitempty"`   // what a sweep dropped
 	Reason  string `json:"reason,omitempty"` // the flag's reason
+	Failed  bool   `json:"failed,omitempty"` // a done flag for a run that failed
 }
 
 // Humanize renders an age in seconds as 5s, 3m, 2h or 4d.
@@ -96,7 +97,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 	format := strings.Join([]string{
 		"#{session_name}", "#{window_index}.#{pane_index}", "#{pane_id}", "#{window_name}",
 		"#{@attention}", "#{@attention_reason}", "#{@attention_at}", "#{pane_current_command}",
-		"#{@attention_gone}", "#{@agent}", "#{pane_title}",
+		"#{@attention_gone}", "#{@agent}", "#{pane_title}", "#{@attention_failed}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -105,13 +106,14 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 11)
+		f := split(l, 12)
 		if skip(f[0]) {
 			continue
 		}
 		r := Row{
 			Session: f[0], Target: f[0] + ":" + f[1], Pane: f[2], Window: f[3],
 			State: f[4], Reason: f[5], Command: f[7], Gone: f[8], Agent: f[9], Title: f[10],
+			Failed: f[4] == string(Done) && f[11] == "1",
 		}
 		r.At, _ = strconv.ParseInt(f[6], 10, 64) // unset or garbled: no age
 		describe(&r, now, c.isAgent(r.Command, r.Agent))
@@ -125,6 +127,9 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 func describe(r *Row, now int64, agent bool) {
 	st := State(r.State)
 	r.Glyph = st.Glyph()
+	if r.Failed {
+		r.Glyph = FailedGlyph
+	}
 	r.Age = "-"
 	switch {
 	case st != Idle:
@@ -171,6 +176,7 @@ type Window struct {
 	Session string
 	Name    string
 	State   State
+	Failed  bool // its done flag is for a run that failed
 }
 
 // ansiFg is a true-colour foreground escape for a #rrggbb colour, nothing
@@ -220,6 +226,9 @@ func RenderSessionRows(sessions []string, windows []Window, col Colours) []Sessi
 		mark, ok := marks[w.State]
 		if !ok {
 			mark = "  "
+		}
+		if w.State == Done && w.Failed {
+			mark = ansiFg(col.Failed) + FailedGlyph + " \x1b[0m"
 		}
 		rank[w.Session] = min(rank[w.Session], w.State.Rank())
 		i := len(cells[w.Session])
@@ -273,14 +282,15 @@ func (c *Core) SessionRows(ctx context.Context) ([]SessionRow, error) {
 			sessions = append(sessions, s)
 		}
 	}
-	out, err = c.Tmux.Output(ctx, "list-windows", "-a", "-F", "#{session_name}"+sep+"#{window_name}"+sep+"#{@attention_win}")
+	out, err = c.Tmux.Output(ctx, "list-windows", "-a", "-F",
+		"#{session_name}"+sep+"#{window_name}"+sep+"#{@attention_win}"+sep+"#{@attention_win_failed}")
 	if err != nil {
 		return nil, err
 	}
 	var windows []Window
 	for _, l := range lines(out) {
-		f := split(l, 3)
-		windows = append(windows, Window{Session: f[0], Name: f[1], State: State(f[2])})
+		f := split(l, 4)
+		windows = append(windows, Window{Session: f[0], Name: f[1], State: State(f[2]), Failed: f[3] == "1"})
 	}
 	return RenderSessionRows(sessions, windows, c.colours(ctx)), nil
 }
