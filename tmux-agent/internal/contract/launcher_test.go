@@ -350,6 +350,20 @@ func procState(t *testing.T, pid int) (state byte, ppid int) {
 	return f[0][0], ppid
 }
 
+// waitState waits up to 5 s for the process to be in state want, and
+// returns the state it was in last.
+func waitState(t *testing.T, pid int, want byte) byte {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, _ := procState(t, pid)
+		if state == want || time.Now().After(deadline) {
+			return state
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // The pane runs shell, launcher, agent: the launcher waits on the same
 // terminal under the agent's name, and the agent gets the run's pid.
 func TestRunProcessTree(t *testing.T) {
@@ -491,11 +505,14 @@ func TestRunCtrlZ(t *testing.T) {
 				if rc := e.number(t, "rc1"); rc != 128+int(syscall.SIGTSTP) {
 					t.Fatalf("the shell's $? = %d, want %d: the job stopped", rc, 128+int(syscall.SIGTSTP))
 				}
+				// The terminal stops the launcher and the agent together, but
+				// the shell reports the job stopped as soon as the launcher is:
+				// the agent may still be on its way.
 				for _, p := range []struct {
 					name string
 					pid  int
 				}{{"agent", pid}, {"launcher", run}} {
-					if state, _ := procState(t, p.pid); state != 'T' {
+					if state := waitState(t, p.pid, 'T'); state != 'T' {
 						t.Errorf("the %s is in state %c, want stopped", p.name, state)
 					}
 				}
