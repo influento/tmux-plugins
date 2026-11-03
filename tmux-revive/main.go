@@ -1,20 +1,16 @@
 // Command tmux-revive saves all of tmux on every change and restores it
-// after a restart. P0 step 3 builds it.
+// after a restart. tmux-revive --help lists the subcommands.
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"github.com/influento/tmux-plugins/tmux-revive/internal/cli"
 )
 
 // version is set at build time: -ldflags "-X main.version=<tag>".
 var version = "dev"
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		fmt.Println(version)
-		return
-	}
-	fmt.Fprintln(os.Stderr, "usage: tmux-revive --version")
-	os.Exit(2)
+	os.Exit(cli.Main(version, os.Args[1:], os.Stdout, os.Stderr))
 }

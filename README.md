@@ -16,16 +16,32 @@ match in tmux copy mode.
 **Features:** distance-based label assignment, auto-jump on single match,
 rainbow labels (Catppuccin Mocha).
 
-### tmux-agent (in progress)
+### tmux-agent
 
 Shows what each agent pane needs: flags on windows and borders, counts in the
 status bar, a picker and a jump key, desktop notifications. Agents start
 through one launcher; Claude Code is the first integration.
+`tmux-agent --help` lists the subcommands.
 
-### tmux-revive (in progress)
+### tmux-revive
 
 Saves all of tmux on every change and restores it after a restart: sessions,
-windows, layouts, names, folders, programs and scrollback.
+windows, layouts, names, folders, programs (nvim, less, man, ssh, ...),
+scrollback, and each pane's `@revive_cmd`, which tmux-agent sets to resume an
+agent's conversation. Whatever closes tmux from outside (a reboot, logout,
+`kill-server`, a crash) comes back in full; what you close inside tmux stays
+closed. `tmux-revive --help` lists the subcommands.
+
+```tmux
+# last lines of tmux.conf: tmux-revive's hooks, at index [20]
+run-shell 'command -v tmux-revive >/dev/null && tmux-revive tmux-init || true'
+bind C-r run-shell 'tmux-revive restore'
+bind X confirm-before "run-shell 'tmux-revive forget-session \"#S\"; tmux kill-session -t \"=#S\"'"
+```
+
+The terminal runs `tmux-revive attach` instead of `tmux new-session -A`: it
+restores once per server, before any shell starts, then attaches. In zsh,
+`eval "$(tmux-revive shell-init zsh)"` saves the folder on each `cd`.
 
 ## Installation
 

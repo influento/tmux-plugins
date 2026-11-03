@@ -213,56 +213,15 @@ func markArgs(pane string, s State, failed bool, col Colours) []string {
 		optArgs("-p", pane, "@attention_mark", Mark(s, failed, col))...)
 }
 
-// tmux refuses a command line over about 16 KiB or 1,000 arguments
-// ("command too long"); runAll sends batches well under both.
-const (
-	batchBytes = 8 << 10
-	batchArgs  = 400
-)
-
 // runAll runs commands built by the *Args helpers, as few tmux calls as
-// tmux accepts. It stops at the first call that fails.
+// tmux accepts (see tmux.Batches). It stops at the first call that fails.
 func (c *Core) runAll(ctx context.Context, args []string) error {
-	var batch []string
-	size := 0
-	for _, cmd := range commands(args) {
-		n := len(cmd)
-		for _, a := range cmd {
-			n += len(a)
+	for _, b := range tmux.Batches(args) {
+		if _, err := c.Tmux.Run(ctx, b...); err != nil {
+			return err
 		}
-		if len(batch) > 0 && (size+n > batchBytes || len(batch)+len(cmd) >= batchArgs) {
-			if _, err := c.Tmux.Run(ctx, batch...); err != nil {
-				return err
-			}
-			batch, size = nil, 0
-		}
-		if len(batch) > 0 {
-			batch = append(batch, ";")
-		}
-		batch = append(batch, cmd...)
-		size += n + 2
 	}
-	if len(batch) == 0 {
-		return nil
-	}
-	_, err := c.Tmux.Run(ctx, batch...)
-	return err
-}
-
-// commands splits args at each lone ";", as tmux does.
-func commands(args []string) [][]string {
-	var cmds [][]string
-	for len(args) > 0 {
-		i := slices.Index(args, ";")
-		if i < 0 {
-			i = len(args)
-		}
-		if i > 0 {
-			cmds = append(cmds, args[:i])
-		}
-		args = args[min(i+1, len(args)):]
-	}
-	return cmds
+	return nil
 }
 
 // Set flags the pane. It returns the state before, and whether the state

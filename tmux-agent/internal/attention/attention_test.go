@@ -197,24 +197,3 @@ func TestMark(t *testing.T) {
 		}
 	}
 }
-
-func TestCommands(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		in   []string
-		want [][]string
-	}{
-		{"none", nil, nil},
-		{"one", []string{"a", "b"}, [][]string{{"a", "b"}}},
-		{"trailing separator", []string{"a", ";"}, [][]string{{"a"}}},
-		{"two, empty between", []string{"a", ";", ";", "b", "c", ";"}, [][]string{{"a"}, {"b", "c"}}},
-		{"escaped semicolon is an argument", []string{"a", "b;", ";", "c"}, [][]string{{"a", "b;"}, {"c"}}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			got := commands(c.in)
-			if !slices.EqualFunc(got, c.want, slices.Equal) {
-				t.Errorf("commands(%q) = %q, want %q", c.in, got, c.want)
-			}
-		})
-	}
-}

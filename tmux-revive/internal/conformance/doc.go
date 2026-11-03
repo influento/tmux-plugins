@@ -5,7 +5,7 @@
 //
 // The bash driver runs tmux-attach from the dotfiles checkout named by
 // TMUX_PLUGINS_DOTFILES, with a stub in place of tmux-resurrect's restore;
-// the Go driver runs tmux-revive attach (P0 step 3).
+// the Go driver runs tmux-revive attach on snapshots it writes.
 //
 // The package has no code outside its tests.
 package conformance

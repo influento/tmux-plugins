@@ -26,16 +26,15 @@ type Driver interface {
 	Restores(t *testing.T, sb *tmuxtest.Sandbox) int
 }
 
+// drivers are the implementations to check: tmux-revive always, and the
+// bash script when a dotfiles checkout is named.
 func drivers(t *testing.T) []Driver {
 	t.Helper()
-	var ds []Driver
+	ds := []Driver{&goDriver{}}
 	if dir := os.Getenv("TMUX_PLUGINS_DOTFILES"); dir != "" {
 		ds = append(ds, &bashDriver{dotfiles: dir})
 	} else if os.Getenv("TMUXTEST_REQUIRE") != "" {
 		t.Fatal("TMUX_PLUGINS_DOTFILES is not set (TMUXTEST_REQUIRE is)")
-	}
-	if len(ds) == 0 {
-		t.Skip("no implementation to check: set TMUX_PLUGINS_DOTFILES for the bash script")
 	}
 	return ds
 }

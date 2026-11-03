@@ -2,7 +2,7 @@
 //
 // Each Server lives in a Sandbox: its own HOME, XDG directories and a bin
 // directory first on PATH, where stubs stand in for programs a test must not
-// reach for real (notify-send, claude). The rest of PATH leaves out the
+// reach for real (notify-send, claude, swaymsg, systemctl). The rest of PATH leaves out the
 // user's home, so installed copies in ~/.local/bin are out of reach. Nothing
 // reads or writes the user's own tmux server, config or state.
 //
@@ -51,6 +51,7 @@ type Sandbox struct {
 	RuntimeDir string // short path: sockets live here
 	Bin        string // first on PATH; holds the stubs
 	callsDir   string
+	raceDir    string // set by InstallSelf
 	env        map[string]string
 }
 
@@ -73,7 +74,7 @@ if [ ! -t 0 ]; then cat > "$f/stdin"; fi
 const StubScript = "#!/bin/sh\n" + RecordCall + "exit 0\n"
 
 // NewSandbox creates the directories and the default stubs: notify-send,
-// claude and swaymsg. The runtime directory is short because a unix socket path must fit
+// claude, swaymsg and systemctl. The runtime directory is short because a unix socket path must fit
 // in 108 bytes, and t.TempDir paths do not.
 func NewSandbox(t testing.TB) *Sandbox {
 	t.Helper()
@@ -121,7 +122,7 @@ func NewSandbox(t testing.TB) *Sandbox {
 	if err := os.MkdirAll(s.env["TMPDIR"], 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"notify-send", "claude", "swaymsg"} {
+	for _, name := range []string{"notify-send", "claude", "swaymsg", "systemctl"} {
 		s.Stub(t, name, StubScript)
 	}
 	return s

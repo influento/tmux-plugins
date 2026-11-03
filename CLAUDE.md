@@ -9,12 +9,12 @@ through GitHub Releases. The repository is public.
 tmux-plugins/
   go.mod               # one module for all plugins: github.com/influento/tmux-plugins
   Makefile             # build, vet, test, dist, dev/undev, release
-  internal/tmux/       # shared tmux client (timeouts on every call)
-    tmuxtest/          # private-server test harness
+  internal/tmux/       # shared tmux client (timeouts on every call, batches)
+    tmuxtest/          # private-server test harness, self-install of test binaries
   tmux-warp/           # search-and-jump; tmux-warp.sh stays at this path
   tmux-agent/          # agent flags, pickers, hooks, launcher (P0 step 2)
     internal/          # its packages; the compiler keeps them from tmux-revive
-  tmux-revive/         # save and restore all of tmux (P0 step 3)
+  tmux-revive/         # save and restore all of tmux, attach (P0 step 3)
     internal/
   .github/workflows/
     ci.yml             # vet + tests on every push; a v* tag also publishes
@@ -57,8 +57,8 @@ root `internal/`.
 Unit tests use synthetic data. Integration tests use `internal/tmux/tmuxtest`:
 
 - `tmuxtest.Start` runs a private tmux server in a sandbox with its own HOME
-  and XDG directories, and stubs for `notify-send`, `claude` and `swaymsg`
-  first on PATH; `Calls(name)` returns what each stub received, parallel
+  and XDG directories, and stubs for `notify-send`, `claude`, `swaymsg` and
+  `systemctl` first on PATH; `Calls(name)` returns what each stub received, parallel
   calls included. The sandbox environment is an allowlist, so nothing
   reaches the user's desktop, tmux server or agent session, and its PATH
   leaves out the user's home, so installed copies in `~/.local/bin` never
@@ -71,6 +71,9 @@ Unit tests use synthetic data. Integration tests use `internal/tmux/tmuxtest`:
   `Type` sends keys to it.
 - `InPane` points plain `tmux` calls in the test process at the private
   server and a pane, for in-process tests of code that runs `tmux`.
+- `InstallSelf` puts the test binary on the sandbox PATH under a plugin's
+  name, and `SelfMain` in `TestMain` runs the plugin's main when the binary
+  starts that way. Each plugin's `selftest` package wraps the two.
 
 Fixtures and test names use neutral names (`proj-a`, `host-b`): no real
 window, host or project names, session ids or home paths.
@@ -207,13 +210,72 @@ Rules:
 
 ## Plugin: tmux-revive
 
-P0 step 3. Its `main.go` only answers `--version` so far. Rules already
-fixed:
+Saves all of one tmux server on every change and brings it back after a
+restart: sessions, windows, panes, layouts, names, folders, programs,
+scrollback and each pane's `@revive_cmd`. It replaces tmux-resurrect,
+tmux-continuum and dotfiles' tmux-attach. `tmux-revive --help` lists the
+subcommands.
 
-- tmux-init sets its hooks only at `[20]` (see above).
-- A tmux-revive save that cannot reach the server, or finds no sessions,
-  writes nothing: `kill-server` runs `session-closed` hooks as the server
-  goes down. There is no `after-kill-session` hook in tmux 3.8.
+Packages in `tmux-revive/internal/`:
+
+- `snapshot`: the snapshot types, their comparison (`Equal`, `SameShape`,
+  `Lost`) and the store in `$XDG_STATE_HOME/tmux-revive/`: `snapshots/`
+  (the newest 20, one JSON file each), `scrollback/<pane id>` and `log`
+  (moved to `log.old` past 256 KiB). Folders 0700, files 0600; writes go
+  through a temp file, fsync and rename.
+- `revive`: save, restore, attach, forget, scrollback capture and paint,
+  and typing a pane's command. Locks go in `$XDG_RUNTIME_DIR/tmux-revive/`.
+- `cli`: the subcommands, and the hooks that `tmux-init` sets.
+- `selftest`: lets a test binary stand in for tmux-revive.
+- `conformance`: the attach rules of dotfiles' tmux-attach, run against
+  the bash script (characterization) and tmux-revive.
+
+Options: `@revive_ready` (server), `@revive_forgotten` (session),
+`@revive_id` (window), `@revive_pane` and `@revive_cmd` (pane), and in
+tmux.conf `@revive_programs`, `@revive_scrollback_lines` (2000),
+`@revive_scrollback_interval` (300 s, 0 for off) and `@skip_sessions`
+(`ov-*`).
+
+Rules:
+
+- What closes tmux from outside (reboot, logout, kill-server, a crash)
+  comes back in full. What the user closes inside tmux stays closed.
+- tmux-init sets its hooks only at `[20]` (see tmux-agent). The save hooks
+  run `tmux-revive save` in the background; `after-set-option` saves only
+  for `@revive_cmd` and `automatic-rename` (`#{hook_argument_0}`).
+- A save that cannot reach the server, or finds no sessions, writes
+  nothing: `kill-server` runs `session-closed` hooks as the server goes
+  down. There is no `after-kill-session` hook in tmux 3.8. A save that
+  loses panes while systemd reports `stopping` (system or `--user`) writes
+  nothing either.
+- Saves wait for `@revive_ready`. Attach and restore set it once the
+  saved state is back, or once they find live work they must not restore
+  onto; tmux-init sets it only on a server that already has sessions
+  (prefix r, the first run after an upgrade). At server start tmux.conf
+  runs before the first session, so a server started some other way
+  cannot replace the snapshot a restore still needs.
+- Saves coalesce: a save that finds another one queued exits; the queued
+  one waits `--settle`, then takes the save lock. Restore holds the save
+  lock, so no save sees a half-restored server.
+- A save with the same state writes nothing. A save with the same
+  sessions, windows and panes (other folders, layouts, names) replaces the
+  newest snapshot, so resizes and `cd` do not push older states out.
+- `forget-session` marks the session `@revive_forgotten` and saves before
+  the session goes, so it stays closed after a restore.
+- Restore adds only what is missing, by session name and window id. It
+  types `@revive_cmd` once into a pane: it waits for the shell's prompt,
+  sends the text literally, checks the text shows, then sends Enter; it
+  clears the line and tries again on a timeout. A program on the
+  `@revive_programs` list starts again; a pane with scrollback runs
+  `tmux-revive paint`, which prints it and execs the login shell.
+- Names and folders that go into `-s`, `-n` or `-c` escape `#` as `##`;
+  tmux expands formats there.
+- Capture skips a pane on the alternate screen, keeps the last file for
+  it, and removes files of panes neither live nor in a kept snapshot.
+- Known gaps: `exit` in the last shell runs no hook; swap, move, join and
+  break of panes or windows have no `after-` hooks in 3.8, so the next
+  save picks them up; a pane has no `@revive_pane` until its first save,
+  so capture skips it until then.
 
 ## How Dotfiles Consumes This
 
@@ -232,6 +294,12 @@ places the three options. Until the cutover, dotfiles' formats still build
 the glyphs from `@attention` and `@attention_win` (they draw a failed run as
 a plain ✓); at the cutover they print the marks instead.
 
+At the cutover, tmux-revive takes over from tmux-resurrect, tmux-continuum
+and tmux-attach. The terminal starts `tmux-revive attach`; tmux.conf runs
+`tmux-revive tmux-init` and binds `C-r` to `tmux-revive restore` and `X` to
+`forget-session` before `kill-session`; zshrc evals
+`tmux-revive shell-init zsh`. The README has the exact lines.
+
 ## Code Conventions
 
 ### Go
@@ -245,8 +313,8 @@ a plain ✓); at the cutover they print the marks instead.
   that ends in `;` is escaped, since tmux reads it as a command separator;
   only a lone `;` separates commands. tmux 3.8 refuses a command line over
   about 16 KiB or 1,000 arguments ("command too long"): a list that grows
-  with the number of panes or windows goes in batches (attention's
-  `runAll`).
+  with the number of panes or windows goes in batches (`tmux.Batches`,
+  `Client.RunAll`).
 
 ### Shell scripts
 - All scripts use `#!/usr/bin/env bash` shebang
