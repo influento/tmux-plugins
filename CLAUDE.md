@@ -32,9 +32,11 @@ root `internal/`.
 - `make build`: the three binaries in `bin/`. `make vet`: go vet, gofmt, and
   a check that every action in `.github/workflows` is pinned by commit SHA.
 - `make test`: vet, then `go test -race ./...`. The characterization tests
-  run the bash scripts from the dotfiles checkout in `DOTFILES` (default
-  `../dotfiles`), exported to the tests as `TMUX_PLUGINS_DOTFILES`; without it
-  they skip.
+  run the bash scripts of the dotfiles checkout in `DOTFILES` (default
+  `../dotfiles`) at the commit `DOTFILES_REF` in `ci.yml`, not at its HEAD:
+  dotfiles deletes them at the cutover. The Makefile extracts them to a
+  temporary folder, exported to the tests as `TMUX_PLUGINS_DOTFILES`; without
+  a checkout that has the commit they skip.
 - `make dev` / `make undev`: link the `bin/` builds into `~/.local/bin`, and
   remove the links. An installed release is kept as `<name>.release` and comes
   back on undev. Dotfiles' install skips symlinks.

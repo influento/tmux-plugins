@@ -9,8 +9,10 @@ ARCHES := amd64 arm64
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GOFLAGS_BUILD := -trimpath -ldflags "-s -w -X main.version=$(VERSION)"
 PREFIX ?= $(HOME)/.local/bin
-# The dotfiles checkout whose bash scripts the characterization tests run.
+# The dotfiles checkout whose bash scripts the characterization tests run,
+# taken at the commit CI pins: dotfiles deletes the scripts at the cutover.
 DOTFILES ?= $(abspath $(CURDIR)/../dotfiles)
+DOTFILES_REF := $(shell sed -n 's/^[[:space:]]*DOTFILES_REF:[[:space:]]*//p' .github/workflows/ci.yml)
 
 .PHONY: build test vet dist dev undev release clean
 
@@ -29,9 +31,16 @@ vet:
 	  [[ -z "$$bad" ]] || { echo "actions not pinned to a commit SHA:"; echo "$$bad"; exit 1; }
 
 ## test: vet, then every test with the race detector; the characterization
-## tests use $(DOTFILES)
+## tests run the scripts of $(DOTFILES) at $(DOTFILES_REF), extracted to a
+## temporary folder
 test: vet
-	@if [[ -d "$(DOTFILES)/common/scripts" ]]; then export TMUX_PLUGINS_DOTFILES="$(DOTFILES)"; fi; \
+	@if git -C "$(DOTFILES)" cat-file -e "$(DOTFILES_REF)^{commit}" 2>/dev/null; then \
+	  scripts=$$(mktemp -d); trap 'rm -rf "$$scripts"' EXIT; \
+	  git -C "$(DOTFILES)" archive "$(DOTFILES_REF)" common/scripts workstation/scripts | tar -x -C "$$scripts"; \
+	  export TMUX_PLUGINS_DOTFILES="$$scripts"; \
+	elif [[ -d "$(DOTFILES)" ]]; then \
+	  echo "$(DOTFILES) has no commit $(DOTFILES_REF), so the bash scripts are not tested: git -C $(DOTFILES) fetch" >&2; \
+	fi; \
 	go test -race ./...
 
 ## dist: release assets in dist/, all plugins for linux amd64 and arm64, the
