@@ -28,6 +28,8 @@ import (
 
 const usage = `usage:
   tmux-agent run AGENT [ARGS...]       start an agent through the launcher
+  tmux-agent revive AGENT SESSION      resume a session through the launcher, as a
+                                       restore types it; nothing when it is gone
   tmux-agent hook AGENT                handle one hook event (JSON on stdin)
   tmux-agent flag STATE [--reason TEXT] [--pane ID] [--owner CMD] [--quiet] [--failed]
                                        flag a pane: needs-you, done, working or clear;
@@ -41,7 +43,8 @@ const usage = `usage:
   tmux-agent rows                      the rows pick lists
   tmux-agent kill-session NAME         kill a session, unless it is the last one
   tmux-agent status                    render the counts into @attention_status
-  tmux-agent sweep [--window ID]       drop dead flags and titles; set the window's borders
+  tmux-agent sweep [--window ID]       drop dead flags, sessions and titles; set the
+                                       window's borders
   tmux-agent borders WINDOW            borders on for a split window, off otherwise
   tmux-agent shell-init SHELL [NAME...]  shell functions that start agents through run
   tmux-agent tmux-init                 set tmux-agent's hooks, at index [10]
@@ -91,6 +94,13 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 		}
 		a.env.Log = a.logf // the terminal belongs to the agent
 		return a.env.Launch(a.reg.Get(rest[0]), rest[1:], self, stderr)
+	case "revive":
+		if len(rest) != 2 {
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
+		a.env.Log = a.logf
+		return a.env.Revive(a.reg.Get(rest[0]), rest[1], self, stderr)
 	case "--version", "version":
 		fmt.Fprintln(stdout, version)
 		return 0
@@ -98,7 +108,7 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	err := a.command(ctx, cmd, rest)
 	if errors.Is(err, errUsage) {
@@ -113,6 +123,10 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 }
 
 var errUsage = errors.New("usage")
+
+// commandTimeout bounds a command's work, the time it waits on the user
+// left out.
+const commandTimeout = 30 * time.Second
 
 func newApp(version string, stdout, stderr io.Writer, getenv func(string) string) *app {
 	a := &app{version: version, stdout: stdout, stderr: stderr, getenv: getenv, reg: Registry()}
@@ -222,8 +236,14 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := a.env.SweepAgents(ctx); err != nil {
+			return err
+		}
 		return a.core.Seen(ctx, p)
 	case "status":
+		if err := a.env.SweepAgents(ctx); err != nil {
+			return err
+		}
 		return a.core.Status(ctx)
 	case "sweep":
 		return a.sweep(ctx, args)
@@ -304,8 +324,8 @@ func (a *app) flag(ctx context.Context, args []string) error {
 }
 
 // sweep is what tmux runs when a pane closes: the window's borders, the
-// flags of commands that are gone, and the titles of agents that are gone,
-// in one call.
+// flags of commands that are gone, and the sessions and titles of agents
+// that are gone, in one call.
 func (a *app) sweep(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -327,6 +347,9 @@ func (a *app) sweep(ctx context.Context, args []string) error {
 				return err
 			}
 		}
+	}
+	if err := a.env.SweepAgents(ctx); err != nil {
+		return err
 	}
 	return a.env.SweepTitles(ctx)
 }
@@ -375,6 +398,10 @@ func (a *app) pick(ctx context.Context) error {
 	if err != nil || choice == "" {
 		return err
 	}
+	// The user can take longer than the command's deadline: the calls after
+	// the choice get their own.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandTimeout)
+	defer cancel()
 	if _, err := a.tmux.Run(ctx, "switch-client", "-t", "="+choice); err != nil {
 		return err
 	}
@@ -406,7 +433,8 @@ func (a *app) popup(ctx context.Context, client string) error {
 	w, h := ui.PopupSize(rows, cw, ch)
 	args := append(append([]string{"display-popup"}, clientArgs...),
 		"-E", "-w", strconv.Itoa(w), "-h", strconv.Itoa(h), shell.Quote(a.self)+" pick")
-	_, err = a.tmux.Run(ctx, args...)
+	// The popup is open until the user closes it: no deadline.
+	_, err = a.tmux.Interactive(context.WithoutCancel(ctx), args...)
 	return err
 }
 

@@ -47,6 +47,16 @@ func (e *Env) now() time.Time {
 	return time.Now()
 }
 
+// revive is the resume command for the session the calling hook names,
+// or "" for none: a one-turn run never runs again.
+func (e *Env) revive(a Agent, session string) string {
+	cmd, ok := ReviveCommand(a, session)
+	if !ok || OneShotHook(a, e.Registry.ProcessNames(), e.Run) {
+		return ""
+	}
+	return cmd
+}
+
 func (e *Env) logf(format string, args ...any) {
 	if e.Log != nil {
 		e.Log(format, args...)
@@ -111,8 +121,10 @@ var liveFormat = strings.Join([]string{
 	"#{@attention}", "#{automatic-rename}", "#{window_name}", "#{" + OptTitle + "}",
 }, "\x1f")
 
-func (e *Env) readLive(ctx context.Context) (live, error) {
-	out, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", e.Pane, liveFormat)
+func (e *Env) readLive(ctx context.Context) (live, error) { return e.liveOf(ctx, e.Pane) }
+
+func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
+	out, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", pane, liveFormat)
 	if err != nil {
 		return live{}, err
 	}
@@ -128,17 +140,23 @@ func (e *Env) readLive(ctx context.Context) (live, error) {
 	}, nil
 }
 
-// paneOpts writes pane options in one call: a value of "" unsets.
+// paneOpts writes options of the hook's pane in one call: a value of ""
+// unsets.
 func (e *Env) paneOpts(ctx context.Context, opts map[string]string) error {
+	return e.optsOf(ctx, e.Pane, opts)
+}
+
+// optsOf writes options of pane in one call: a value of "" unsets.
+func (e *Env) optsOf(ctx context.Context, pane string, opts map[string]string) error {
 	var args []string
 	for name, v := range opts {
 		if len(args) > 0 {
 			args = append(args, ";")
 		}
 		if v == "" {
-			args = append(args, "set-option", "-pu", "-t", e.Pane, name)
+			args = append(args, "set-option", "-pu", "-t", pane, name)
 		} else {
-			args = append(args, "set-option", "-p", "-t", e.Pane, name, v)
+			args = append(args, "set-option", "-p", "-t", pane, name, v)
 		}
 	}
 	if len(args) == 0 {
@@ -243,7 +261,7 @@ func (e *Env) adopt(ctx context.Context, a Agent, ev Event) error {
 	if ev.Transcript != "" {
 		opts[optTranscript] = ev.Transcript
 	}
-	if cmd, ok := ReviveCommand(a, ev.SessionID); ok {
+	if cmd := e.revive(a, ev.SessionID); cmd != "" {
 		opts[OptRevive] = cmd
 	}
 	return e.paneOpts(ctx, opts)
@@ -325,10 +343,7 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 		}
 		opts[optNamed] = title
 	}
-	opts[OptRevive] = ""
-	if cmd, ok := ReviveCommand(a, ev.SessionID); ok {
-		opts[OptRevive] = cmd
-	}
+	opts[OptRevive] = e.revive(a, ev.SessionID)
 	if err := e.paneOpts(ctx, opts); err != nil {
 		return err
 	}
@@ -421,18 +436,12 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 	if err := e.Core.Clear(ctx, e.Pane); err != nil {
 		return err
 	}
-	if l.named != "" && l.title == l.named {
-		args := []string{"set-option", "-wu", "-t", e.Pane, OptTitle}
-		if l.windowName == l.named {
-			args = append(args, ";", "set-option", "-w", "-t", e.Pane, "automatic-rename", "on")
-		}
-		if _, err := e.Tmux.Run(ctx, args...); err != nil {
-			return err
-		}
+	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
+		return err
 	}
 	opts := map[string]string{optNamed: ""}
 	if ev.End == EndExited {
-		for _, o := range []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, OptRevive} {
+		for _, o := range sessionOpts {
 			opts[o] = ""
 		}
 	}
@@ -441,6 +450,24 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 	}
 	e.markEnded(a, or(ev.SessionID, l.session), ev.End, "")
 	return nil
+}
+
+// sessionOpts are the pane options that name the pane's session; they go
+// when the session ends for good.
+var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, OptRevive}
+
+// releaseTitle gives the window of pane back to tmux when its name is
+// still the title the pane's agent set.
+func (e *Env) releaseTitle(ctx context.Context, pane string, l live) error {
+	if l.named == "" || l.title != l.named {
+		return nil
+	}
+	args := []string{"set-option", "-wu", "-t", pane, OptTitle}
+	if l.windowName == l.named {
+		args = append(args, ";", "set-option", "-w", "-t", pane, "automatic-rename", "on")
+	}
+	_, err := e.Tmux.Run(ctx, args...)
+	return err
 }
 
 // markEnded records how a session ended. A later, surer word wins: the

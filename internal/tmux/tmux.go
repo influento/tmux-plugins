@@ -1,7 +1,8 @@
 // Package tmux runs tmux commands against one server.
 //
 // Every call has a timeout, because callers such as hook handlers must never
-// block the program that started them on a hung server.
+// block the program that started them on a hung server. The one exception
+// is Interactive, for a command that waits on the user.
 package tmux
 
 import (
@@ -57,7 +58,17 @@ func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	return c.run(ctx, args)
+}
 
+// Interactive runs a tmux command that waits on the user, such as
+// display-popup -E, and returns its stdout. It has no timeout: it ends when
+// the user closes what the command opened, or when ctx ends.
+func (c *Client) Interactive(ctx context.Context, args ...string) (string, error) {
+	return c.run(ctx, args)
+}
+
+func (c *Client) run(ctx context.Context, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "tmux", c.argv(args)...)
 	cmd.Env = c.Env
 	// tmux forks the server from the first client; the server must not keep

@@ -359,6 +359,37 @@ func TestShutdownGuard(t *testing.T) {
 	e.waitSnapshot(t, "the closed pane dropped", func(s *snapshot.Snapshot) bool { return s.Panes() == 1 })
 }
 
+// A save while systemd is stopping that would drop a pane's command writes
+// nothing either: an agent can die before tmux does, and its pane would
+// come back without it.
+func TestShutdownGuardKeepsCommands(t *testing.T) {
+	e := newEnv(t, "")
+	state := filepath.Join(e.Home, "systemd-state")
+	e.Stub(t, "systemctl", "#!/bin/sh\ncat \"$HOME/systemd-state\" 2>/dev/null\n")
+	e.start(t, "proj-a", e.Home)
+	cmd := "tmux-agent revive claude 11111111-2222-4333-8444-555555555555"
+	command := func(s *snapshot.Snapshot) string { return s.Sessions[0].Windows[0].Panes[0].Command }
+	e.mustTmux(t, "set-option", "-p", "-t", "=proj-a:0.0", "@revive_cmd", cmd)
+	e.waitSnapshot(t, "the command saved", func(s *snapshot.Snapshot) bool { return command(s) == cmd })
+
+	if err := os.WriteFile(state, []byte("stopping\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.mustTmux(t, "set-option", "-pu", "-t", "=proj-a:0.0", "@revive_cmd")
+	if got := e.saveNow(t); got != "stopping" {
+		t.Errorf("save while stopping = %q, want stopping", got)
+	}
+	if snap, _ := e.latest(t); command(snap) != cmd {
+		t.Errorf("saved command = %q, want %q from before the shutdown", command(snap), cmd)
+	}
+
+	if err := os.WriteFile(state, []byte("running\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.saveNow(t)
+	e.waitSnapshot(t, "the command dropped", func(s *snapshot.Snapshot) bool { return command(s) == "" })
+}
+
 // A server attach or restore has not marked never saves, so it cannot
 // replace the snapshot a restore still needs.
 func TestUnreadyServerSavesNothing(t *testing.T) {
@@ -683,5 +714,50 @@ func TestCaptureOfAFreshPaneIsEmpty(t *testing.T) {
 	}
 	if b, err := os.ReadFile(path); err != nil || len(b) != 0 {
 		t.Errorf("scrollback = %q, %v; want an empty file", b, err)
+	}
+}
+
+// A pane that runs a full-screen program when its scrollback is captured
+// comes back with what its shell showed before the program: the history
+// and the screen the program covers, not the program's own screen.
+func TestCaptureOfAFullScreenProgram(t *testing.T) {
+	e := newEnv(t, "")
+	e.start(t, "proj-a", e.Home)
+	e.mustTmux(t, "send-keys", "-t", "=proj-a:0.0", "echo marker-$((6*7))", "Enter")
+	e.waitContent(t, "=proj-a:0.0", "marker-42")
+	e.mustTmux(t, "send-keys", "-t", "=proj-a:0.0", `printf '\033[?1049h\033[Hfull-screen'; sleep 1000`, "Enter")
+	tmuxtest.WaitFor(t, 10*time.Second, "the alternate screen", func() bool {
+		out, err := e.tmux.Output(context.Background(), "display-message", "-p", "-t", "=proj-a:0.0", "#{alternate_on}")
+		return err == nil && out == "1"
+	})
+	e.saveNow(t)
+	id := e.mustTmux(t, "display-message", "-p", "-t", "=proj-a:0.0", "#{@revive_pane}")
+	e.revive(t, "capture")
+	path, err := e.store.ScrollbackPath(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(b), "marker-42") || strings.Contains(string(b), "full-screen\n") {
+		t.Fatalf("scrollback = %q, %v; want the shell's lines, without the program's screen", b, err)
+	}
+
+	e.mustTmux(t, "kill-server")
+	time.Sleep(500 * time.Millisecond) // for hooks run at shutdown
+	e.revive(t, "restore")
+	e.waitContent(t, "=proj-a:0.0", "marker-42")
+}
+
+// @revive_snapshots sets how many snapshots a save keeps.
+func TestSnapshotsOption(t *testing.T) {
+	e := newEnv(t, "set -g @revive_snapshots 3\n")
+	e.start(t, "proj-a", e.Home)
+	for i := range 5 {
+		e.mustTmux(t, "new-window", "-d", "-t", "=proj-a:")
+		e.saveNow(t)
+		e.waitSnapshot(t, "the new window saved", func(s *snapshot.Snapshot) bool { return s.Panes() == i+2 })
+	}
+	if es, err := e.store.Entries(); err != nil || len(es) != 3 {
+		t.Errorf("snapshots kept = %d, %v; want 3", len(es), err)
 	}
 }

@@ -26,17 +26,21 @@ func TestCompare(t *testing.T) {
 	moved := snapOf(sess("proj-a", win("w1", pane("p1", "/a"), pane("p2", "/c"))))
 	closed := snapOf(sess("proj-a", win("w1", pane("p1", "/a"))))
 	renamed := snapOf(sess("proj-b", win("w1", pane("p1", "/a"), pane("p2", "/b"))))
+	withCmd := snapOf(sess("proj-a", win("w1", pane("p1", "/a"), Pane{ID: "p2", Cwd: "/b", Command: "run x"})))
 
 	for _, c := range []struct {
 		name             string
 		a, b             *Snapshot
 		equal, sameShape bool
-		lost             []string
+		lost, lostCmds   []string
 	}{
-		{"same state, other time", base, later, true, true, nil},
-		{"a folder changed", base, moved, false, true, nil},
-		{"a pane closed", base, closed, false, false, []string{"p2"}},
-		{"a session renamed", base, renamed, false, false, nil},
+		{"same state, other time", base, later, true, true, nil, nil},
+		{"a folder changed", base, moved, false, true, nil, nil},
+		{"a pane closed", base, closed, false, false, []string{"p2"}, nil},
+		{"a session renamed", base, renamed, false, false, nil, nil},
+		{"a command came", base, withCmd, false, true, nil, nil},
+		{"a command went", withCmd, base, false, true, nil, []string{"p2"}},
+		{"a pane with a command closed", withCmd, closed, false, false, []string{"p2"}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := Equal(c.a, c.b); got != c.equal {
@@ -47,6 +51,9 @@ func TestCompare(t *testing.T) {
 			}
 			if got := Lost(c.a, c.b); !slices.Equal(got, c.lost) {
 				t.Errorf("Lost = %v, want %v", got, c.lost)
+			}
+			if got := LostCommands(c.a, c.b); !slices.Equal(got, c.lostCmds) {
+				t.Errorf("LostCommands = %v, want %v", got, c.lostCmds)
 			}
 		})
 	}

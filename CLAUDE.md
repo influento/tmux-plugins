@@ -169,7 +169,7 @@ Packages in `tmux-agent/internal/`:
 - `conformance`: one suite, two drivers: the Go code, and dotfiles' bash
   scripts (characterization). `contract`: the launcher in a real pane with
   a stub agent: exit codes, signals, Ctrl-C, Ctrl-Z, one-shot, resume,
-  nested agents.
+  nested agents, revive, agents gone without a word.
 
 Rules:
 
@@ -182,6 +182,18 @@ Rules:
   array.
 - A pane's live record is in pane options (`@agent*`, and `@revive_cmd` for
   tmux-revive); the window title an agent set is `@agent_title`.
+- `@revive_cmd` is `tmux-agent revive <agent> <session id>`, for a UUID
+  session id only. A one-shot run sets none, also one the launcher did not
+  start (the arguments of the hook's nearest agent process). revive marks
+  the restored window name as the agent's title, so it goes when the run
+  ends however it ends (the launcher releases it too); a session whose
+  transcript is gone starts nothing, and gives the window its automatic
+  name back.
+- `seen`, `status` and `sweep` end the session of a pane whose agent is
+  gone without a word (killed, crashed, outside the launcher): no agent
+  process left below the pane's shell (a stopped one counts). The resume
+  command, the `@agent*` options and the agent's title go. A pane whose
+  launcher runs, or whose run was killed (the record's end), keeps them.
 - A client has focus when `#{client_flags}` contains `focused`; tmux 3.8 has
   no `client_focused`.
 - The launcher re-execs itself with the agent's name as argv[0]: tmux names
@@ -193,6 +205,9 @@ Rules:
   own; a launcher started inside an agent runs the agent in its place.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
+- `popup` waits until the user closes the popup, with no timeout; `pick`
+  gives the tmux calls after the choice their own deadline. The 30 s
+  command deadline leaves out the time the user takes.
 - tmux-agent draws the flags: every change sets `@attention_mark` on the
   pane and `@attention_win_mark` on its window (the window shows its
   best-ranked pane), a ready-to-print glyph in its `@attention_fg_*` colour,
@@ -223,9 +238,9 @@ subcommands.
 Packages in `tmux-revive/internal/`:
 
 - `snapshot`: the snapshot types, their comparison (`Equal`, `SameShape`,
-  `Lost`) and the store in `$XDG_STATE_HOME/tmux-revive/`: `snapshots/`
-  (the newest 20, one JSON file each), `scrollback/<pane id>` and `log`
-  (moved to `log.old` past 256 KiB). Folders 0700, files 0600; writes go
+  `Lost`, `LostCommands`) and the store in `$XDG_STATE_HOME/tmux-revive/`:
+  `snapshots/` (the newest `@revive_snapshots`, one JSON file each),
+  `scrollback/<pane id>` and `log` (moved to `log.old` past 256 KiB). Folders 0700, files 0600; writes go
   through a temp file, fsync and rename.
 - `revive`: save, restore, attach, forget, scrollback capture and paint,
   and typing a pane's command. Locks go in `$XDG_RUNTIME_DIR/tmux-revive/`.
@@ -237,8 +252,8 @@ Packages in `tmux-revive/internal/`:
 Options: `@revive_ready` (server), `@revive_forgotten` (session),
 `@revive_id` (window), `@revive_pane` and `@revive_cmd` (pane), and in
 tmux.conf `@revive_programs`, `@revive_scrollback_lines` (2000),
-`@revive_scrollback_interval` (300 s, 0 for off) and `@skip_sessions`
-(`ov-*`).
+`@revive_scrollback_interval` (300 s, 0 for off), `@revive_snapshots` (20)
+and `@skip_sessions` (`ov-*`).
 
 Rules:
 
@@ -250,8 +265,8 @@ Rules:
 - A save that cannot reach the server, or finds no sessions, writes
   nothing: `kill-server` runs `session-closed` hooks as the server goes
   down. There is no `after-kill-session` hook in tmux 3.8. A save that
-  loses panes while systemd reports `stopping` (system or `--user`) writes
-  nothing either.
+  loses panes, or a pane's command, while systemd reports `stopping`
+  (system or `--user`) writes nothing either: programs die before tmux.
 - Saves wait for `@revive_ready`. Attach and restore set it, even past
   their deadline, once the
   saved state is back, or once they find live work they must not restore
@@ -279,8 +294,10 @@ Rules:
   `tmux-revive paint`, which prints it and execs the login shell.
 - Names and folders that go into `-s`, `-n` or `-c` escape `#` as `##`;
   tmux expands formats there.
-- Capture skips a pane on the alternate screen, keeps the last file for
-  it, and removes files of panes neither live nor in a kept snapshot.
+- Capture of a pane on the alternate screen (a full-screen program) saves
+  what the program covers: the history, and the saved normal screen
+  (`capture-pane -a`) up to the line above `#{alternate_saved_y}`. Capture
+  removes files of panes neither live nor in a kept snapshot.
 - Known gaps: `exit` in the last shell runs no hook; swap, move, join and
   break of panes or windows have no `after-` hooks in 3.8, so the next
   save picks them up; a pane has no `@revive_pane` until its first save,
@@ -316,8 +333,10 @@ and tmux-attach. The terminal starts `tmux-revive attach`; tmux.conf runs
   binaries small
 - Before you write or change Go code, load the Go skill that fits the task with the Skill tool: go-fundamentals (types, naming, design), go-reliability (errors, concurrency, context, tests), go-infra (database, security, performance), go-tooling (CLI, linting, dependencies, Go versions).
 - tmux calls go through `internal/tmux`, which puts a timeout on each. The
-  one exception is tmux-warp's label `command-prompt`, which holds its client
-  until answered and is started without waiting. `Option` returns ok=false
+  exceptions are tmux-warp's label `command-prompt`, which holds its client
+  until answered and is started without waiting, and tmux-agent's
+  `display-popup -E`, which runs through `Client.Interactive` and waits
+  until the user closes the popup. `Option` returns ok=false
   only for an unset `@option`; any other failure is an error. An argument
   that ends in `;` is escaped, since tmux reads it as a command separator;
   only a lone `;` separates commands. tmux 3.8 refuses a command line over

@@ -123,6 +123,30 @@ func Lost(prev, next *Snapshot) []string {
 	return lost
 }
 
+// LostCommands returns the ids of the panes in both prev and next whose
+// command, to type on restore, next no longer has.
+func LostCommands(prev, next *Snapshot) []string {
+	have := map[string]bool{}
+	for _, sess := range next.Sessions {
+		for _, w := range sess.Windows {
+			for _, p := range w.Panes {
+				have[p.ID] = p.Command != ""
+			}
+		}
+	}
+	var lost []string
+	for _, sess := range prev.Sessions {
+		for _, w := range sess.Windows {
+			for _, p := range w.Panes {
+				if cmd, ok := have[p.ID]; ok && !cmd && p.Command != "" {
+					lost = append(lost, p.ID)
+				}
+			}
+		}
+	}
+	return lost
+}
+
 func paneIDs(s *Snapshot) []string {
 	var ids []string
 	for _, sess := range s.Sessions {

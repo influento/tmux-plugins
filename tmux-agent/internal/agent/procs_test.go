@@ -106,3 +106,56 @@ func TestAgentAncestors(t *testing.T) {
 		})
 	}
 }
+
+// A hook reads the arguments of the agent it runs under, however the agent
+// was started, and finds an agent anywhere below a pane's shell.
+func TestAgentArgsAndBelow(t *testing.T) {
+	fakeProcs(t, map[int][]string{
+		10: {"1", "S", "zsh", "zsh"},
+		11: {"10", "S", "claude", "claude", "-p", "hi"},
+		12: {"11", "S", "sh", "sh", "-c", "tmux-agent hook claude"},
+		20: {"1", "S", "zsh", "zsh"},
+		21: {"20", "S", "node", "node", "/opt/bin/claude", "--resume", "x"},
+		22: {"21", "S", "sh", "sh", "-c", "tmux-agent hook claude"},
+		30: {"1", "S", "zsh", "zsh"},
+		31: {"30", "S", "bash", "bash", "-c", "make"},
+		32: {"31", "T", "claude", "claude"},
+		40: {"1", "S", "zsh", "zsh"},
+		41: {"40", "S", "vim", "vim"},
+	})
+	names := []string{"claude"}
+	for _, c := range []struct {
+		name string
+		from int
+		want []string
+	}{
+		{"native binary", 12, []string{"-p", "hi"}},
+		{"npm script under node", 22, []string{"--resume", "x"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := nearestAgentArgs(c.from, names, 0)
+			if !ok || !slices.Equal(got, c.want) {
+				t.Errorf("nearestAgentArgs(%d) = %q, %v; want %q", c.from, got, ok, c.want)
+			}
+		})
+	}
+	if _, ok := nearestAgentArgs(41, names, 0); ok {
+		t.Error("nearestAgentArgs found an agent above vim")
+	}
+	tree := processTree()
+	for _, c := range []struct {
+		name string
+		pane int
+		want bool
+	}{
+		{"agent under the shell", 10, true},
+		{"stopped agent two levels down", 30, true},
+		{"no agent", 40, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := hasAgentBelow(c.pane, names, tree); got != c.want {
+				t.Errorf("hasAgentBelow(%d) = %v, want %v", c.pane, got, c.want)
+			}
+		})
+	}
+}

@@ -70,6 +70,75 @@ func isAgentProc(p proc, names []string) bool {
 	return len(p.argv) > 1 && slices.Contains(names, filepath.Base(p.argv[1]))
 }
 
+// agentArgs returns the arguments the agent process p was started with:
+// what follows the agent's program in its command line.
+func agentArgs(p proc, names []string) []string {
+	if len(p.argv) > 1 && !slices.Contains(names, filepath.Base(p.argv[0])) && slices.Contains(names, filepath.Base(p.argv[1])) {
+		return p.argv[2:] // a script and its interpreter
+	}
+	if len(p.argv) > 0 {
+		return p.argv[1:]
+	}
+	return nil
+}
+
+// nearestAgentArgs returns the arguments of the nearest agent process from
+// pid up to, not including, stop (0 for none). ok is false when there is
+// none.
+func nearestAgentArgs(pid int, names []string, stop int) (args []string, ok bool) {
+	for pid > 1 && pid != stop {
+		p, err := readProc(pid)
+		if err != nil {
+			return nil, false
+		}
+		if isAgentProc(p, names) {
+			return agentArgs(p, names), true
+		}
+		pid = p.ppid
+	}
+	return nil, false
+}
+
+// hasAgentBelow reports whether pid, or a process below it, is an agent
+// process. A stopped one counts: it can go on. tree maps a pid to its
+// children.
+func hasAgentBelow(pid int, names []string, tree map[int][]proc) bool {
+	if p, err := readProc(pid); err == nil && isAgentProc(p, names) {
+		return true
+	}
+	queue := []int{pid}
+	for len(queue) > 0 {
+		for _, c := range tree[queue[0]] {
+			if isAgentProc(c, names) {
+				return true
+			}
+			queue = append(queue, c.pid)
+		}
+		queue = queue[1:]
+	}
+	return false
+}
+
+// processTree reads every process and maps each pid to its children; nil
+// when the process table cannot be read.
+func processTree() map[int][]proc {
+	des, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil
+	}
+	tree := map[int][]proc{}
+	for _, de := range des {
+		pid, err := strconv.Atoi(de.Name())
+		if err != nil {
+			continue
+		}
+		if p, err := readProc(pid); err == nil {
+			tree[p.ppid] = append(tree[p.ppid], p)
+		}
+	}
+	return tree
+}
+
 // agentAncestors counts the agent processes from pid up to, not including,
 // stop (the launcher; 0 for none), or to init. It stops counting at max.
 func agentAncestors(pid int, names []string, stop, max int) int {
@@ -98,6 +167,17 @@ func NestedHook(names []string, run int) bool {
 		return false
 	}
 	return agentAncestors(os.Getppid(), names, run, 2) >= 2
+}
+
+// OneShotHook reports whether the hook process runs under a one-turn run
+// of agent a, such as claude -p started without the launcher.
+func OneShotHook(a Agent, names []string, run int) bool {
+	o, ok := a.(OneShotter)
+	if !ok || len(names) == 0 {
+		return false
+	}
+	args, ok := nearestAgentArgs(os.Getppid(), names, run)
+	return ok && o.OneShot(args)
 }
 
 // InsideAgent reports whether the calling process runs under an agent

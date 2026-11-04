@@ -538,7 +538,7 @@ func TestRunCtrlZ(t *testing.T) {
 // shutdown) passes the signal on and keeps the session for a resume; an
 // agent that ends by itself lets it go.
 func TestRunEnd(t *testing.T) {
-	resume := "tmux-agent run claude --resume " + sessionA
+	resume := "tmux-agent revive claude " + sessionA
 	for _, c := range []struct {
 		name string
 		sig  syscall.Signal
@@ -646,7 +646,7 @@ func TestRunNestedAgent(t *testing.T) {
 				t.Errorf("the inner agent's parent is %s, want the outer agent %s", got, want)
 			}
 			e.wantOpt(t, "@agent_session", sessionA)
-			e.wantOpt(t, "@revive_cmd", "tmux-agent run claude --resume "+sessionA)
+			e.wantOpt(t, "@revive_cmd", "tmux-agent revive claude "+sessionA)
 			e.wantFlag(t, "", "")
 			e.release(t)
 			if rc := e.number(t, "rc"); rc != 0 {

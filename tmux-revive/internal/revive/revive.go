@@ -54,6 +54,8 @@ const (
 	// OptScrollbackInterval is the seconds between scrollback captures; 0
 	// turns them off.
 	OptScrollbackInterval = "@revive_scrollback_interval"
+	// OptSnapshots is how many snapshots a save keeps, at least 1.
+	OptSnapshots = "@revive_snapshots"
 	// OptSkipSessions lists sessions attach never lands on (globs, space
 	// separated). tmux-agent reads it too.
 	OptSkipSessions = "@skip_sessions"

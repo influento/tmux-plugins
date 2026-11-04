@@ -137,14 +137,18 @@ func (r *Reviver) commit(ctx context.Context, snap *snapshot.Snapshot) (SaveResu
 		if snapshot.Equal(prev, snap) {
 			return Unchanged, nil
 		}
-		if lost := snapshot.Lost(prev, snap); len(lost) > 0 && r.stopping(ctx) {
-			r.logf("save skipped: shutting down, and it would lose %d of %d panes", len(lost), prev.Panes())
+		// At shutdown panes and their programs die before tmux does: a save
+		// then must not drop what a restore would bring back.
+		lost, cmds := snapshot.Lost(prev, snap), snapshot.LostCommands(prev, snap)
+		if len(lost)+len(cmds) > 0 && r.stopping(ctx) {
+			r.logf("save skipped: shutting down, and it would lose %d of %d panes and %d commands", len(lost), prev.Panes(), len(cmds))
 			return Stopping, nil
 		}
 		if snapshot.SameShape(prev, snap) {
 			replace, res = e.Path, Replaced
 		}
 	}
+	r.Store.Keep = r.intOption(ctx, OptSnapshots, snapshot.DefaultKeep)
 	if _, err := r.Store.Write(snap, replace); err != nil {
 		return 0, err
 	}

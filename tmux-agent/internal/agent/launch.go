@@ -191,7 +191,8 @@ func (e *Env) register(a Agent, args []string, oneShot bool) {
 }
 
 // finish records the run's end. A kill keeps the pane's session for a
-// resume; an agent that ended by itself lets it go. A one-shot run ends as
+// resume; an agent that ended by itself lets it go. Either way the window
+// title the agent set goes, as at the agent's own end. A one-shot run ends as
 // done or failed, and an interactive one that failed is flagged; these
 // flags have no owner, since the run they report on is over.
 func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
@@ -215,11 +216,16 @@ func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
 	if flagErr != nil {
 		e.logf("flag end: %v", flagErr)
 	}
-	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: ""}
+	// A run that ends without a word from the agent, such as a resume that
+	// fails, still gives the window its name back.
+	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
+		e.logf("title end: %v", err)
+	}
+	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: ""}
 	end := EndKilled
 	if !killed {
 		end = EndExited
-		for _, o := range []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, OptRevive} {
+		for _, o := range sessionOpts {
 			opts[o] = ""
 		}
 	}
