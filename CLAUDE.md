@@ -66,7 +66,9 @@ Unit tests use synthetic data. Integration tests use `internal/tmux/tmuxtest`:
   calls included. The sandbox environment is an allowlist, so nothing
   reaches the user's desktop, tmux server or agent session, and its PATH
   leaves out the user's home, so installed copies in `~/.local/bin` never
-  run in place of the code under test.
+  run in place of the code under test. At cleanup the sandbox kills every
+  process still running with its environment (a notifier a hook left in
+  the background), before its folders go.
 - The socket goes in a short directory with `-S`: a unix socket path must fit
   in 108 bytes, and `t.TempDir()` paths do not.
 - Servers start with `-f` and a test config, never the user's.

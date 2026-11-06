@@ -12,14 +12,17 @@ package tmuxtest
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -87,6 +90,9 @@ func NewSandbox(t testing.TB) *Sandbox {
 	if err := os.Chmod(rt, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	calls := filepath.Join(dir, "calls")
+	// Runs after the test's own cleanups and before the folders go.
+	t.Cleanup(func() { stopLeftovers(t, "TMUXTEST_CALLS="+calls) })
 	s := &Sandbox{
 		Dir:        dir,
 		Home:       filepath.Join(dir, "home"),
@@ -96,7 +102,7 @@ func NewSandbox(t testing.TB) *Sandbox {
 		CacheHome:  filepath.Join(dir, "home", ".cache"),
 		RuntimeDir: rt,
 		Bin:        filepath.Join(dir, "bin"),
-		callsDir:   filepath.Join(dir, "calls"),
+		callsDir:   calls,
 	}
 	for _, d := range []string{s.Home, s.ConfigHome, s.StateHome, s.DataHome, s.CacheHome, s.Bin, s.callsDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -126,6 +132,54 @@ func NewSandbox(t testing.TB) *Sandbox {
 		s.Stub(t, name, StubScript)
 	}
 	return s
+}
+
+// stopLeftovers kills every process still running with the sandbox's
+// environment (marker is one of its variables), such as a notifier a hook
+// left in the background, and waits until they are gone: one could write
+// into the sandbox while it is removed.
+func stopLeftovers(t testing.TB, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pids := processesWith(marker)
+		if len(pids) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("processes %v outlived the sandbox", pids)
+			return
+		}
+		for _, pid := range pids {
+			_ = syscall.Kill(pid, syscall.SIGKILL) // gone already: nothing to stop
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// processesWith lists the processes whose environment holds the variable
+// marker (NAME=value). A zombie has no environment left, and runs nothing.
+func processesWith(marker string) []int {
+	des, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	want := []byte(marker + "\x00")
+	var pids []int
+	for _, de := range des {
+		pid, err := strconv.Atoi(de.Name())
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		env, err := os.ReadFile(filepath.Join("/proc", de.Name(), "environ"))
+		if err != nil {
+			continue
+		}
+		if bytes.HasPrefix(env, want) || bytes.Contains(env, append([]byte{0}, want...)) {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 // systemPath is the test process's PATH without relative entries and
