@@ -62,11 +62,15 @@ type Sandbox struct {
 // Calls. It claims the next numbered folder (mkdir is atomic, so parallel
 // calls never share one), writes the arguments NUL-separated and renames
 // them into place, so a call Calls sees has all its arguments, then saves
-// stdin.
+// stdin. A stub whose sandbox is gone exits 1 and makes no folder: a
+// number it cannot claim and that nobody holds means the folder is gone.
 const RecordCall = `d="$TMUXTEST_CALLS/$(basename "$0")"
-mkdir -p "$d"
+mkdir "$d" 2>/dev/null || [ -d "$d" ] || exit 1
 n=0
-while ! mkdir "$d/$(printf %06d "$n")" 2>/dev/null; do n=$((n+1)); done
+while ! mkdir "$d/$(printf %06d "$n")" 2>/dev/null; do
+  [ -e "$d/$(printf %06d "$n")" ] || exit 1
+  n=$((n+1))
+done
 f="$d/$(printf %06d "$n")"
 for a in "$@"; do printf '%s\0' "$a"; done > "$f/args.tmp"
 mv "$f/args.tmp" "$f/args"
