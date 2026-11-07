@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/influento/tmux-plugins/tmux-agent/internal/agent"
 )
@@ -150,17 +151,22 @@ func TestTitle(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}})
 		return string(b)
 	}
+	ai := func(title string) string {
+		b, _ := json.Marshal(map[string]any{"type": "ai-title", "aiTitle": title, "sessionId": "s"})
+		return string(b)
+	}
 	cases := []struct {
 		name  string
 		lines []string
 		want  string
+		sure  bool
 	}{
-		{"opener", []string{user("can you fix the waybar clock please")}, "fix the waybar"},
-		{"cut at 15", []string{user("Hello, please refactor the parser module")}, "refactor the pa"},
-		{"trailing punctuation", []string{user("fix: the thing! now")}, "fix: the thing"},
-		{"several openers", []string{user("ok so let's add tests for jump")}, "add tests for"},
-		{"hashes dropped", []string{user("## fix  the   build")}, "fix the build"},
-		{"unicode cut", []string{user("überprüfe die Übersetzungsdatei")}, "überprüfe die Ü"},
+		{"opener", []string{user("can you fix the waybar clock please")}, "fix the waybar", false},
+		{"cut at 15", []string{user("Hello, please refactor the parser module")}, "refactor the pa", false},
+		{"trailing punctuation", []string{user("fix: the thing! now")}, "fix: the thing", false},
+		{"several openers", []string{user("ok so let's add tests for jump")}, "add tests for", false},
+		{"hashes dropped", []string{user("## fix  the   build")}, "fix the build", false},
+		{"unicode cut", []string{user("überprüfe die Übersetzungsdatei")}, "überprüfe die Ü", false},
 		{"skips non-prompts", []string{
 			user("/clear"),
 			user("<command-name>/model</command-name>"),
@@ -168,17 +174,72 @@ func TestTitle(t *testing.T) {
 			`not json`,
 			`{"type":"assistant","message":{"content":"hi"}}`,
 			`{"type":"user","message":{"content":[{"type":"text","text":"update the"},{"type":"text","text":"readme now"}]}}`,
-		}, "update the read"},
-		{"no prompt", []string{user("/clear")}, ""},
+		}, "update the read", false},
+		{"no prompt", []string{user("/clear")}, "", false},
+		{"ai-title wins", []string{user("Write a 300-word story about a lighthouse"), ai("Lighthouse short story")}, "Lighthouse short story", true},
+		{"ai-title cut at a word", []string{user("go"), ai("Poteto-vs-workshop card review S9")}, "Poteto-vs-workshop card", true},
+		{"ai-title one long word", []string{ai("Supercalifragilisticexpialidocious")}, "Supercalifragilisticexpi", true},
+		{"first ai-title", []string{ai("first title"), ai("second title")}, "first title", true},
+		{"empty ai-title", []string{user("fix the build"), ai("  ")}, "fix the build", false},
+		{"text naming ai-title", []string{user(`what is "ai-title" for`)}, `what is "ai-tit`, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := (Claude{}).Title(writeTranscript(t, c.lines...)); got != c.want {
-				t.Errorf("Title = %q, want %q", got, c.want)
+			if got, sure := (Claude{}).Title(writeTranscript(t, c.lines...)); got != c.want || sure != c.sure {
+				t.Errorf("Title = %q, %v; want %q, %v", got, sure, c.want, c.sure)
 			}
 		})
 	}
-	if got := (Claude{}).Title(filepath.Join(t.TempDir(), "missing")); got != "" {
+	if got, _ := (Claude{}).Title(filepath.Join(t.TempDir(), "missing")); got != "" {
 		t.Errorf("Title of a missing transcript = %q", got)
+	}
+}
+
+func TestInterrupted(t *testing.T) {
+	at := time.Date(2026, 11, 6, 20, 12, 5, 0, time.UTC)
+	line := func(m map[string]any) string {
+		b, _ := json.Marshal(m)
+		return string(b)
+	}
+	msg := func(typ string, content any, extra map[string]any) string {
+		m := map[string]any{"type": typ, "timestamp": at.Format(time.RFC3339Nano), "message": map[string]any{"content": content}}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return line(m)
+	}
+	text := func(s string) []any { return []any{map[string]any{"type": "text", "text": s}} }
+	toolUse := msg("assistant", []any{map[string]any{"type": "tool_use", "id": "t1", "name": "Bash"}}, nil)
+	rejected := msg("user", []any{map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "The user doesn't want to proceed"}}, nil)
+	turnEnd := line(map[string]any{"type": "system", "subtype": "turn_duration"})
+	cases := []struct {
+		name  string
+		lines []string
+		want  bool
+	}{
+		{"declined permission", []string{toolUse, rejected, msg("user", text("[Request interrupted by user for tool use]"), nil), turnEnd}, true},
+		{"esc", []string{msg("assistant", text("Once upon"), nil), msg("user", text("[Request interrupted by user]"), nil)}, true},
+		{"string content", []string{msg("user", "[Request interrupted by user]", nil)}, true},
+		{"turn ended normally", []string{msg("user", "write a story", nil), msg("assistant", text("Done."), nil), turnEnd}, false},
+		{"new prompt after the interrupt", []string{msg("user", text("[Request interrupted by user]"), nil), msg("user", "go on", nil)}, false},
+		{"subagent's interrupt", []string{msg("assistant", text("working"), nil), msg("user", text("[Request interrupted by user]"), map[string]any{"isSidechain": true})}, false},
+		{"meta line after it", []string{msg("user", text("[Request interrupted by user]"), nil), msg("user", "caveat", map[string]any{"isMeta": true})}, true},
+		{"no timestamp", []string{line(map[string]any{"type": "user", "message": map[string]any{"content": "[Request interrupted by user]"}})}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := (Claude{}).Interrupted(writeTranscript(t, c.lines...))
+			if ok != c.want || (ok && !got.Equal(at)) {
+				t.Errorf("Interrupted = %v, %v; want %v at %v", got, ok, c.want, at)
+			}
+		})
+	}
+	// Only the end of a long transcript is read.
+	long := []string{msg("user", strings.Repeat("x", interruptTail), nil), msg("user", text("[Request interrupted by user]"), nil)}
+	if _, ok := (Claude{}).Interrupted(writeTranscript(t, long...)); !ok {
+		t.Error("an interrupt after a line longer than the tail was missed")
+	}
+	if _, ok := (Claude{}).Interrupted(filepath.Join(t.TempDir(), "missing")); ok {
+		t.Error("a missing transcript reads as interrupted")
 	}
 }

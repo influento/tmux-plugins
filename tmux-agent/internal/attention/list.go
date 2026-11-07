@@ -294,3 +294,103 @@ func (c *Core) SessionRows(ctx context.Context) ([]SessionRow, error) {
 	}
 	return RenderSessionRows(sessions, windows, c.colours(ctx)), nil
 }
+
+// PickRow is one line of the picker: a session, or one of its windows
+// under it.
+type PickRow struct {
+	Session string // the session's name on a session line; "" on a window line
+	Target  string // what switch-client takes: "=name:" or "=name:index"
+	Display string // with colour escapes
+}
+
+// Picker column widths, in characters.
+const (
+	pickNameWidth   = 24
+	pickDetailWidth = 48
+)
+
+// RenderPickRows lays out the picker from List's rows (best first) and the
+// sessions in tmux's order: each session's name, then its windows in index
+// order, each with the flag of its best pane, the flag's reason or the
+// pane's command, and the flag's age. Sessions with a flag come first, by
+// their best rank.
+func RenderPickRows(rows []Row, sessions []string, col Colours) []PickRow {
+	type window struct {
+		index int
+		best  Row
+	}
+	wins := map[string][]window{}
+	seen := map[string]bool{}
+	rank := map[string]int{}
+	nameW := 0
+	for _, r := range rows {
+		sess, rest, _ := strings.Cut(r.Target, ":")
+		idx, _, _ := strings.Cut(rest, ".")
+		key := sess + ":" + idx
+		if seen[key] {
+			continue // rows come best first: the window's best pane is in
+		}
+		seen[key] = true
+		i, _ := strconv.Atoi(idx) // tmux prints numbers
+		wins[sess] = append(wins[sess], window{i, r})
+		if cur, ok := rank[sess]; r.State != "" && (!ok || r.Rank < cur) {
+			rank[sess] = r.Rank
+		}
+		nameW = max(nameW, utf8.RuneCountInString(truncRunes(r.Window, pickNameWidth)))
+	}
+	rankOf := func(s string) int {
+		if r, ok := rank[s]; ok {
+			return r
+		}
+		return 9
+	}
+	ordered := slices.Clone(sessions)
+	slices.SortStableFunc(ordered, func(a, b string) int { return cmp.Compare(rankOf(a), rankOf(b)) })
+	marks := map[State]string{
+		NeedsYou: ansiFg(col.NeedsYou) + "?\x1b[0m",
+		Done:     ansiFg(col.Done) + "✓\x1b[0m",
+		Working:  ansiFg(col.Working) + "●\x1b[0m",
+	}
+	dim := ansiFg(col.Dim)
+	var out []PickRow
+	for _, s := range ordered {
+		ws := wins[s]
+		if len(ws) == 0 {
+			continue
+		}
+		slices.SortFunc(ws, func(a, b window) int { return cmp.Compare(a.index, b.index) })
+		out = append(out, PickRow{Session: s, Target: "=" + s + ":", Display: "\x1b[1m" + s + "\x1b[0m"})
+		for _, w := range ws {
+			r := w.best
+			mark := " "
+			if m, ok := marks[State(r.State)]; ok {
+				mark = m
+			}
+			if r.Failed {
+				mark = ansiFg(col.Failed) + FailedGlyph + "\x1b[0m"
+			}
+			name := truncRunes(r.Window, pickNameWidth)
+			line := fmt.Sprintf("  %s %2d %s%s  %s", mark, w.index, name,
+				strings.Repeat(" ", nameW-utf8.RuneCountInString(name)), truncRunes(r.Detail, pickDetailWidth))
+			if r.Age != "-" {
+				line += " " + dim + "· " + r.Age + "\x1b[0m"
+			}
+			out = append(out, PickRow{Target: "=" + s + ":" + strconv.Itoa(w.index), Display: line})
+		}
+	}
+	return out
+}
+
+// PickRows returns the picker's lines, skipped sessions left out. It
+// sweeps first.
+func (c *Core) PickRows(ctx context.Context) ([]PickRow, error) {
+	rows, err := c.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.Tmux.Output(ctx, "list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		return nil, err
+	}
+	return RenderPickRows(rows, lines(out), c.colours(ctx)), nil
+}

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/internal/tmux"
@@ -412,6 +413,12 @@ func zshQuote(s string) string {
 // as tmux would have started it: default-command through default-shell,
 // or default-shell as a login shell.
 func (a *app) paint(file string) error {
+	if pane := a.getenv("TMUX_PANE"); pane != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), placeWait)
+		a.waitPlaced(ctx, pane)
+		a.waitSized(ctx, pane, int(os.Stdout.Fd()))
+		cancel()
+	}
 	if err := revive.Paint(a.stdout, file); err != nil {
 		fmt.Fprintf(a.stderr, "tmux-revive paint: %v\n", err)
 	}
@@ -438,6 +445,61 @@ func (a *app) paint(file string) error {
 	// The shell could not start; any shell is better than a pane that
 	// closes at once.
 	return errors.Join(err, syscall.Exec("/bin/sh", []string{"-sh"}, os.Environ()))
+}
+
+// placeWait bounds how long paint waits for restore to place its pane and
+// for tmux to give the terminal the pane's size.
+const placeWait = 3 * time.Second
+
+// waitPlaced waits until restore gives the pane its saved id, which it does
+// after the window's layout: the pane has its final size then. A pane that
+// restore splits off changes size right after it starts, and a shell that
+// started at the old width marks its first prompt with zsh's "%".
+func (a *app) waitPlaced(ctx context.Context, pane string) {
+	t := time.NewTicker(20 * time.Millisecond)
+	defer t.Stop()
+	for {
+		if _, ok, err := a.tmux.Option(ctx, "-p", pane, revive.OptPaneID); err != nil || ok {
+			return // placed, or tmux cannot tell: paint now
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// waitSized waits until the terminal on fd has the pane's size. tmux sets
+// a pane's terminal size a moment after a layout changes the pane, so a
+// placed pane can still have the size it was split at.
+func (a *app) waitSized(ctx context.Context, pane string, fd int) {
+	t := time.NewTicker(20 * time.Millisecond)
+	defer t.Stop()
+	for {
+		want, err := a.tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{pane_height} #{pane_width}")
+		if err != nil {
+			return // tmux cannot tell: paint now
+		}
+		rows, cols, err := termSize(fd)
+		if err != nil || fmt.Sprintf("%d %d", rows, cols) == want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// termSize returns the rows and columns of the terminal on fd.
+func termSize(fd int) (rows, cols int, err error) {
+	var ws struct{ Row, Col, X, Y uint16 }
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws))); errno != 0 {
+		return 0, 0, fmt.Errorf("terminal size: %w", errno)
+	}
+	return int(ws.Row), int(ws.Col), nil
 }
 
 // scrollbackLoop captures scrollback and saves every

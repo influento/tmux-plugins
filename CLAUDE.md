@@ -162,7 +162,9 @@ Packages in `tmux-agent/internal/`:
 - `agent`: the agent layer. Neutral events, the hook handler, the launcher,
   the nested-agent rule, the title sweep. Knows no particular agent.
 - `agent/claude`: the Claude Code adapter: hook mapping, one-shot and resume
-  arguments, the window title from the first prompt.
+  arguments, the window title (Claude Code's own `ai-title` from the
+  transcript, cut at a word to 24 characters; the first prompt until then),
+  the interrupt line of a turn cut short.
 - `store`: one JSON record per session in
   `$XDG_STATE_HOME/tmux-agent/sessions/<agent>/<id>.json` (mode 0600, never
   deleted), and the lock.
@@ -205,6 +207,10 @@ Rules:
   agent's signal.
 - A hook counts for a run only when its nearest agent process is the run's
   own; a launcher started inside an agent runs the agent in its place.
+- A turn cut short (No or Esc at a permission prompt) sends no hook. Seen,
+  status, sweep, list, jump and the picker read the transcript's last
+  message: Claude Code's interrupt line, written at or after the flag,
+  clears the flag.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
 - `popup` waits until the user closes the popup, with no timeout; `pick`
@@ -293,7 +299,10 @@ Rules:
   with a newline or another control character is not typed (the shell
   would act on it as it arrives) and shows as not typed. A program on the
   `@revive_programs` list starts again; a pane with scrollback runs
-  `tmux-revive paint`, which prints it and execs the login shell.
+  `tmux-revive paint`, which waits (up to 3 s) until restore has placed
+  the pane and its terminal has the pane's size, prints it and execs the
+  login shell. tmux sets a terminal's size a moment after a layout: a zsh
+  started at the old width shows a stray `%`.
 - Names and folders that go into `-s`, `-n` or `-c` escape `#` as `##`;
   tmux expands formats there.
 - Capture of a pane on the alternate screen (a full-screen program) saves

@@ -8,6 +8,7 @@ package agent
 import (
 	"path/filepath"
 	"slices"
+	"time"
 )
 
 // Agent is the one required part of an integration: with only a name and a
@@ -46,9 +47,19 @@ type ProcessNamer interface {
 	ProcessNames() []string
 }
 
-// Titler names a window from the agent's transcript, or returns "".
+// Titler names a window from the agent's transcript, or returns "". A
+// title the agent gave the session itself is sure, and replaces a stand-in
+// (such as the first prompt's first words) at a later turn end.
 type Titler interface {
-	Title(transcript string) string
+	Title(transcript string) (title string, sure bool)
+}
+
+// Interrupter reads from the agent's transcript when the user last cut a
+// turn short (declined a permission, pressed Esc). The agent sends no hook
+// for that, so without it a working or needs-you flag stays until the next
+// prompt.
+type Interrupter interface {
+	Interrupted(transcript string) (at time.Time, ok bool)
 }
 
 // Generic is an agent the registry does not know: a name that is also its

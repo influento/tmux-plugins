@@ -1,5 +1,5 @@
 // Package ui is what tmux-agent shows outside tmux's own status bar: the
-// session picker through fzf, the popup it opens in, and desktop
+// session and window picker through fzf, the popup it opens in, and desktop
 // notifications.
 package ui
 
@@ -21,36 +21,41 @@ var ansi = regexp.MustCompile("\x1b\\[[0-9;]*m")
 // StripANSI removes colour escapes.
 func StripANSI(s string) string { return ansi.ReplaceAllString(s, "") }
 
-// PopupSize sizes the picker's popup to its rows, capped to the client.
+// PopupSize sizes the picker's popup to its lines, capped to the client.
 // The padding covers the popup border, fzf's border and margin, the pointer
 // column, and the prompt, separator and header lines.
-func PopupSize(rows []attention.SessionRow, clientW, clientH int) (w, h int) {
-	for _, r := range rows {
-		w = max(w, utf8.RuneCountInString(StripANSI(r.Display)))
+func PopupSize(lines []string, clientW, clientH int) (w, h int) {
+	for _, l := range lines {
+		w = max(w, utf8.RuneCountInString(StripANSI(l)))
 	}
-	w, h = w+10, len(rows)+7
-	w = min(max(w, 40), clientW-4)
+	w, h = w+10, len(lines)+7
+	w = min(max(w, utf8.RuneCountInString(PickHeader)+6, 40), clientW-4)
 	h = min(h, clientH-2)
 	return w, h
 }
 
-// PickHeader is the line above the picker's rows.
-const PickHeader = "sessions: ? needs you  ● working  ✓ done   ctrl-x: kill"
+// PickHeader is the line above the picker's lines.
+const PickHeader = "? needs you  ● working  ✓ done   ctrl-x on a session: kill it"
 
-// Pick lets the user choose a session with fzf and returns its name; ""
-// when the picker was left without a choice. self is the command that runs
+// Pick lets the user choose a session or a window with fzf and returns its
+// switch-client target; "" when the picker was left without a choice. The
+// cursor starts on the first window. self is the command that runs
 // tmux-agent, for the picker's kill key and reload.
-func Pick(ctx context.Context, rows []attention.SessionRow, self string) (string, error) {
+func Pick(ctx context.Context, rows []attention.PickRow, self string) (string, error) {
 	if _, err := exec.LookPath("fzf"); err != nil {
 		return "", errors.New("fzf is not installed")
 	}
 	var in strings.Builder
 	for _, r := range rows {
-		in.WriteString(r.Session + "\t" + r.Display + "\n")
+		in.WriteString(r.Session + "\t" + r.Target + "\t" + r.Display + "\n")
 	}
-	cmd := exec.CommandContext(ctx, "fzf", "--ansi", "--height=100%", "--reverse",
-		"--delimiter=\t", "--with-nth=2", "--no-info", "--header="+PickHeader,
-		fmt.Sprintf("--bind=ctrl-x:execute-silent(%s kill-session {1})+reload(%s rows)", self, self))
+	args := []string{"--ansi", "--height=100%", "--reverse", "--no-sort",
+		"--delimiter=\t", "--with-nth=3", "--no-info", "--header=" + PickHeader,
+		fmt.Sprintf("--bind=ctrl-x:execute-silent(%s kill-session {1})+reload(%s pick-rows)", self, self)}
+	if len(rows) > 1 {
+		args = append(args, "--bind=load:pos(2)") // the first session's first window
+	}
+	cmd := exec.CommandContext(ctx, "fzf", args...)
 	cmd.Stdin = strings.NewReader(in.String())
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -61,8 +66,11 @@ func Pick(ctx context.Context, rows []attention.SessionRow, self string) (string
 		}
 		return "", err
 	}
-	name, _, _ := strings.Cut(strings.TrimSuffix(out.String(), "\n"), "\t")
-	return name, nil
+	f := strings.SplitN(strings.TrimSuffix(out.String(), "\n"), "\t", 3)
+	if len(f) < 2 {
+		return "", nil
+	}
+	return f[1], nil
 }
 
 // Notify sends a desktop notification and, where notify-send supports

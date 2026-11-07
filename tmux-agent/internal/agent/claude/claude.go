@@ -17,6 +17,9 @@
 //	SessionEnd                               session end: unknown for reason
 //	                                         "other" (a kill, or a -p run
 //	                                         ending), exited otherwise
+//
+// A turn the user cuts short (Esc, a declined permission) sends no hook;
+// Interrupted reads it from the transcript for the agent layer's sweep.
 package claude
 
 import (
@@ -39,6 +42,7 @@ var (
 	_ agent.Resumer      = Claude{}
 	_ agent.ProcessNamer = Claude{}
 	_ agent.Titler       = Claude{}
+	_ agent.Interrupter  = Claude{}
 )
 
 // Name is the registry name.

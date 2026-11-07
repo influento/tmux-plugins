@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/store"
 )
 
@@ -168,4 +169,68 @@ func (e *Env) wasKilled(agent, session string) bool {
 	}
 	r, ok, err := e.Store.Load(agent, session)
 	return err == nil && ok && r.End == string(EndKilled)
+}
+
+// SweepTurns clears the flag of each pane whose agent's last turn the user
+// cut short after the flag was set: a declined permission or Esc sends no
+// hook, so a working or needs-you flag would stay until the next prompt.
+// Only agents that can tell (Interrupter) take part. Flag times are whole
+// seconds, so an interrupt and a new prompt within one second can clear the
+// new turn's flag; its next hook sets it again.
+func (e *Env) SweepTurns(ctx context.Context) error {
+	format := strings.Join([]string{
+		"#{pane_id}", "#{" + optAgent + "}", "#{" + optSession + "}", "#{" + optTranscript + "}",
+		"#{@attention}", "#{@attention_at}",
+	}, "\x1f")
+	out, err := e.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
+	if err != nil {
+		return err
+	}
+	type pane struct{ id, agent, session, state, at string }
+	var cut []pane
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.SplitN(l, "\x1f", 6)
+		if len(f) < 6 || f[1] == "" || f[3] == "" {
+			continue
+		}
+		if st := attention.State(f[4]); st != attention.Working && st != attention.NeedsYou {
+			continue
+		}
+		since, err := strconv.ParseInt(f[5], 10, 64)
+		if err != nil {
+			continue
+		}
+		ir, ok := e.Registry.Get(f[1]).(Interrupter)
+		if !ok {
+			continue
+		}
+		if at, ok := ir.Interrupted(f[3]); ok && at.Unix() >= since {
+			cut = append(cut, pane{id: f[0], agent: f[1], session: f[2], state: f[4], at: f[5]})
+		}
+	}
+	if len(cut) == 0 {
+		return nil
+	}
+	defer e.lock(ctx)()
+	for _, p := range cut {
+		// A hook may have moved the flag on while the lock was taken.
+		now, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", p.id, "#{@attention}\x1f#{@attention_at}")
+		if err != nil {
+			if isGone(err) {
+				continue
+			}
+			return err
+		}
+		if now != p.state+"\x1f"+p.at {
+			continue
+		}
+		if err := e.Core.Clear(ctx, p.id); err != nil && !isGone(err) {
+			return err
+		}
+		if err := e.optsOf(ctx, p.id, map[string]string{optState: "", optReason: "", optWait: ""}); err != nil && !isGone(err) {
+			return err
+		}
+		e.remember(e.Registry.Get(p.agent), p.session, func(s *store.Session) { s.State, s.Reason = "", "" })
+	}
+	return nil
 }

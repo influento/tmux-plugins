@@ -389,8 +389,10 @@ func (e *Env) needsInput(ctx context.Context, a Agent, ev Event, session string)
 	return nil
 }
 
-// turnEnd flags done, and names the window from the first prompt while tmux
-// still names it: once named, automatic-rename is off and it stays.
+// turnEnd flags done, and names the window while tmux still names it: once
+// named, automatic-rename is off and the name stays. The one change is the
+// agent's own title for the session, which replaces a stand-in this pane's
+// agent gave, as long as the window still carries it.
 func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session string) error {
 	const reason = "turn ended"
 	changed, err := e.flag(ctx, a, attention.Done, reason)
@@ -404,11 +406,12 @@ func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session st
 		e.remember(a, session, func(s *store.Session) { s.State, s.Reason = string(attention.Done), reason })
 	}
 	t, ok := a.(Titler)
-	if !ok || !l.autoRename {
+	ours := l.named != "" && l.title == l.named && l.windowName == l.named
+	if !ok || (!l.autoRename && !ours) {
 		return nil
 	}
-	title := t.Title(or(ev.Transcript, l.transcript))
-	if title == "" {
+	title, sure := t.Title(or(ev.Transcript, l.transcript))
+	if title == "" || (!l.autoRename && (!sure || title == l.named)) {
 		return nil
 	}
 	if err := e.applyTitle(ctx, title); err != nil {

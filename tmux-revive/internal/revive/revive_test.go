@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/shell"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/revive"
@@ -759,5 +760,96 @@ func TestSnapshotsOption(t *testing.T) {
 	}
 	if es, err := e.store.Entries(); err != nil || len(es) != 3 {
 		t.Errorf("snapshots kept = %d, %v; want 3", len(es), err)
+	}
+}
+
+// paint waits until restore places its pane (gives it its saved id, which
+// comes after the window's layout), so the shell it starts reads the pane's
+// final width. A split restore makes changes size right after it starts.
+func TestPaintWaitsForItsPane(t *testing.T) {
+	e := newEnv(t, "")
+	dir := e.mkdir(t, "proj-a")
+	// Not ready, as a server mid-restore: no save gives the pane its id.
+	e.mustTmux(t, "new-session", "-d", "-s", "proj-a", "-c", dir, "-x", "120", "-y", "40")
+	file := filepath.Join(dir, "saved.txt")
+	if err := os.WriteFile(file, []byte("painted-line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pane := e.mustTmux(t, "new-window", "-d", "-P", "-F", "#{pane_id}", "tmux-revive paint "+shell.Quote(file))
+	time.Sleep(500 * time.Millisecond)
+	if out := e.mustTmux(t, "capture-pane", "-p", "-t", pane); strings.Contains(out, "painted-line") {
+		t.Fatal("painted before restore placed the pane")
+	}
+	e.mustTmux(t, "set-option", "-p", "-t", pane, "@revive_pane", "0123456789ab")
+	tmuxtest.WaitFor(t, 2*time.Second, "the scrollback once the pane is placed", func() bool {
+		out, err := e.tmux.Output(context.Background(), "capture-pane", "-p", "-t", pane)
+		return err == nil && strings.Contains(out, "painted-line")
+	})
+}
+
+// sizeShell logs, when it runs as a pane's shell (no arguments) in a
+// placed pane, the terminal size it starts with and the size tmux gives
+// its pane, in a file named after the pane's saved id.
+const sizeShell = `#!/bin/sh
+if [ $# -eq 0 ]; then
+  id=$(tmux display-message -p -t "$TMUX_PANE" '#{@revive_pane}')
+  pane=$(tmux display-message -p -t "$TMUX_PANE" '#{pane_height} #{pane_width}')
+  [ -n "$id" ] && echo "$(stty size) / $pane" >"$SIZE_LOG/$id"
+fi
+exec /bin/sh "$@"
+`
+
+// A shell that restore starts in a split pane, after its scrollback, reads
+// the pane's final size. tmux sets a pane's terminal size a moment after
+// its layout: zsh, started at the old width, marks its prompt with "%".
+func TestRestoredShellReadsItsPaneSize(t *testing.T) {
+	e := newEnv(t, "")
+	logDir := e.mkdir(t, "sizes")
+	sh := filepath.Join(e.Bin, "sizesh")
+	if err := os.WriteFile(sh, []byte(sizeShell), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(e.ConfigHome, "tmux", "tmux.conf")
+	config := baseConfig + "set -g default-shell " + sh + "\nset-environment -g SIZE_LOG " + logDir + "\n" + initLine
+	if err := os.WriteFile(conf, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := e.mkdir(t, "proj-a")
+	e.mustTmux(t, "new-session", "-d", "-s", "proj-a", "-c", dir, "-x", "160", "-y", "40")
+	e.revive(t, "tmux-init")
+	e.mustTmux(t, "split-window", "-h", "-t", "=proj-a:0", "-c", dir)
+	e.mustTmux(t, "split-window", "-v", "-t", "=proj-a:0", "-c", dir)
+	panes := strings.Fields(e.mustTmux(t, "list-panes", "-t", "=proj-a:0", "-F", "#{pane_id}"))
+	for i, p := range panes {
+		e.mustTmux(t, "send-keys", "-t", p, fmt.Sprintf("echo line-%d", i), "Enter")
+		e.waitContent(t, p, fmt.Sprintf("line-%d\n", i))
+	}
+	e.saveNow(t)
+	e.revive(t, "capture")
+	e.mustTmux(t, "kill-server")
+	time.Sleep(500 * time.Millisecond) // for hooks run at shutdown
+	if err := os.RemoveAll(logDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	e.revive(t, "restore")
+	var logs []os.DirEntry
+	tmuxtest.WaitFor(t, 10*time.Second, "a size from each restored shell", func() bool {
+		var err error
+		logs, err = os.ReadDir(logDir)
+		return err == nil && len(logs) == len(panes)
+	})
+	for _, l := range logs {
+		b, err := os.ReadFile(filepath.Join(logDir, l.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tty, pane, _ := strings.Cut(strings.TrimSpace(string(b)), " / ")
+		if tty != pane {
+			t.Errorf("pane %s: the shell started at %s (rows cols), the pane is %s", l.Name(), tty, pane)
+		}
 	}
 }

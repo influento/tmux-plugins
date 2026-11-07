@@ -38,9 +38,10 @@ const usage = `usage:
   tmux-agent seen [PANE]               done → idle; run when a pane gets focus
   tmux-agent list [--json]             every pane, flagged first
   tmux-agent jump [--pane ID]          go to the next pane that needs you, else the next done
-  tmux-agent pick                      pick a session with fzf
-  tmux-agent popup [CLIENT]            pick in a popup sized to its rows
-  tmux-agent rows                      the rows pick lists
+  tmux-agent pick                      pick a session or a window with fzf
+  tmux-agent popup [CLIENT]            pick in a popup sized to its lines
+  tmux-agent pick-rows                 the lines pick lists
+  tmux-agent rows                      one line per session, its windows' flags inline
   tmux-agent kill-session NAME         kill a session, unless it is the last one
   tmux-agent status                    render the counts into @attention_status
   tmux-agent sweep [--window ID]       drop dead flags, sessions and titles; set the
@@ -213,6 +214,15 @@ func (a *app) hook(args []string, stdin io.Reader) (code int) {
 	return 0
 }
 
+// sweepAgents ends the sessions of agents gone without a word, and clears
+// the flags of turns the user cut short: no hook reports either.
+func (a *app) sweepAgents(ctx context.Context) error {
+	if err := a.env.SweepAgents(ctx); err != nil {
+		return err
+	}
+	return a.env.SweepTurns(ctx)
+}
+
 // pane is the pane a command is about: the one given, else the caller's.
 func (a *app) pane(given string) (string, error) {
 	if given != "" {
@@ -236,12 +246,12 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := a.env.SweepAgents(ctx); err != nil {
+		if err := a.sweepAgents(ctx); err != nil {
 			return err
 		}
 		return a.core.Seen(ctx, p)
 	case "status":
-		if err := a.env.SweepAgents(ctx); err != nil {
+		if err := a.sweepAgents(ctx); err != nil {
 			return err
 		}
 		return a.core.Status(ctx)
@@ -258,6 +268,8 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 		return a.rows(ctx)
 	case "pick":
 		return a.pick(ctx)
+	case "pick-rows":
+		return a.pickRows(ctx)
 	case "popup":
 		return a.popup(ctx, first(args))
 	case "kill-session":
@@ -348,7 +360,7 @@ func (a *app) sweep(ctx context.Context, args []string) error {
 			}
 		}
 	}
-	if err := a.env.SweepAgents(ctx); err != nil {
+	if err := a.sweepAgents(ctx); err != nil {
 		return err
 	}
 	return a.env.SweepTitles(ctx)
@@ -358,6 +370,9 @@ func (a *app) list(ctx context.Context, args []string) error {
 	asJSON := len(args) == 1 && args[0] == "--json"
 	if len(args) > 0 && !asJSON {
 		return errUsage
+	}
+	if err := a.sweepAgents(ctx); err != nil {
+		return err
 	}
 	rows, err := a.core.List(ctx)
 	if err != nil {
@@ -388,25 +403,40 @@ func (a *app) rows(ctx context.Context) error {
 	return nil
 }
 
+// pickRows prints the picker's lines, for its reload after a kill.
+func (a *app) pickRows(ctx context.Context) error {
+	rows, err := a.core.PickRows(ctx)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		fmt.Fprintf(a.stdout, "%s\t%s\t%s\n", r.Session, r.Target, r.Display)
+	}
+	return nil
+}
+
 func (a *app) pick(ctx context.Context) error {
-	rows, err := a.core.SessionRows(ctx)
+	if err := a.sweepAgents(ctx); err != nil {
+		return err
+	}
+	rows, err := a.core.PickRows(ctx)
 	if err != nil {
 		return err
 	}
 	// The picker waits on the user; only the tmux calls are bounded.
-	choice, err := ui.Pick(context.WithoutCancel(ctx), rows, shell.Quote(a.self))
-	if err != nil || choice == "" {
+	target, err := ui.Pick(context.WithoutCancel(ctx), rows, shell.Quote(a.self))
+	if err != nil || target == "" {
 		return err
 	}
 	// The user can take longer than the command's deadline: the calls after
 	// the choice get their own.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandTimeout)
 	defer cancel()
-	if _, err := a.tmux.Run(ctx, "switch-client", "-t", "="+choice); err != nil {
+	if _, err := a.tmux.Run(ctx, "switch-client", "-t", target); err != nil {
 		return err
 	}
 	// switch-client fires no select hook, so mark the pane it lands on.
-	pane, err := a.tmux.Display(ctx, "="+choice+":", "#{pane_id}")
+	pane, err := a.tmux.Display(ctx, target, "#{pane_id}")
 	if err != nil || pane == "" {
 		return err
 	}
@@ -414,7 +444,7 @@ func (a *app) pick(ctx context.Context) error {
 }
 
 func (a *app) popup(ctx context.Context, client string) error {
-	rows, err := a.core.SessionRows(ctx)
+	rows, err := a.core.PickRows(ctx)
 	if err != nil {
 		return err
 	}
@@ -430,7 +460,11 @@ func (a *app) popup(ctx context.Context, client string) error {
 	if _, err := fmt.Sscan(size, &cw, &ch); err != nil {
 		return fmt.Errorf("client size %q: %w", size, err)
 	}
-	w, h := ui.PopupSize(rows, cw, ch)
+	displays := make([]string, len(rows))
+	for i, r := range rows {
+		displays[i] = r.Display
+	}
+	w, h := ui.PopupSize(displays, cw, ch)
 	args := append(append([]string{"display-popup"}, clientArgs...),
 		"-E", "-w", strconv.Itoa(w), "-h", strconv.Itoa(h), shell.Quote(a.self)+" pick")
 	// The popup is open until the user closes it: no deadline.
@@ -446,6 +480,9 @@ func (a *app) jump(ctx context.Context, args []string) error {
 		return errUsage
 	}
 	if *paneArg == "" {
+		if err := a.sweepAgents(ctx); err != nil {
+			return err
+		}
 		return a.core.Jump(ctx)
 	}
 	if err := a.core.GoTo(ctx, *paneArg); err != nil {
