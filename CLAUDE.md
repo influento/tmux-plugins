@@ -384,3 +384,22 @@ and tmux-attach. The terminal starts `tmux-revive attach`; tmux.conf runs
 
 - tmux man page: `capture-pane`, `send-keys -X`, `copy-mode`,
   `display-message`, `command-prompt`, `set-hook`
+
+<!-- stack:start -->
+## Stack
+
+Chosen for this project with `stack add`. A reference under `repos/` is
+read-only: never edit it, never import from it. How to work with each is
+in its rule and skills. A dependency you add comes from the registry that
+`stack list` shows. When a package there covers a need, run `stack add
+<name>`; the user approves it first. When none does, ask the user before
+you write that code yourself.
+
+Code reaches anything outside the process (a chain, a database, an
+external API, files) only through a facade: code of this project that
+combines a library's calls into the operations the project needs, and
+exposes them in the project's terms. Nothing outside the facade imports
+the library or its types.
+
+- **go-practices** (practices) — Before you write or change Go code, load the Go skill that fits the task with the Skill tool: go-fundamentals (types, naming, design), go-reliability (errors, concurrency, context, tests), go-security-perf (security, performance), go-database (PostgreSQL, pgx), go-tooling (CLI, linting, dependencies, Go versions). Skills `go-database`, `go-fundamentals`, `go-reliability`, `go-security-perf`, `go-tooling`.
+<!-- stack:end -->
