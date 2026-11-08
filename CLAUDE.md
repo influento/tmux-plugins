@@ -352,7 +352,6 @@ and tmux-attach. The terminal starts `tmux-revive attach`; tmux.conf runs
 ### Go
 - No external Go dependencies (stdlib only) — keeps builds simple and
   binaries small
-- Before you write or change Go code, load the Go skill that fits the task with the Skill tool: go-fundamentals (types, naming, design), go-reliability (errors, concurrency, context, tests), go-infra (database, security, performance), go-tooling (CLI, linting, dependencies, Go versions).
 - tmux calls go through `internal/tmux`, which puts a timeout on each. The
   exceptions are tmux-warp's label `command-prompt`, which holds its client
   until answered and is started without waiting, and tmux-agent's

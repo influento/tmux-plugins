@@ -7,8 +7,5 @@
 /tmux-agent/tmux-agent
 /tmux-revive/tmux-revive
 
-# Personal Claude Code skills, linked from dotfiles
-/.claude/skills/go-*
-
 # OS
 .DS_Store
