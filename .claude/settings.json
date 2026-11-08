@@ -1,13 +1,5 @@
 {
   "permissions": {
-    "deny": [
-      "Bash(npm install *)",
-      "Bash(npm i *)",
-      "Bash(npm add *)",
-      "Bash(pnpm add *)",
-      "Bash(yarn add *)",
-      "Bash(bun add *)"
-    ],
     "ask": [
       "Bash(stack add *)",
       "Bash(stack rm *)",
