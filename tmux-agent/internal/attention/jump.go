@@ -2,13 +2,15 @@ package attention
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 )
 
 // KillSession kills the named session from the picker. The last session
 // outside the skipped ones is refused: the client, and with it the terminal,
-// would go too.
+// would go too. Clients on the session move to another one first, as tmux
+// detaches them otherwise (detach-on-destroy).
 func (c *Core) KillSession(ctx context.Context, name string) error {
 	skip, err := c.skipper(ctx)
 	if err != nil {
@@ -18,17 +20,60 @@ func (c *Core) KillSession(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	left := 0
+	other := ""
 	for _, s := range lines(out) {
-		if !skip(s) {
-			left++
+		if s != name && !skip(s) && other == "" {
+			other = s
 		}
 	}
-	if left <= 1 {
+	if other == "" {
 		_, err := c.Tmux.Run(ctx, "display-message", "tmux-agent: "+name+" is the last session")
 		return err
 	}
+	out, err = c.Tmux.Output(ctx, "list-clients", "-F", "#{client_name}"+sep+"#{client_session}")
+	if err != nil {
+		return err
+	}
+	for _, l := range lines(out) {
+		f := split(l, 2)
+		if f[1] != name {
+			continue
+		}
+		if _, err := c.Tmux.Run(ctx, "switch-client", "-c", f[0], "-t", "="+other+":"); err != nil {
+			return err
+		}
+	}
 	_, err = c.Tmux.Run(ctx, "kill-session", "-t", "="+name)
+	return err
+}
+
+// Kill kills what a picker row names: a session ("=name:"), a window
+// ("=name:index") or a pane ("=name:index.pane"). Killing a window's last
+// pane kills the window, and a session's last window the session, so those
+// follow KillSession's rule.
+func (c *Core) Kill(ctx context.Context, target string) error {
+	session, rest, ok := strings.Cut(strings.TrimPrefix(target, "="), ":")
+	if !ok || session == "" {
+		return fmt.Errorf("not a picker target: %q", target)
+	}
+	if rest == "" {
+		return c.KillSession(ctx, session)
+	}
+	out, err := c.Tmux.Output(ctx, "display-message", "-p", "-t", target, "#{session_windows}"+sep+"#{window_panes}")
+	if err != nil {
+		return err
+	}
+	f := split(out, 2)
+	lastWindow, lastPane := f[0] == "1", f[1] == "1"
+	isPane := strings.Contains(rest, ".")
+	switch {
+	case lastWindow && (lastPane || !isPane):
+		return c.KillSession(ctx, session)
+	case isPane && !lastPane:
+		_, err = c.Tmux.Run(ctx, "kill-pane", "-t", target)
+	default:
+		_, err = c.Tmux.Run(ctx, "kill-window", "-t", target)
+	}
 	return err
 }
 

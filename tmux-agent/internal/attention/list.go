@@ -295,12 +295,126 @@ func (c *Core) SessionRows(ctx context.Context) ([]SessionRow, error) {
 	return RenderSessionRows(sessions, windows, c.colours(ctx)), nil
 }
 
-// PickRow is one line of the picker: a session, or one of its windows
-// under it.
+// PickRow is one line of the picker: a session's name, a window under
+// it, or a pane under a split window.
 type PickRow struct {
-	Session string // the session's name on a session line; "" on a window line
-	Target  string // what switch-client takes: "=name:" or "=name:index"
-	Display string // with colour escapes
+	Session string // the session the row is in
+	Window  string // the window's full name; "" on a session line
+	Target  string // what switch-client takes: "=name:", "=name:index" or "=name:index.pane"
+	Lead    string // before the name, with colour escapes: the flag and the index
+	Name    string // the name the row shows: the session's, or the window's cut to width; "" on a pane line
+	Detail  string // what follows the name, dim: the flag's reason or the command, the age
+}
+
+// IsSession reports whether the row is a session's name line: a label
+// over its windows, not a place to go.
+func (r PickRow) IsSession() bool { return strings.HasSuffix(r.Target, ":") }
+
+// Display is the row's flag, index and name, with colour escapes; the
+// name underlines what the query's words match in it.
+func (r PickRow) Display(words []string) string {
+	name := highlight(r.Name, words)
+	if r.IsSession() {
+		return "\x1b[1m" + name + "\x1b[0m"
+	}
+	if r.Name == "" {
+		return r.Lead
+	}
+	return r.Lead + " " + name
+}
+
+// FilterPickRows keeps the windows, and their panes, whose session or
+// window name holds every word of the query, case aside, and the name
+// line of each session that keeps one. A query matching a session's name
+// keeps all its windows.
+func FilterPickRows(rows []PickRow, words []string) []PickRow {
+	if len(words) == 0 {
+		return rows
+	}
+	var out []PickRow
+	header := -1 // the index in rows of the session line not yet kept
+	for i, r := range rows {
+		if r.IsSession() {
+			header = i
+			continue
+		}
+		if !matchesAll(r.Session+" "+r.Window, words) {
+			continue
+		}
+		if header >= 0 {
+			out = append(out, rows[header])
+			header = -1
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// QueryWords splits a search query into its words.
+func QueryWords(query string) []string { return strings.Fields(query) }
+
+// lowerRunes is s in lower case, rune for rune.
+func lowerRunes(s string) []rune {
+	runes := []rune(s)
+	for i, r := range runes {
+		runes[i] = unicode.ToLower(r)
+	}
+	return runes
+}
+
+func matchesAll(s string, words []string) bool {
+	text := lowerRunes(s)
+	for _, w := range words {
+		if matchAt(text, lowerRunes(w), 0) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// matchAt returns the first index at or after from where word starts in
+// text, or -1.
+func matchAt(text, word []rune, from int) int {
+	for i := from; i+len(word) <= len(text); i++ {
+		if slices.Equal(text[i:i+len(word)], word) {
+			return i
+		}
+	}
+	return -1
+}
+
+// highlight underlines each place a word matches in s, case aside.
+func highlight(s string, words []string) string {
+	if s == "" || len(words) == 0 {
+		return s
+	}
+	runes, lower := []rune(s), lowerRunes(s)
+	marked := make([]bool, len(runes))
+	for _, w := range words {
+		word := lowerRunes(w)
+		for i := matchAt(lower, word, 0); i >= 0; i = matchAt(lower, word, i+len(word)) {
+			for j := range word {
+				marked[i+j] = true
+			}
+		}
+	}
+	var b strings.Builder
+	on := false
+	for i, r := range runes {
+		if marked[i] != on {
+			on = marked[i]
+			if on {
+				b.WriteString("\x1b[4m")
+			} else {
+				b.WriteString("\x1b[24m")
+			}
+		}
+		b.WriteRune(r)
+	}
+	if on {
+		b.WriteString("\x1b[24m")
+	}
+	return b.String()
 }
 
 // Picker column widths, in characters.
@@ -311,32 +425,39 @@ const (
 
 // RenderPickRows lays out the picker from List's rows (best first) and the
 // sessions in tmux's order: each session's name, then its windows in index
-// order, each with the flag of its best pane, the flag's reason or the
-// pane's command, and the flag's age. Sessions with a flag come first, by
-// their best rank.
+// order, each with the flag of its best pane and, after its name, the
+// flag's reason or the pane's command and the flag's age. A split window lists its panes under
+// it, in index order, each with its own flag, detail and age. Sessions with
+// a flag come first, by their best rank.
 func RenderPickRows(rows []Row, sessions []string, col Colours) []PickRow {
+	type pane struct {
+		index int
+		row   Row
+	}
 	type window struct {
 		index int
 		best  Row
+		panes []pane
 	}
-	wins := map[string][]window{}
-	seen := map[string]bool{}
+	wins := map[string][]*window{}
+	byKey := map[string]*window{}
 	rank := map[string]int{}
-	nameW := 0
 	for _, r := range rows {
 		sess, rest, _ := strings.Cut(r.Target, ":")
-		idx, _, _ := strings.Cut(rest, ".")
+		idx, pidx, _ := strings.Cut(rest, ".")
+		p, _ := strconv.Atoi(pidx) // tmux prints numbers
 		key := sess + ":" + idx
-		if seen[key] {
+		if w, ok := byKey[key]; ok {
+			w.panes = append(w.panes, pane{p, r})
 			continue // rows come best first: the window's best pane is in
 		}
-		seen[key] = true
-		i, _ := strconv.Atoi(idx) // tmux prints numbers
-		wins[sess] = append(wins[sess], window{i, r})
+		i, _ := strconv.Atoi(idx)
+		w := &window{index: i, best: r, panes: []pane{{p, r}}}
+		byKey[key] = w
+		wins[sess] = append(wins[sess], w)
 		if cur, ok := rank[sess]; r.State != "" && (!ok || r.Rank < cur) {
 			rank[sess] = r.Rank
 		}
-		nameW = max(nameW, utf8.RuneCountInString(truncRunes(r.Window, pickNameWidth)))
 	}
 	rankOf := func(s string) int {
 		if r, ok := rank[s]; ok {
@@ -351,31 +472,45 @@ func RenderPickRows(rows []Row, sessions []string, col Colours) []PickRow {
 		Done:     ansiFg(col.Done) + "✓\x1b[0m",
 		Working:  ansiFg(col.Working) + "●\x1b[0m",
 	}
+	markOf := func(r Row) string {
+		if r.Failed {
+			return ansiFg(col.Failed) + FailedGlyph + "\x1b[0m"
+		}
+		if m, ok := marks[State(r.State)]; ok {
+			return m
+		}
+		return " "
+	}
+	// The detail, and the flag's age, follow the name in the dim colour.
 	dim := ansiFg(col.Dim)
+	detailOf := func(r Row) string {
+		d := truncRunes(r.Detail, pickDetailWidth)
+		if r.Age != "-" {
+			d += " · " + r.Age
+		}
+		return dim + d + "\x1b[0m"
+	}
 	var out []PickRow
 	for _, s := range ordered {
 		ws := wins[s]
 		if len(ws) == 0 {
 			continue
 		}
-		slices.SortFunc(ws, func(a, b window) int { return cmp.Compare(a.index, b.index) })
-		out = append(out, PickRow{Session: s, Target: "=" + s + ":", Display: "\x1b[1m" + s + "\x1b[0m"})
+		slices.SortFunc(ws, func(a, b *window) int { return cmp.Compare(a.index, b.index) })
+		out = append(out, PickRow{Session: s, Target: "=" + s + ":", Name: s})
 		for _, w := range ws {
 			r := w.best
-			mark := " "
-			if m, ok := marks[State(r.State)]; ok {
-				mark = m
+			target := "=" + s + ":" + strconv.Itoa(w.index)
+			out = append(out, PickRow{Session: s, Window: r.Window, Target: target,
+				Lead: fmt.Sprintf(" %s %d", markOf(r), w.index), Name: truncRunes(r.Window, pickNameWidth), Detail: detailOf(r)})
+			if len(w.panes) < 2 {
+				continue
 			}
-			if r.Failed {
-				mark = ansiFg(col.Failed) + FailedGlyph + "\x1b[0m"
+			slices.SortFunc(w.panes, func(a, b pane) int { return cmp.Compare(a.index, b.index) })
+			for _, p := range w.panes {
+				out = append(out, PickRow{Session: s, Window: r.Window, Target: target + "." + strconv.Itoa(p.index),
+					Lead: fmt.Sprintf("   %s .%d", markOf(p.row), p.index), Detail: detailOf(p.row)})
 			}
-			name := truncRunes(r.Window, pickNameWidth)
-			line := fmt.Sprintf("  %s %2d %s%s  %s", mark, w.index, name,
-				strings.Repeat(" ", nameW-utf8.RuneCountInString(name)), truncRunes(r.Detail, pickDetailWidth))
-			if r.Age != "-" {
-				line += " " + dim + "· " + r.Age + "\x1b[0m"
-			}
-			out = append(out, PickRow{Target: "=" + s + ":" + strconv.Itoa(w.index), Display: line})
 		}
 	}
 	return out

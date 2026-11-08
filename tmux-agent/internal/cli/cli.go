@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,9 +40,14 @@ const usage = `usage:
   tmux-agent seen [PANE]               done → idle; run when a pane gets focus
   tmux-agent list [--json]             every pane, flagged first
   tmux-agent jump [--pane ID]          go to the next pane that needs you, else the next done
-  tmux-agent pick                      pick a session or a window with fzf
-  tmux-agent popup [CLIENT]            pick in a popup sized to its lines
-  tmux-agent pick-rows                 the lines pick lists
+  tmux-agent pick [CLIENT]             pick a session, window or pane with fzf; the
+                                       client shows each row as the cursor reaches it
+  tmux-agent popup [CLIENT]            open the panel left of the terminal, or close
+                                       it: a sway window, else a tmux popup
+  tmux-agent pick-rows [QUERY]         the lines pick lists: the windows whose session
+                                       or window name holds every word of QUERY
+  tmux-agent kill TARGET               kill a picker row's session, window or pane,
+                                       unless it ends the last session
   tmux-agent rows                      one line per session, its windows' flags inline
   tmux-agent kill-session NAME         kill a session, unless it is the last one
   tmux-agent status                    render the counts into @attention_status
@@ -267,9 +274,9 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 	case "rows":
 		return a.rows(ctx)
 	case "pick":
-		return a.pick(ctx)
+		return a.pick(ctx, first(args))
 	case "pick-rows":
-		return a.pickRows(ctx)
+		return a.pickRows(ctx, strings.Join(args, " "))
 	case "popup":
 		return a.popup(ctx, first(args))
 	case "kill-session":
@@ -277,6 +284,11 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 			return errUsage
 		}
 		return a.core.KillSession(ctx, args[0])
+	case "kill":
+		if len(args) != 1 {
+			return errUsage
+		}
+		return a.core.Kill(ctx, args[0])
 	case "jump":
 		return a.jump(ctx, args)
 	case "notify":
@@ -403,19 +415,21 @@ func (a *app) rows(ctx context.Context) error {
 	return nil
 }
 
-// pickRows prints the picker's lines, for its reload after a kill.
-func (a *app) pickRows(ctx context.Context) error {
+// pickRows prints the picker's lines that match the query, for its
+// search and its reload after a kill.
+func (a *app) pickRows(ctx context.Context, query string) error {
 	rows, err := a.core.PickRows(ctx)
 	if err != nil {
 		return err
 	}
-	for _, r := range rows {
-		fmt.Fprintf(a.stdout, "%s\t%s\t%s\n", r.Session, r.Target, r.Display)
+	words := attention.QueryWords(query)
+	for _, r := range attention.FilterPickRows(rows, words) {
+		fmt.Fprintln(a.stdout, ui.PickLine(r, words))
 	}
 	return nil
 }
 
-func (a *app) pick(ctx context.Context) error {
+func (a *app) pick(ctx context.Context, client string) error {
 	if err := a.sweepAgents(ctx); err != nil {
 		return err
 	}
@@ -423,16 +437,41 @@ func (a *app) pick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	clientArgs := []string{}
+	if client != "" {
+		clientArgs = []string{"-c", client}
+	}
+	here, err := a.tmux.Output(ctx, append(append([]string{"display-message", "-p"}, clientArgs...),
+		"#{pane_id} =#{session_name}:#{window_index}")...)
+	if err != nil {
+		return err
+	}
+	startPane, startWindow, _ := strings.Cut(here, " ")
+	start := 2 // the first session's first window
+	for i, r := range rows {
+		if r.Target == startWindow {
+			start = i + 1
+		}
+	}
+	prefix, key := a.panelKeys(ctx)
 	// The picker waits on the user; only the tmux calls are bounded.
-	target, err := ui.Pick(context.WithoutCancel(ctx), rows, shell.Quote(a.self))
-	if err != nil || target == "" {
+	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
+		Self: shell.Quote(a.self), Client: client, Start: start, Prefix: prefix, Key: key})
+	if err != nil {
 		return err
 	}
 	// The user can take longer than the command's deadline: the calls after
 	// the choice get their own.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandTimeout)
 	defer cancel()
-	if _, err := a.tmux.Run(ctx, "switch-client", "-t", target); err != nil {
+	if target == "" { // Esc: back to where the panel opened
+		if startPane == "" {
+			return nil
+		}
+		_, err := a.tmux.Run(ctx, append(append([]string{"switch-client"}, clientArgs...), "-t", startPane)...)
+		return err
+	}
+	if _, err := a.tmux.Run(ctx, append(append([]string{"switch-client"}, clientArgs...), "-t", target)...); err != nil {
 		return err
 	}
 	// switch-client fires no select hook, so mark the pane it lands on.
@@ -443,30 +482,54 @@ func (a *app) pick(ctx context.Context) error {
 	return a.core.Seen(ctx, pane)
 }
 
-func (a *app) popup(ctx context.Context, client string) error {
-	rows, err := a.core.PickRows(ctx)
+// panelKeys returns the prefix and the key that open the panel, as fzf
+// names them: the prefix key binding that runs tmux-agent popup. "" when
+// there is none, or fzf has no name for it.
+func (a *app) panelKeys(ctx context.Context) (prefix, key string) {
+	p, _, err := a.tmux.Option(ctx, "-g", "", "prefix")
 	if err != nil {
-		return err
+		return "", ""
 	}
+	out, err := a.tmux.Output(ctx, "list-keys", "-T", "prefix")
+	if err != nil {
+		return "", ""
+	}
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l) // bind-key [-r] -T prefix KEY command...
+		i := slices.Index(f, "prefix")
+		if i < 0 || i+1 >= len(f) || !strings.Contains(l, "tmux-agent popup") {
+			continue
+		}
+		prefix, key = ui.FzfKey(p), ui.FzfKey(f[i+1])
+		if prefix == "" || key == "" {
+			return "", ""
+		}
+		return prefix, key
+	}
+	return "", ""
+}
+
+func (a *app) popup(ctx context.Context, client string) error {
 	clientArgs := []string{}
 	if client != "" {
 		clientArgs = []string{"-c", client}
 	}
-	size, err := a.tmux.Output(ctx, append(append([]string{"display-message", "-p"}, clientArgs...), "#{client_width} #{client_height}")...)
+	width, err := a.tmux.Output(ctx, append(append([]string{"display-message", "-p"}, clientArgs...), "#{client_width}")...)
 	if err != nil {
 		return err
 	}
-	var cw, ch int
-	if _, err := fmt.Sscan(size, &cw, &ch); err != nil {
-		return fmt.Errorf("client size %q: %w", size, err)
+	cw, err := strconv.Atoi(width)
+	if err != nil {
+		return fmt.Errorf("client width %q: %w", width, err)
 	}
-	displays := make([]string, len(rows))
-	for i, r := range rows {
-		displays[i] = r.Display
+	if ui.SwayPanel(a.getenv) {
+		// A window of its own left of the terminal, which makes room for it.
+		cmd := []string{"env", "TMUX=" + a.getenv("TMUX"), a.self, "pick", client}
+		return ui.ToggleSwayPanel(ctx, cmd, client, ui.PanelWidth, cw)
 	}
-	w, h := ui.PopupSize(displays, cw, ch)
 	args := append(append([]string{"display-popup"}, clientArgs...),
-		"-E", "-w", strconv.Itoa(w), "-h", strconv.Itoa(h), shell.Quote(a.self)+" pick")
+		"-E", "-B", "-x", "0", "-y", "0", "-h", "100%", "-w", strconv.Itoa(min(ui.PanelWidth, cw)),
+		shell.Join([]string{a.self, "pick", client}))
 	// The popup is open until the user closes it: no deadline.
 	_, err = a.tmux.Interactive(context.WithoutCancel(ctx), args...)
 	return err

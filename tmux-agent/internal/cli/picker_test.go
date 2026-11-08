@@ -138,3 +138,88 @@ func TestPickSwitchesToAWindow(t *testing.T) {
 		}
 	}
 }
+
+// Picking a pane line of a split window goes to that pane.
+func TestPickSwitchesToAPane(t *testing.T) {
+	tmuxtest.Require(t, "tmux")
+	sb := tmuxtest.NewSandbox(t)
+	gate := gatedFzf(t, sb, "=proj-b:0.1")
+	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	s.MustTmux(t, "new-session", "-d", "-s", "proj-b", ";", "split-window", "-d", "-t", "=proj-b:0")
+	s.Attach(t, "proj-a", 100, 30)
+	s.InPane(t, s.Display(t, "proj-a:0.0", "#{pane_id}"))
+	t.Setenv("PATH", sb.Bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	open(t, gate)
+	if err := cli.Pick(context.Background()); err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if got := s.MustTmux(t, "list-clients", "-F", "#{client_session}:#{window_index}.#{pane_index}"); got != "proj-b:0.1" {
+		t.Errorf("client on %q, want proj-b:0.1", got)
+	}
+}
+
+// The panel shows each row as the cursor moves to it; Esc puts the client
+// back where it was when the panel opened.
+func TestPickEscGoesBack(t *testing.T) {
+	tmuxtest.Require(t, "tmux")
+	sb := tmuxtest.NewSandbox(t)
+	// An fzf whose cursor moved to proj-b before the user pressed Esc.
+	sb.Stub(t, "fzf", "#!/bin/sh\ncat >/dev/null\ntmux switch-client -t =proj-b:\nexit 130\n")
+	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	s.MustTmux(t, "new-session", "-d", "-s", "proj-b", ";", "split-window", "-d", "-t", "=proj-a:0")
+	s.MustTmux(t, "select-pane", "-t", "=proj-a:0.1")
+	s.Attach(t, "proj-a", 100, 30)
+	s.InPane(t, s.Display(t, "proj-a:0.0", "#{pane_id}"))
+	t.Setenv("PATH", sb.Bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := cli.Pick(context.Background()); err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if got := s.MustTmux(t, "list-clients", "-F", "#{client_session}:#{window_index}.#{pane_index}"); got != "proj-a:0.1" {
+		t.Errorf("client on %q after Esc, want proj-a:0.1, where it was", got)
+	}
+}
+
+// In the panel's real fzf, the arrows step over the session lines from
+// window to window, and the client follows the cursor. A search for a
+// session's name keeps all its windows; Enter stays on the chosen one.
+func TestPanelSkipsSessionLines(t *testing.T) {
+	tmuxtest.Require(t, "tmux", "fzf")
+	sb := tmuxtest.NewSandbox(t)
+	selftest.Install(t, sb)
+	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	s.MustTmux(t, "new-session", "-d", "-s", "proj-b", ";", "new-window", "-d", "-t", "=proj-b:1")
+	s.Attach(t, "proj-a", 100, 30)
+	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
+	where := func() string {
+		return s.MustTmux(t, "list-clients", "-F", "#{client_session}:#{window_index}")
+	}
+	wantAt := func(step, want string) {
+		t.Helper()
+		tmuxtest.WaitFor(t, 5*time.Second, step+": client on "+want, func() bool { return where() == want })
+	}
+	// The panel runs in a session @skip_sessions leaves out of its rows,
+	// as in its own terminal. Rows: proj-a, 0, proj-b, 0, 1.
+	s.MustTmux(t, "new-session", "-d", "-s", "ov-panel", "-x", "40", "-y", "20", "tmux-agent pick "+shell.Quote(client))
+	s.WaitForContent(t, "=ov-panel:", "proj-b")
+	keys := func(k ...string) { s.MustTmux(t, append([]string{"send-keys", "-t", "=ov-panel:"}, k...)...) }
+
+	keys("Down")
+	wantAt("down over proj-b's line", "proj-b:0")
+	keys("Down")
+	wantAt("down", "proj-b:1")
+	keys("Up", "Up")
+	wantAt("up over proj-b's line", "proj-a:0")
+	keys("Up") // the top line is a session's: the cursor stays
+	keys("-l", "PROJ-B")
+	wantAt("search for a session", "proj-b:0")
+	keys("Down", "Enter")
+	tmuxtest.WaitFor(t, 5*time.Second, "the panel to close", func() bool {
+		_, err := s.Tmux("has-session", "-t", "=ov-panel")
+		return err != nil
+	})
+	if got := where(); got != "proj-b:1" {
+		t.Errorf("client on %q after Enter, want proj-b:1", got)
+	}
+}

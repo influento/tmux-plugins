@@ -80,6 +80,9 @@ Unit tests use synthetic data. Integration tests use `internal/tmux/tmuxtest`:
 - `InstallSelf` puts the test binary on the sandbox PATH under a plugin's
   name, and `SelfMain` in `TestMain` runs the plugin's main when the binary
   starts that way. Each plugin's `selftest` package wraps the two.
+  A test binary started with arguments but no `-test.` flags (a notifier
+  that in-process code under test spawns as itself) refuses to run the
+  tests: they would start it again, without end.
 
 Fixtures and test names use neutral names (`proj-a`, `host-b`): no real
 window, host or project names, session ids or home paths.
@@ -216,6 +219,13 @@ Rules:
 - `popup` waits until the user closes the popup, with no timeout; `pick`
   gives the tmux calls after the choice their own deadline. The 30 s
   command deadline leaves out the time the user takes.
+- The panel (`prefix f` runs `popup`): under sway, a ghostty window 40
+  columns wide left of the terminal, found by its title, so the same key
+  closes it; elsewhere a tmux popup at the left edge. fzf only displays:
+  `pick-rows QUERY` filters by session and window name, so a session's
+  name keeps all its windows. Session lines are labels the cursor steps
+  over. The client follows the cursor; Enter stays, Esc goes back to where
+  the panel opened, ctrl-x kills the window or pane and reloads.
 - tmux-agent draws the flags: every change sets `@attention_mark` on the
   pane and `@attention_win_mark` on its window (the window shows its
   best-ranked pane), a ready-to-print glyph in its `@attention_fg_*` colour,

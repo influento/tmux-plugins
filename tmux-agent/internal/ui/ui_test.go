@@ -1,22 +1,51 @@
 package ui
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
-func TestPopupSize(t *testing.T) {
-	rows := []string{"\x1b[38;2;1;2;3m? \x1b[0m" + "proj-a         alpha   beta", "proj-b         gamma"}
-	cases := []struct {
-		cw, ch, w, h int
-	}{
-		{200, 50, 67, 9}, // narrow rows: as wide as the header
-		{30, 5, 26, 3},   // capped to the client
+func TestFzfKey(t *testing.T) {
+	cases := map[string]string{
+		"C-Space": "ctrl-space", "C-b": "ctrl-b", "M-a": "alt-a", "f": "f", "F": "f",
+		"Space": "space", "F1": "", "C-Up": "", "": "",
 	}
-	for _, c := range cases {
-		if w, h := PopupSize(rows, c.cw, c.ch); w != c.w || h != c.h {
-			t.Errorf("PopupSize in %dx%d = %dx%d, want %dx%d", c.cw, c.ch, w, h, c.w, c.h)
+	for in, want := range cases {
+		if got := FzfKey(in); got != want {
+			t.Errorf("FzfKey(%q) = %q, want %q", in, got, want)
 		}
 	}
-	wide := []string{"proj-a         " + string(make([]rune, 60))}
-	if w, _ := PopupSize(wide, 200, 50); w != 85 {
-		t.Errorf("wide row: width %d, want 85", w)
+}
+
+// The panel window is as wide as its columns are in the terminal beside
+// it: 40 of 135 columns in 1440 px.
+func TestPanelPixels(t *testing.T) {
+	if got := panelPixels(40, 1440, 135); got != 435 {
+		t.Errorf("panelPixels = %d, want 435", got)
+	}
+	if got := panelPixels(40, 0, 0); got != 408 {
+		t.Errorf("panelPixels without a terminal = %d, want 408", got)
+	}
+}
+
+// The toggle finds the client's panel by its title, tiled or floating, and
+// the terminal by focus.
+func TestSwayTreeFind(t *testing.T) {
+	const tree = `{"id":1,"name":"root","nodes":[{"id":2,"name":"1","nodes":[
+		{"id":3,"name":"term-a","focused":true,"rect":{"width":1010}}],
+		"floating_nodes":[{"id":4,"name":"tmux-agent panel -dev-pts-3"}]}]}`
+	var root swayNode
+	if err := json.Unmarshal([]byte(tree), &root); err != nil {
+		t.Fatal(err)
+	}
+	title := panelTitle("/dev/pts/3")
+	if p := root.find(func(n *swayNode) bool { return n.Name == title }); p == nil || p.ID != 4 {
+		t.Errorf("panel = %+v, want id 4", p)
+	}
+	if p := root.find(func(n *swayNode) bool { return n.Name == panelTitle("/dev/pts/9") }); p != nil {
+		t.Errorf("another client's panel found: %+v", p)
+	}
+	if f := root.find(func(n *swayNode) bool { return n.Focused }); f == nil || f.Rect.Width != 1010 {
+		t.Errorf("focused = %+v, want the terminal, 1010 px", f)
 	}
 }

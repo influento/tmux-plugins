@@ -1,8 +1,10 @@
 package tmuxtest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -14,7 +16,19 @@ func SelfMain(m *testing.M, envVar string, main func() int) {
 	if os.Getenv(envVar) == "1" {
 		os.Exit(main())
 	}
+	// Started by the code under test as the program (a background
+	// notifier from an in-process test, say), the binary would run the
+	// tests again, and they would start it again. go test always passes
+	// -test. flags; a run with arguments and none of them is not a test run.
+	if len(os.Args) > 1 && !slices.ContainsFunc(os.Args[1:], isTestFlag) {
+		fmt.Fprintf(os.Stderr, "%s: not a test run (no -test. flags) and %s is not 1: refusing to run the tests\n", os.Args[0], envVar)
+		os.Exit(2)
+	}
 	os.Exit(m.Run())
+}
+
+func isTestFlag(arg string) bool {
+	return strings.HasPrefix(arg, "-test.") || strings.HasPrefix(arg, "--test.")
 }
 
 // InstallSelf puts the test binary into the sandbox as name, and sets
