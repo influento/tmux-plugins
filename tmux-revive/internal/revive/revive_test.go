@@ -405,6 +405,31 @@ func TestUnreadyServerSavesNothing(t *testing.T) {
 	}
 }
 
+// Sessions in @skip_sessions are not saved, and a server with only those
+// saves nothing, so the last real state stays.
+func TestSaveLeavesOutSkippedSessions(t *testing.T) {
+	e := newEnv(t, "")
+	e.start(t, "proj-a", e.mkdir(t, "proj-a"))
+	e.mustTmux(t, "new-session", "-d", "-s", "ov-nvim-proj-a")
+	e.mustTmux(t, "new-session", "-d", "-s", "ov-shell-proj-a")
+	e.saveNow(t) // a hook may have saved first
+	snap, _ := e.latest(t)
+	if snap == nil || len(snap.Sessions) != 1 || snap.Sessions[0].Name != "proj-a" {
+		t.Fatalf("sessions = %+v, want proj-a only", snap)
+	}
+	if id := e.mustTmux(t, "show-options", "-p", "-qv", "-t", "=ov-nvim-proj-a:", "@revive_pane"); strings.TrimSpace(id) != "" {
+		t.Errorf("skipped pane got the id %q", id)
+	}
+
+	e.mustTmux(t, "kill-session", "-t", "=proj-a")
+	if got := e.saveNow(t); got != "no server" {
+		t.Errorf("save with only skipped sessions = %q, want no server", got)
+	}
+	if after, _ := e.latest(t); after == nil || after.Sessions[0].Name != "proj-a" {
+		t.Errorf("latest = %+v, want the proj-a snapshot kept", after)
+	}
+}
+
 // The hooks tmux-init sets save after structural changes and after
 // @revive_cmd changes, without anyone running save.
 func TestHooksSave(t *testing.T) {

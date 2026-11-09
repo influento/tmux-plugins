@@ -56,8 +56,8 @@ const (
 	OptScrollbackInterval = "@revive_scrollback_interval"
 	// OptSnapshots is how many snapshots a save keeps, at least 1.
 	OptSnapshots = "@revive_snapshots"
-	// OptSkipSessions lists sessions attach never lands on (globs, space
-	// separated). tmux-agent reads it too.
+	// OptSkipSessions lists sessions attach never lands on and save leaves
+	// out (globs, space separated). tmux-agent reads it too.
 	OptSkipSessions = "@skip_sessions"
 )
 
@@ -188,7 +188,8 @@ func (r *Reviver) intOption(ctx context.Context, name string, def int) int {
 	return n
 }
 
-// skipper returns a test for the sessions attach never lands on.
+// skipper returns a test for the sessions attach never lands on and save
+// leaves out.
 func (r *Reviver) skipper(ctx context.Context) func(string) bool {
 	v, err := r.option(ctx, OptSkipSessions, DefaultSkipSessions)
 	if err != nil {

@@ -280,8 +280,9 @@ Rules:
 - tmux-init sets its hooks only at `[20]` (see tmux-agent). The save hooks
   run `tmux-revive save` in the background; `after-set-option` saves only
   for `@revive_cmd` and `automatic-rename` (`#{hook_argument_0}`).
-- A save that cannot reach the server, or finds no sessions, writes
-  nothing: `kill-server` runs `session-closed` hooks as the server goes
+- Sessions in `@skip_sessions` (tmux-overlay's `ov-*`) are not saved:
+  their owner rebuilds them on demand. A save that cannot reach the
+  server, or finds no sessions besides those, writes nothing: `kill-server` runs `session-closed` hooks as the server goes
   down. There is no `after-kill-session` hook in tmux 3.8. A save that
   loses panes, or a pane's command, while systemd reports `stopping`
   (system or `--user`) writes nothing either: programs die before tmux.

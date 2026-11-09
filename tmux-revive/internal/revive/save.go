@@ -17,8 +17,8 @@ const (
 	// Coalesced: another save was already waiting, and it reads tmux after
 	// this change, so this one did nothing.
 	Coalesced SaveResult = iota
-	// NoServer: no server, or a server with no sessions, as during
-	// shutdown and kill-server. Nothing is written.
+	// NoServer: no server, or a server with no sessions besides the
+	// skipped ones, as during shutdown and kill-server. Nothing is written.
 	NoServer
 	// NotReady: the server has not been restored yet; nothing is written.
 	NotReady
@@ -106,6 +106,20 @@ func (r *Reviver) saveLocked(ctx context.Context) (SaveResult, error) {
 	}
 	if !panes[0].ready {
 		return NotReady, nil
+	}
+	// Sessions in @skip_sessions (tmux-overlay's) are a cache that their
+	// owner rebuilds; restoring them would start programs nobody asked for.
+	// A server left with only those is treated as one with none: kill-server
+	// closes sessions one by one, and the real ones may go first.
+	skip := r.skipper(ctx)
+	kept := panes[:0]
+	for _, p := range panes {
+		if !skip(p.session) {
+			kept = append(kept, p)
+		}
+	}
+	if panes = kept; len(panes) == 0 {
+		return NoServer, nil
 	}
 	programs, err := r.programs(ctx)
 	if errors.Is(err, errNoServer) {
