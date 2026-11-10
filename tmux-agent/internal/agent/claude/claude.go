@@ -18,6 +18,9 @@
 //	                                         "other" (a kill, or a -p run
 //	                                         ending), exited otherwise
 //
+// Every event carries the session's folder (cwd), which follows the agent
+// into a worktree (EnterWorktree, claude -w).
+//
 // A turn the user cuts short (Esc, a declined permission) sends no hook;
 // Interrupted reads it from the transcript for the agent layer's sweep.
 package claude
@@ -130,7 +133,7 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 	if err := json.Unmarshal(payload, &f); err != nil {
 		return agent.Event{}, false, err
 	}
-	ev := agent.Event{SessionID: f.str("session_id"), Transcript: f.str("transcript_path")}
+	ev := agent.Event{SessionID: f.str("session_id"), Transcript: f.str("transcript_path"), Cwd: f.str("cwd")}
 	switch f.str("hook_event_name") {
 	case "SessionStart":
 		source := f.str("source")
@@ -139,7 +142,7 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 			// for the pane.
 			return agent.Event{}, false, nil
 		}
-		ev.Kind, ev.Cwd, ev.Resume = agent.SessionStart, f.str("cwd"), source == "resume"
+		ev.Kind, ev.Resume = agent.SessionStart, source == "resume"
 	case "SessionEnd":
 		ev.Kind, ev.End = agent.SessionEnd, agent.EndExited
 		if f.str("reason") == "other" {

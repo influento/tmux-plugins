@@ -12,6 +12,7 @@ import (
 	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
+	"github.com/influento/tmux-plugins/tmux-agent/internal/git"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/store"
 )
 
@@ -36,6 +37,8 @@ type Env struct {
 	Nested func(names []string, run int) bool
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
+	// Git reads a folder's checkout; git.HeadOf when nil.
+	Git func(ctx context.Context, dir string) (git.Head, error)
 	// Log receives errors that must not reach the agent; none when nil.
 	Log func(format string, args ...any)
 }
@@ -231,7 +234,10 @@ func (e *Env) Apply(ctx context.Context, a Agent, ev Event) error {
 	}
 	switch ev.Kind {
 	case SessionStart:
-		return e.start(ctx, a, ev, l)
+		if err := e.start(ctx, a, ev, l); err != nil {
+			return err
+		}
+		return e.place(ctx, a, ev, l, ev.SessionID)
 	case SessionEnd:
 		return e.end(ctx, a, ev, l)
 	}
@@ -246,13 +252,16 @@ func (e *Env) Apply(ctx context.Context, a Agent, ev Event) error {
 	}
 	switch ev.Kind {
 	case Working:
-		return e.working(ctx, a, ev, l, session)
+		err = e.working(ctx, a, ev, l, session)
 	case NeedsInput:
-		return e.needsInput(ctx, a, ev, session)
+		err = e.needsInput(ctx, a, ev, session)
 	case TurnEnd:
-		return e.turnEnd(ctx, a, ev, l, session)
+		err = e.turnEnd(ctx, a, ev, l, session)
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+	return e.place(ctx, a, ev, l, session)
 }
 
 // adopt makes the event's session the pane's.
@@ -449,6 +458,9 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 		}
 	}
 	if err := e.paneOpts(ctx, opts); err != nil {
+		return err
+	}
+	if err := e.dropGit(ctx, e.Pane); err != nil {
 		return err
 	}
 	e.markEnded(a, or(ev.SessionID, l.session), ev.End, "")

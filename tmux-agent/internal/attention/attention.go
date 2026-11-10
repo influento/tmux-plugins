@@ -10,6 +10,7 @@
 //	pane    @attention, @attention_reason, @attention_at, @attention_idle_at
 //	        @attention_owner   the command the flag belongs to, when one was named
 //	        @attention_gone    what a sweep dropped: "<state> · <owner> exited"
+//	        @labels            what sources report about the pane (see Label)
 //	window  @attention_win     the highest-ranked state among its panes
 //	global  @attention_status  the rendered counts, read as #{E:@attention_status}
 //

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/influento/tmux-plugins/internal/shell"
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
@@ -237,4 +238,23 @@ func TestPanelSkipsSessionLines(t *testing.T) {
 	if got := where(); got != "proj-b:1" {
 		t.Errorf("client on %q after Enter, want proj-b:1", got)
 	}
+}
+
+// The panel lays its header and rows out again when its terminal changes
+// width: under sway the panel's window gets its width after fzf starts.
+func TestPanelFollowsItsWidth(t *testing.T) {
+	tmuxtest.Require(t, "tmux", "fzf")
+	sb := tmuxtest.NewSandbox(t)
+	selftest.Install(t, sb)
+	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	s.Attach(t, "proj-a", 100, 30)
+	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
+	s.MustTmux(t, "new-session", "-d", "-s", "ov-panel", "-x", "80", "-y", "20", "tmux-agent pick "+shell.Quote(client))
+	s.WaitForContent(t, "=ov-panel:", "tab ⇄")
+	s.MustTmux(t, "resize-window", "-t", "=ov-panel:", "-x", "40")
+	tmuxtest.WaitFor(t, 5*time.Second, "the header to fit 40 columns", func() bool {
+		out, err := s.Tmux("capture-pane", "-p", "-t", "=ov-panel:")
+		first, _, _ := strings.Cut(out, "\n")
+		return err == nil && strings.HasSuffix(strings.TrimRight(first, " "), "tab ⇄") && utf8.RuneCountInString(first) <= 40
+	})
 }

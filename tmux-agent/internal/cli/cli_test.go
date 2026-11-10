@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
+	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 )
 
 func run(t *testing.T, args ...string) (stdout string, code int) {
@@ -133,6 +134,82 @@ func TestShellInitRejects(t *testing.T) {
 	} {
 		if out, code := run(t, args...); code == 0 || out != "" {
 			t.Errorf("%q = exit %d, output %q; want a failure and no functions", args, code, out)
+		}
+	}
+}
+
+// report sets a source's label on the pane, list --json shows it, and
+// --clear removes it; a report with neither a label nor --clear, or with
+// a bad source, fails.
+func TestReport(t *testing.T) {
+	s := tmuxtest.Start(t, tmuxtest.Options{Session: "proj-a"})
+	pane := s.Display(t, "proj-a:0.0", "#{pane_id}")
+	s.InPane(t, pane)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) // the lock
+	if _, code := run(t, "report", "--source", "tool-a", "--text", "review 2", "--token", "item=42", "--ttl", "1h"); code != 0 {
+		t.Fatalf("report exit = %d", code)
+	}
+	out, code := run(t, "list", "--json")
+	if code != 0 || !strings.Contains(out, `"source": "tool-a"`) || !strings.Contains(out, `"text": "review 2"`) || !strings.Contains(out, `"item": "42"`) {
+		t.Errorf("list --json = %s", out)
+	}
+	if _, code := run(t, "report", "--source", "tool-a", "--clear", "--pane", pane); code != 0 {
+		t.Fatalf("clear exit = %d", code)
+	}
+	if got := s.Display(t, pane, "#{@labels}"); got != "" {
+		t.Errorf("@labels after --clear = %q", got)
+	}
+	for _, args := range [][]string{
+		{"report", "--source", "tool-a"},
+		{"report", "--source", "tool-a", "--text", "x", "--clear"},
+		{"report", "--text", "x"},
+		{"report", "--source", "tool-a", "--token", "novalue"},
+	} {
+		if _, code := run(t, args...); code != 2 {
+			t.Errorf("%q exit = %d, want 2", args, code)
+		}
+	}
+	if _, code := run(t, "report", "--source", "Tool A", "--text", "x"); code != 1 {
+		t.Errorf("a bad source exit = %d, want 1", code)
+	}
+}
+
+// pick-key start lays the panel out again only when fzf's width differs
+// from the one the rows were built for.
+func TestPickKeyStart(t *testing.T) {
+	t.Setenv("FZF_COLUMNS", "40")
+	t.Setenv("FZF_HEADER_LABEL", "tree")
+	if out, code := run(t, "pick-key", "start", "39"); code != 0 || out != "" {
+		t.Errorf("same width: %q, exit %d; want nothing", out, code)
+	}
+	out, code := run(t, "pick-key", "start", "68")
+	if code != 0 || !strings.HasPrefix(out, "change-header(") || !strings.Contains(out, "reload-sync(") {
+		t.Errorf("another width: %q, exit %d", out, code)
+	}
+}
+
+// The panel starts on the current window's row, also when that row goes to
+// the window's agent pane; else on its session's fold.
+func TestStartRow(t *testing.T) {
+	rows := []attention.PickRow{
+		{Label: "proj-a", Session: "proj-a", Target: "=proj-a:"},
+		{Session: "proj-a", Target: "=proj-a:1.1"},
+		{Session: "proj-a", Target: "=proj-a:", Fold: "$1"},
+		{Label: "proj-b", Session: "proj-b", Target: "=proj-b:"},
+		{Session: "proj-b", Target: "=proj-b:10"},
+	}
+	for _, c := range []struct {
+		window string
+		want   int
+	}{
+		{"=proj-a:1", 2},
+		{"=proj-a:3", 3},
+		{"=proj-b:10", 5},
+		{"=proj-b:1", 2},
+		{"=host-c:0", 2},
+	} {
+		if got := startRow(rows, c.window); got != c.want {
+			t.Errorf("startRow(%s) = %d, want %d", c.window, got, c.want)
 		}
 	}
 }

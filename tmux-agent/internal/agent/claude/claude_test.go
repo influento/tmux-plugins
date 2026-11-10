@@ -44,6 +44,8 @@ func TestReadHook(t *testing.T) {
 		{"notification empty", map[string]any{"hook_event_name": "Notification", "notification_type": "elicitation_dialog"},
 			true, agent.Event{Kind: agent.NeedsInput, Reason: "needs input"}},
 		{"stop", map[string]any{"hook_event_name": "Stop", "transcript_path": "/t"}, true, agent.Event{Kind: agent.TurnEnd, Transcript: "/t"}},
+		{"stop in a worktree", map[string]any{"hook_event_name": "Stop", "cwd": "/src/proj-a/.claude/worktrees/wt-a"},
+			true, agent.Event{Kind: agent.TurnEnd, Cwd: "/src/proj-a/.claude/worktrees/wt-a"}},
 		{"unknown", map[string]any{"hook_event_name": "SubagentStop"}, false, agent.Event{}},
 	}
 	for _, c := range cases {

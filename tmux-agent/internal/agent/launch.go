@@ -232,5 +232,8 @@ func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
 	if err := e.paneOpts(ctx, opts); err != nil {
 		e.logf("end run: %v", err)
 	}
+	if err := e.dropGit(ctx, e.Pane); err != nil {
+		e.logf("git label end: %v", err)
+	}
 	e.markEnded(a, l.session, end, desc)
 }

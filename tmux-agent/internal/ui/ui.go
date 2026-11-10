@@ -109,6 +109,7 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		fmt.Sprintf("--bind=ctrl-x:execute-silent([ -z {4} ] || %s kill {4})+reload(%s)", opts.Self, list),
 		"--bind=tab:transform:" + opts.Self + " pick-key tab",
 		"--bind=btab:transform:" + opts.Self + " pick-key tab",
+		"--bind=resize:transform:" + opts.Self + " pick-key resize",
 		"--bind=down:" + skipDown, "--bind=ctrl-j:" + skipDown, "--bind=ctrl-n:" + skipDown, "--bind=scroll-down:" + skipDown,
 		"--bind=up:" + skipUp, "--bind=ctrl-k:" + skipUp, "--bind=ctrl-p:" + skipUp, "--bind=scroll-up:" + skipUp,
 		// A new list: a search starts on its first window; otherwise the
@@ -117,7 +118,9 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		"--bind=enter:transform:[ -n {1} ] || " + opts.Self + " pick-key enter {5}",
 		"--bind=focus:execute-silent([ -n {1} ] || " + show + " -t {2})",
 		// The client stays where it is until the cursor is on its row.
-		"--bind=start:unbind(focus)",
+		// The panel's window may get its width between the rows' layout and
+		// fzf's start (sway sizes it): lay out again when the width differs.
+		fmt.Sprintf("--bind=start:unbind(focus)+transform(%s pick-key start %d)", opts.Self, opts.Width),
 		fmt.Sprintf("--bind=load:pos(%d)+rebind(focus)+unbind(load)", max(opts.Start, 1)),
 	}
 	if opts.Prefix != "" && opts.Key != "" {

@@ -163,11 +163,14 @@ Packages in `tmux-agent/internal/`:
 - `attention`: the core. Flags in the `@attention*` pane options, status
   counts, sweep, list, borders, jump, notifications. Knows no agent.
 - `agent`: the agent layer. Neutral events, the hook handler, the launcher,
-  the nested-agent rule, the title sweep. Knows no particular agent.
+  the nested-agent rule, the title sweep, the git label. Knows no
+  particular agent.
 - `agent/claude`: the Claude Code adapter: hook mapping, one-shot and resume
   arguments, the window title (Claude Code's own `ai-title` from the
   transcript, cut at a word to 24 characters; the first prompt until then),
   the interrupt line of a turn cut short.
+- `git`: the one place that runs git: a folder's branch and whether it is
+  a linked worktree, in one `rev-parse` (a second for a detached HEAD).
 - `store`: one JSON record per session in
   `$XDG_STATE_HOME/tmux-agent/sessions/<agent>/<id>.json` (mode 0600, never
   deleted), and the lock.
@@ -221,15 +224,20 @@ Rules:
   command deadline leaves out the time the user takes.
 - The panel (`prefix f` runs `popup`): under sway, a ghostty window 40
   columns wide left of the terminal, found by its title, so the same key
-  closes it; elsewhere a tmux popup at the left edge. Two views, Tab
+  closes it; elsewhere a tmux popup at the left edge. sway sizes the
+  window after `pick` lays out the rows, sometimes before fzf starts:
+  `pick-key start` and `pick-key resize` lay them out again for fzf's
+  width. Two views, Tab
   switches: the tree (opens first) lists each session's agent windows
   (flag, the agent's mark from its adapter's `Mark`, name, no index; a ?
   or ✓ row keeps its reason, the others show only the age) and folds the
   other windows into one dim row; Enter on a fold opens it, a search opens
   all. By state lists only agents under Needs you, Working, Done (✗
   included) and Idle, the session as a column. An idle agent's age counts
-  from `@attention_idle_at`, the time its last flag was set. A row's
-  second line is the slot for labels; nothing fills it until C1. fzf only
+  from `@attention_idle_at`, the time its last flag was set. A split
+  window lists its panes only when two or more run an agent or have a
+  flag; with one, the window's row goes to that pane. A row's second line
+  is its pane's labels (see below), dim, cut to the width. fzf only
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
   have two lines) and filters by session and window name, so a session's
   name keeps all its windows; `pick-key` gives Tab's and Enter's actions.
@@ -237,6 +245,20 @@ Rules:
   nowhere. Labels (session names, group titles) the cursor steps over.
   The client follows the cursor; Enter stays, Esc goes back to where the
   panel opened, ctrl-x kills the window or pane and reloads.
+- Labels (C1): what a source says about a pane, in the pane option
+  `@labels` (a JSON list, one entry per source in the order they first
+  reported). `tmux-agent report --source S --text T --token k=v --ttl D`
+  sets one under the lock, `--clear` removes it; the core validates names
+  (a-z, 0-9, `_`, `-`) and refuses control characters, and drops a label
+  past its time. The panel shows each label's text (else its tokens'
+  values), joined by ` · `; `list --json` gives them whole. The core knows
+  no source.
+- The git label (F4): every Claude hook carries the session's `cwd`, which
+  follows the agent into a worktree (EnterWorktree, `claude -w`). At a
+  session start, a turn end, or when the folder changes, the agent layer
+  reads the branch and sets source `git`: `⎇ <branch>`, plus ` wt` in a
+  linked worktree. It goes when the session ends (the hook, the launcher,
+  the sweep); a folder outside git clears it.
 - tmux-agent draws the flags: every change sets `@attention_mark` on the
   pane and `@attention_win_mark` on its window (the window shows its
   best-ranked pane), a ready-to-print glyph in its `@attention_fg_*` colour,

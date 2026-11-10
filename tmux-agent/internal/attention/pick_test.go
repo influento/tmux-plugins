@@ -151,3 +151,49 @@ func TestDisplayHighlights(t *testing.T) {
 		t.Errorf("session Text = %q", got)
 	}
 }
+
+// A pane's labels make its row's second line: on the window's row for a
+// one-pane window, on the pane's row in a split one, and in the by-state
+// view; cut to the row's width.
+func TestRenderLabels(t *testing.T) {
+	rows := panelPanes()
+	rows[2].Labels = []Label{{Source: "git", Text: "⎇ main"}, {Source: "tool-a", Tokens: map[string]string{"stage": "review"}}}
+	rows[3].Labels = []Label{{Source: "git", Text: "⎇ a-very-long-branch-name-for-a-test wt"}}
+	p := Panel{View: TreeView, Width: 39, Marks: testMarks}
+	var got []string
+	for _, r := range RenderPickRows(rows, testSessions, p)[1:5] {
+		got = append(got, escape.ReplaceAllString(r.Display(), ""))
+	}
+	check(t, got, []string{
+		" ? ✳  gamma             permission · 4m",
+		"   ● .0 ✳  agent-a                   5m\n           ⎇ main · review",
+		"   ? .1 ✳  agent-a      permission · 4m",
+		"   ◆  omega                          3h\n      ⎇ a-very-long-branch-name-for-a-…",
+	})
+	p.View = StateView
+	for _, r := range RenderPickRows(rows, testSessions, p) {
+		if r.Target == "=proj-b:2.0" {
+			if got, want := escape.ReplaceAllString(r.Display(), ""), " ● ✳  gamma                   proj-b 5m\n      ⎇ main · review"; got != want {
+				t.Errorf("by state: %q, want %q", got, want)
+			}
+		}
+	}
+}
+
+// A split window with one agent pane and a shell is one row: it goes to
+// the agent's pane and shows that pane's labels.
+func TestOneAgentPaneIsOneRow(t *testing.T) {
+	rows := []Row{
+		{Target: "proj-a:1.1", Session: "proj-a", Window: "work", State: "working", Rank: 2, Age: "9s", Command: "agent-a", IsAgent: true,
+			Labels: []Label{{Source: "git", Text: "⎇ main"}}},
+		{Target: "proj-a:1.2", Session: "proj-a", Window: "work", Rank: 4, Detail: "zsh", Age: "-", Command: "zsh"},
+	}
+	var got []string
+	for _, r := range RenderPickRows(rows, []Session{{ID: "$1", Name: "proj-a"}}, Panel{View: TreeView, Width: 39, Marks: testMarks}) {
+		got = append(got, r.Target+"|"+escape.ReplaceAllString(r.Display(), ""))
+	}
+	check(t, got, []string{
+		"=proj-a:|proj-a",
+		"=proj-a:1.1| ● ✳  work                           9s\n      ⎇ main",
+	})
+}

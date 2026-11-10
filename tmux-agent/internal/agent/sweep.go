@@ -156,6 +156,9 @@ func (e *Env) SweepAgents(ctx context.Context) error {
 		if err := e.optsOf(ctx, p.id, opts); err != nil && !isGone(err) {
 			return err
 		}
+		if err := e.dropGit(ctx, p.id); err != nil && !isGone(err) {
+			return err
+		}
 		e.markEnded(e.Registry.Get(p.agent), p.session, EndUnknown, "")
 	}
 	return nil

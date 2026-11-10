@@ -37,6 +37,12 @@ const usage = `usage:
                                        flag a pane: needs-you, done, working or clear;
                                        --failed marks a done flag as a failure;
                                        prints the previous state when it changed
+  tmux-agent report --source NAME [--text TEXT] [--token KEY=VALUE]... [--ttl DURATION]
+                    [--pane ID] [--clear]
+                                       set what a source says about a pane: the panel
+                                       shows TEXT (else the tokens' values) on the
+                                       pane's second line; --ttl drops it after that
+                                       long; --clear removes the source's label
   tmux-agent seen [PANE]               done → idle; run when a pane gets focus
   tmux-agent list [--json]             every pane, flagged first
   tmux-agent jump [--pane ID]          go to the next pane that needs you, else the next done
@@ -47,7 +53,8 @@ const usage = `usage:
   tmux-agent pick-rows [--fzf] [QUERY] the rows pick lists in the tree: the windows whose
                                        session or window name holds every word of QUERY;
                                        --fzf takes the query, view and width from fzf
-  tmux-agent pick-key KEY [FOLD]       what tab or enter does in the panel, as fzf actions
+  tmux-agent pick-key KEY [ARG]        what tab, enter, a resize or the start does in the
+                                       panel, as fzf actions
   tmux-agent kill TARGET               kill a picker row's session, window or pane,
                                        unless it ends the last session
   tmux-agent rows                      one line per session, its windows' flags inline
@@ -263,6 +270,8 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 	switch cmd {
 	case "flag":
 		return a.flag(ctx, args)
+	case "report":
+		return a.report(ctx, args)
 	case "seen":
 		if len(args) > 1 {
 			return errUsage
@@ -365,6 +374,55 @@ func (a *app) flag(ctx context.Context, args []string) error {
 		fmt.Fprintln(a.stdout, prev.String())
 	}
 	return nil
+}
+
+// tokens collects --token KEY=VALUE flags.
+type tokens map[string]string
+
+func (t tokens) String() string { return "" }
+
+func (t tokens) Set(v string) error {
+	k, val, ok := strings.Cut(v, "=")
+	if !ok {
+		return errors.New("want KEY=VALUE")
+	}
+	t[k] = val
+	return nil
+}
+
+// report sets or clears a source's label on a pane.
+func (a *app) report(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	source := fs.String("source", "", "")
+	text := fs.String("text", "", "")
+	paneArg := fs.String("pane", "", "")
+	ttl := fs.Duration("ttl", 0, "")
+	clear := fs.Bool("clear", false, "")
+	toks := tokens{}
+	fs.Var(toks, "token", "")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 || *source == "" || *ttl < 0 {
+		return errUsage
+	}
+	says := *text != "" || len(toks) > 0
+	if says == *clear {
+		return errUsage // a label, or --clear: one of the two
+	}
+	p, err := a.pane(*paneArg)
+	if err != nil {
+		return err
+	}
+	l := attention.Label{Source: *source}
+	if says {
+		l.Text, l.Tokens = *text, toks
+		if len(toks) == 0 {
+			l.Tokens = nil
+		}
+		if *ttl > 0 {
+			l.Until = time.Now().Add(*ttl).Unix()
+		}
+	}
+	return a.env.Report(ctx, p, l)
 }
 
 // sweep is what tmux runs when a pane closes: the window's borders, the
@@ -473,14 +531,25 @@ func (a *app) pickKey(args []string) error {
 	}
 	st := ui.ParsePanelState(a.getenv("FZF_HEADER_LABEL"))
 	list := "reload-sync(" + shell.Quote(a.self) + " pick-rows --fzf)"
+	width := ui.PanelWidth - 1
+	if cols, err := strconv.Atoi(a.getenv("FZF_COLUMNS")); err == nil && cols > 1 {
+		width = cols - 1
+	}
 	switch args[0] {
 	case "tab":
 		st = st.Next()
-		width := ui.PanelWidth - 1
-		if cols, err := strconv.Atoi(a.getenv("FZF_COLUMNS")); err == nil && cols > 1 {
-			width = cols - 1
-		}
 		fmt.Fprintln(a.stdout, "change-header-label("+st.String()+")+change-header("+ui.Header(st.View, width)+")+"+list)
+	case "start":
+		// The rows were laid out for args[1] columns; fzf may have more or
+		// fewer.
+		if len(args) > 1 && args[1] == strconv.Itoa(width) {
+			return nil
+		}
+		fmt.Fprintln(a.stdout, "change-header("+ui.Header(st.View, width)+")+"+list)
+	case "resize":
+		// The panel's window gets its width after fzf starts (sway sizes
+		// it): lay the header and the rows out again for the new width.
+		fmt.Fprintln(a.stdout, "change-header("+ui.Header(st.View, width)+")+"+list)
 	case "enter":
 		fold := ""
 		if len(args) > 1 {
@@ -518,17 +587,7 @@ func (a *app) pick(ctx context.Context, client string) error {
 		return err
 	}
 	startPane, startWindow, _ := strings.Cut(here, " ")
-	start := 2 // the first session's first row
-	startSession, _, _ := strings.Cut(strings.TrimPrefix(startWindow, "="), ":")
-	for i, r := range rows {
-		if r.Target == startWindow {
-			start = i + 1
-			break
-		}
-		if r.Fold != "" && r.Session == startSession { // the window is in the fold
-			start = i + 1
-		}
-	}
+	start := startRow(rows, startWindow)
 	prefix, key := a.panelKeys(ctx)
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
@@ -562,6 +621,23 @@ func (a *app) pick(ctx context.Context, client string) error {
 // panelKeys returns the prefix and the key that open the panel, as fzf
 // names them: the prefix key binding that runs tmux-agent popup. "" when
 // there is none, or fzf has no name for it.
+// startRow is the row, from 1, the panel's cursor starts on for the
+// window ("=session:index"): the window's row (which may go to its agent's
+// pane), else its session's fold, else the first session's first row.
+func startRow(rows []attention.PickRow, window string) int {
+	start := 2
+	session, _, _ := strings.Cut(strings.TrimPrefix(window, "="), ":")
+	for i, r := range rows {
+		if r.Target == window || strings.HasPrefix(r.Target, window+".") {
+			return i + 1
+		}
+		if r.Fold != "" && r.Session == session { // the window is in the fold
+			start = i + 1
+		}
+	}
+	return start
+}
+
 func (a *app) panelKeys(ctx context.Context) (prefix, key string) {
 	p, _, err := a.tmux.Option(ctx, "-g", "", "prefix")
 	if err != nil {

@@ -40,24 +40,25 @@ func (c *Core) skipper(ctx context.Context) (func(session string) bool, error) {
 
 // Row is one pane in the list behind the pickers and the jump key.
 type Row struct {
-	Rank    int    `json:"rank"`
-	Pane    string `json:"pane"`
-	Glyph   string `json:"glyph"`
-	Window  string `json:"window"`
-	Target  string `json:"target"` // session:window.pane
-	Detail  string `json:"detail"`
-	Age     string `json:"age"`              // "-" for none
-	State   string `json:"state,omitempty"`  // the flag; empty for idle
-	At      int64  `json:"at,omitempty"`     // when the flag was set, unix seconds
-	Command string `json:"command"`          // the pane's command
-	Session string `json:"session"`          // the session's name
-	Agent   string `json:"agent,omitempty"`  // the agent the pane's launcher runs
-	Title   string `json:"-"`                // the pane title
-	Gone    string `json:"gone,omitempty"`   // what a sweep dropped
-	Reason  string `json:"reason,omitempty"` // the flag's reason
-	Failed  bool   `json:"failed,omitempty"` // a done flag for a run that failed
-	IsAgent bool   `json:"-"`                // the pane runs an agent
-	IdleAge string `json:"-"`                // an idle agent's time since its last flag was set; "" for none
+	Rank    int     `json:"rank"`
+	Pane    string  `json:"pane"`
+	Glyph   string  `json:"glyph"`
+	Window  string  `json:"window"`
+	Target  string  `json:"target"` // session:window.pane
+	Detail  string  `json:"detail"`
+	Age     string  `json:"age"`              // "-" for none
+	State   string  `json:"state,omitempty"`  // the flag; empty for idle
+	At      int64   `json:"at,omitempty"`     // when the flag was set, unix seconds
+	Command string  `json:"command"`          // the pane's command
+	Session string  `json:"session"`          // the session's name
+	Agent   string  `json:"agent,omitempty"`  // the agent the pane's launcher runs
+	Title   string  `json:"-"`                // the pane title
+	Gone    string  `json:"gone,omitempty"`   // what a sweep dropped
+	Reason  string  `json:"reason,omitempty"` // the flag's reason
+	Failed  bool    `json:"failed,omitempty"` // a done flag for a run that failed
+	IsAgent bool    `json:"-"`                // the pane runs an agent
+	IdleAge string  `json:"-"`                // an idle agent's time since its last flag was set; "" for none
+	Labels  []Label `json:"labels,omitempty"` // what sources report about the pane
 }
 
 // Humanize renders an age in seconds as 5s, 3m, 2h or 4d.
@@ -100,6 +101,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 		"#{session_name}", "#{window_index}.#{pane_index}", "#{pane_id}", "#{window_name}",
 		"#{@attention}", "#{@attention_reason}", "#{@attention_at}", "#{pane_current_command}",
 		"#{@attention_gone}", "#{@agent}", "#{pane_title}", "#{@attention_failed}", "#{@attention_idle_at}",
+		"#{" + OptLabels + "}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -108,7 +110,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 13)
+		f := split(l, 14)
 		if skip(f[0]) {
 			continue
 		}
@@ -116,6 +118,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 			Session: f[0], Target: f[0] + ":" + f[1], Pane: f[2], Window: f[3],
 			State: f[4], Reason: f[5], Command: f[7], Gone: f[8], Agent: f[9], Title: f[10],
 			Failed: f[4] == string(Done) && f[11] == "1",
+			Labels: ParseLabels(f[13], now),
 		}
 		r.At, _ = strconv.ParseInt(f[6], 10, 64) // unset or garbled: no age
 		r.IsAgent = c.isAgent(r.Command, r.Agent)

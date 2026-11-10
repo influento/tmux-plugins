@@ -60,8 +60,9 @@ type PickRow struct {
 	Kill    string   // what ctrl-x kills; "" for nothing
 	Fold    string   // on a fold row, the id of the session it opens
 	Text    string   // line one, with colour escapes
-	Labels  []string // line two: an agent's labels; none, no line
+	Labels  []string // line two: the pane's labels; none, no line
 	indent  int      // the column line two starts at
+	width   int      // the columns of a row
 	dimText string   // the dim colour escape, for line two
 }
 
@@ -74,7 +75,19 @@ func (r PickRow) Display() string {
 	if len(r.Labels) == 0 {
 		return r.Text
 	}
-	return r.Text + "\n" + strings.Repeat(" ", r.indent) + r.dimText + strings.Join(r.Labels, " · ") + "\x1b[0m"
+	text := truncEllipsis(strings.Join(r.Labels, " · "), max(r.width-r.indent, 1))
+	return r.Text + "\n" + strings.Repeat(" ", r.indent) + r.dimText + text + "\x1b[0m"
+}
+
+// shownLabels are a row's labels as line two shows them.
+func shownLabels(r Row) []string {
+	var out []string
+	for _, l := range r.Labels {
+		if s := l.Shown(); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // paneOf is a pane's index in its window and its row.
@@ -96,6 +109,17 @@ func (w *window) best() Row { return w.panes[0].row }
 // or had one a sweep dropped: the window shows in full, not in the fold.
 func (w *window) hasAgent() bool {
 	return slices.ContainsFunc(w.panes, func(p paneOf) bool { return p.row.Rank < 4 })
+}
+
+// busyPanes are the window's panes that run an agent or have a flag.
+func (w *window) busyPanes() []paneOf {
+	var out []paneOf
+	for _, p := range w.panes {
+		if p.row.Rank < 4 {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // target is the window's switch-client target.
@@ -189,8 +213,9 @@ func renderTree(rows []Row, sessions []Session, p Panel) []PickRow {
 // cell.
 const leadLen = 5
 
-// windowRows is a window's row and, for a split window, a row for each
-// pane in index order. An agent window shows its flag, its agent's mark
+// windowRows is a window's row and, for a window with two or more panes
+// that run an agent or have a flag, a row for each pane in index order; with
+// one such pane, the window's row goes to it and shows its labels. An agent window shows its flag, its agent's mark
 // and what the flag says; another window shows its name dim. Window
 // indexes are left out: the names say more.
 func windowRows(w *window, agent bool, p Panel) []PickRow {
@@ -208,10 +233,20 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		row = line(strings.Repeat(" ", leadLen), leadLen, r.Window, dim, right, p)
 	}
 	row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, w.target(), w.target()
-	out := []PickRow{row}
 	if len(w.panes) < 2 {
-		return out
+		row.Labels = shownLabels(r)
+		return []PickRow{row}
 	}
+	if busy := w.busyPanes(); len(busy) < 2 {
+		// One pane that matters: the window's row stands for it.
+		row.Labels = shownLabels(r)
+		if len(busy) == 1 {
+			row.Target = w.target() + "." + strconv.Itoa(busy[0].index)
+			row.Labels = shownLabels(busy[0].row)
+		}
+		return []PickRow{row}
+	}
+	out := []PickRow{row}
 	panes := slices.Clone(w.panes)
 	slices.SortFunc(panes, func(a, b paneOf) int { return cmp.Compare(a.index, b.index) })
 	for _, pn := range panes {
@@ -223,6 +258,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 			right = rightOf(pr, "")
 		}
 		row := line(lead, paneLead, pr.Command, dim, right, p)
+		row.Labels = shownLabels(pr)
 		target := w.target() + "." + strconv.Itoa(pn.index)
 		row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, target, target
 		out = append(out, row)
@@ -269,6 +305,7 @@ func renderState(rows []Row, p Panel) []PickRow {
 			lead := " " + glyphOf(r, p.Col) + " " + markOf(r, p) + " "
 			row := line(lead, leadLen, r.Window, "", rightOf(r, r.Session), p)
 			row.Session, row.Window, row.Target, row.Kill = r.Session, r.Window, "="+r.Target, "="+r.Target
+			row.Labels = shownLabels(r)
 			body = append(body, row)
 		}
 		if len(body) == 0 {
@@ -389,7 +426,7 @@ func line(lead string, leadLen int, name, nameFg, right string, p Panel) PickRow
 		b.WriteString(strings.Repeat(" ", max(room-shownLen, 0)+1))
 		b.WriteString(ansiFg(p.Col.Dim) + right + "\x1b[0m")
 	}
-	return PickRow{Text: b.String(), indent: leadLen + 1, dimText: ansiFg(p.Col.Dim)}
+	return PickRow{Text: b.String(), indent: leadLen + 1, width: p.Width, dimText: ansiFg(p.Col.Dim)}
 }
 
 // truncEllipsis cuts s to n characters, the last an ellipsis when it cuts.
