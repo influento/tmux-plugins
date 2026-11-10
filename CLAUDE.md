@@ -381,6 +381,16 @@ and tmux-attach. The terminal starts `tmux-revive attach`; tmux.conf runs
 `forget-session` before `kill-session`; zshrc evals
 `tmux-revive shell-init zsh`. The README has the exact lines.
 
+## Images in tmux
+
+tmux 3.8 shows no images: it only passes kitty escapes through
+(`allow-passthrough on`), and Ghostty has no sixel. The decision is to wait
+for native support in a tmux release (PR #5445, kept current with master on
+the branch `image_merge`), not to use kitten's Unicode placeholders or a
+self-built tmux. On 2026-11-11 that branch merged into master without
+conflicts, detected Ghostty's `kittygraphics`, and passed `make test`. When
+a release has it, run `make test` against it.
+
 ## Code Conventions
 
 ### Go
