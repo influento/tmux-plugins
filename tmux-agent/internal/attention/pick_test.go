@@ -9,108 +9,145 @@ import (
 
 var escape = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-// The picker: each session's name, then its windows in index order with
-// the flag of their best pane; flagged sessions first, the rest in tmux's
-// order.
-func TestRenderPickRows(t *testing.T) {
-	rows := []Row{ // as List returns them: best first
-		{Target: "proj-b:2.1", Window: "gamma", State: "needs-you", Rank: 0, Detail: "Bash(make)", Age: "4m"},
-		{Target: "proj-c:1.0", Window: "delta", State: "done", Rank: 1, Detail: "failed: exit 1", Age: "1m", Failed: true},
-		{Target: "proj-b:2.0", Window: "gamma", State: "working", Rank: 2, Detail: "working", Age: "5m"},
-		{Target: "proj-b:10.0", Window: "a window name longer than the column", Rank: 4, Detail: "zsh", Age: "-"},
-		{Target: "proj-a:0.0", Window: "alpha", Rank: 4, Detail: "zsh", Age: "-"},
-		{Target: "proj-b:1.0", Window: "beta", Rank: 3, Detail: "idle · tests", Age: "-"},
-	}
-	got := RenderPickRows(rows, []string{"proj-a", "proj-b", "proj-c"}, Colours{})
-	var lines []string
-	for _, r := range got {
-		lines = append(lines, r.Session+"|"+r.Target+"|"+escape.ReplaceAllString(r.Display(nil)+"|"+r.Detail, ""))
-	}
-	want := []string{
-		"proj-b|=proj-b:|proj-b|",
-		"proj-b|=proj-b:1|   1 beta|idle · tests",
-		"proj-b|=proj-b:2| ? 2 gamma|Bash(make) · 4m",
-		"proj-b|=proj-b:2.0|   ● .0|working · 5m",
-		"proj-b|=proj-b:2.1|   ? .1|Bash(make) · 4m",
-		"proj-b|=proj-b:10|   10 a window name longer tha|zsh",
-		"proj-c|=proj-c:|proj-c|",
-		"proj-c|=proj-c:1| ✗ 1 delta|failed: exit 1 · 1m",
-		"proj-a|=proj-a:|proj-a|",
-		"proj-a|=proj-a:0|   0 alpha|zsh",
-	}
-	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
-		t.Errorf("rows:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+var testMarks = map[string]AgentMark{"agent-a": {Glyph: "✳", Colour: "#d97757"}}
+
+// panelPanes is a server's panes as List returns them: best first.
+func panelPanes() []Row {
+	return []Row{
+		{Target: "proj-b:2.1", Session: "proj-b", Window: "gamma", State: "needs-you", Rank: 0, Detail: "permission", Age: "4m", Command: "agent-a", IsAgent: true},
+		{Target: "host-c:1.0", Session: "host-c", Window: "delta", State: "done", Rank: 1, Detail: "failed: exit 1", Age: "1m", Failed: true, Command: "zsh"},
+		{Target: "proj-b:2.0", Session: "proj-b", Window: "gamma", State: "working", Rank: 2, Detail: "working", Age: "5m", Command: "agent-a", IsAgent: true},
+		{Target: "proj-b:3.0", Session: "proj-b", Window: "omega", Rank: 3, Detail: "idle · tests", Age: "-", Command: "other", Agent: "other", IsAgent: true, IdleAge: "3h"},
+		{Target: "proj-b:10.0", Session: "proj-b", Window: "notes", Rank: 4, Detail: "nvim", Age: "-", Command: "nvim"},
+		{Target: "proj-a:0.0", Session: "proj-a", Window: "alpha", Rank: 4, Detail: "zsh", Age: "-", Command: "zsh"},
+		{Target: "proj-b:1.0", Session: "proj-b", Window: "zsh", Rank: 4, Detail: "zsh", Age: "-", Command: "zsh"},
 	}
 }
 
-// A split window lists its panes under it, in index order, each with its
-// own flag and what it runs or waits on; a window of one pane lists none.
-func TestRenderPickRowsSplitWindow(t *testing.T) {
-	rows := []Row{ // best first
-		{Target: "proj-a:1.2", Window: "gamma", State: "needs-you", Rank: 0, Detail: "Bash(make)", Age: "2m"},
-		{Target: "proj-a:1.0", Window: "gamma", Rank: 4, Detail: "nvim", Age: "-"},
-		{Target: "proj-a:1.1", Window: "gamma", Rank: 4, Detail: "zsh", Age: "-"},
-		{Target: "proj-a:2.0", Window: "delta", Rank: 4, Detail: "zsh", Age: "-"},
+var testSessions = []Session{{ID: "$1", Name: "proj-a"}, {ID: "$2", Name: "proj-b"}, {ID: "$3", Name: "host-c"}}
+
+func render(p Panel) []string {
+	if p.Width == 0 {
+		p.Width = 39
 	}
-	got := RenderPickRows(rows, []string{"proj-a"}, Colours{})
-	var lines []string
-	for _, r := range got {
-		lines = append(lines, r.Target+"|"+escape.ReplaceAllString(r.Display(nil)+"|"+r.Detail, ""))
+	p.Marks = testMarks
+	var out []string
+	for _, r := range RenderPickRows(panelPanes(), testSessions, p) {
+		out = append(out, r.Target+"|"+escape.ReplaceAllString(r.Display(), ""))
 	}
-	want := []string{
-		"=proj-a:|proj-a|",
-		"=proj-a:1| ? 1 gamma|Bash(make) · 2m",
-		"=proj-a:1.0|     .0|nvim",
-		"=proj-a:1.1|     .1|zsh",
-		"=proj-a:1.2|   ? .2|Bash(make) · 2m",
-		"=proj-a:2|   2 delta|zsh",
-	}
-	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
-		t.Errorf("rows:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	return out
+}
+
+func check(t *testing.T, got, want []string) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Errorf("rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
-// Search keeps the windows whose session or window name holds every word,
-// case aside, under their session's name line; a session's name keeps all
-// its windows, and a window keeps its panes.
-func TestFilterPickRows(t *testing.T) {
-	rows := RenderPickRows([]Row{
-		{Target: "proj-a:1.0", Window: "Alpha", Rank: 4, Detail: "zsh", Age: "-"},
-		{Target: "proj-a:1.1", Window: "Alpha", Rank: 4, Detail: "nvim", Age: "-"},
-		{Target: "proj-a:2.0", Window: "beta", Rank: 4, Detail: "alpha", Age: "-"},
-		{Target: "host-b:1.0", Window: "gamma", Rank: 4, Detail: "zsh", Age: "-"},
-		{Target: "host-b:2.0", Window: "alphabet", Rank: 4, Detail: "zsh", Age: "-"},
-	}, []string{"proj-a", "host-b"}, Colours{})
-	tests := []struct {
-		query string
-		want  []string // targets
-	}{
-		{"", []string{"=proj-a:", "=proj-a:1", "=proj-a:1.0", "=proj-a:1.1", "=proj-a:2", "=host-b:", "=host-b:1", "=host-b:2"}},
-		{"alpha", []string{"=proj-a:", "=proj-a:1", "=proj-a:1.0", "=proj-a:1.1", "=host-b:", "=host-b:2"}}, // not by detail
-		{"PROJ", []string{"=proj-a:", "=proj-a:1", "=proj-a:1.0", "=proj-a:1.1", "=proj-a:2"}},
-		{"host gam", []string{"=host-b:", "=host-b:1"}},
-		{"nothing", nil},
+// The tree: sessions with a flag first by their best rank. Under each,
+// the agent windows in index order (no index shown) with their flag, their agent's mark
+// and, at the right edge, a ? or ✓ row's reason and the age (a working
+// row its age, an idle agent the time since its output); a split window's
+// panes under it. The other windows fold into one row.
+func TestRenderTree(t *testing.T) {
+	check(t, render(Panel{View: TreeView}), []string{
+		"=proj-b:|proj-b",
+		"=proj-b:2| ? ✳  gamma             permission · 4m",
+		"=proj-b:2.0|   ● .0 ✳  agent-a                   5m",
+		"=proj-b:2.1|   ? .1 ✳  agent-a      permission · 4m",
+		"=proj-b:3|   ◆  omega                          3h",
+		"=proj-b:|   ┄  zsh · notes",
+		"=host-c:|host-c",
+		"=host-c:1| ✗    delta         failed: exit 1 · 1m",
+		"=proj-a:|proj-a",
+		"=proj-a:|   ┄  alpha",
+	})
+}
+
+// A fold the user opened, and any search, list the session's other
+// windows one row each, dim, after its agent windows. A search keeps the
+// windows whose session or window name holds every word, case aside,
+// under their session's name.
+func TestRenderTreeUnfolds(t *testing.T) {
+	check(t, render(Panel{View: TreeView, Open: []string{"$1"}})[8:], []string{
+		"=proj-a:|proj-a",
+		"=proj-a:0|      alpha                         zsh",
+	})
+	check(t, render(Panel{View: TreeView, Words: QueryWords("PROJ-B no")}), []string{
+		"=proj-b:|proj-b",
+		"=proj-b:10|      notes                        nvim",
+	})
+	check(t, render(Panel{View: TreeView, Words: QueryWords("alpha")}), []string{
+		"=proj-a:|proj-a",
+		"=proj-a:0|      alpha                         zsh",
+	})
+	if got := render(Panel{View: TreeView, Words: QueryWords("nothing")}); got != nil {
+		t.Errorf("rows for no match: %q", got)
 	}
-	for _, tt := range tests {
-		var got []string
-		for _, r := range FilterPickRows(rows, QueryWords(tt.query)) {
-			got = append(got, r.Target)
+}
+
+// By state: only agents, under Needs you, Working, Done (a failed run
+// with its ✗) and Idle, each with its session dim before the age.
+func TestRenderState(t *testing.T) {
+	check(t, render(Panel{View: StateView}), []string{
+		"| NEEDS YOU · 1",
+		"=proj-b:2.1| ? ✳  gamma      permission · proj-b 4m",
+		"| WORKING · 1",
+		"=proj-b:2.0| ● ✳  gamma                   proj-b 5m",
+		"| DONE · 1",
+		"=host-c:1.0| ✗    delta  failed: exit 1 · host-c 1m",
+		"| IDLE · 1",
+		"=proj-b:3.0|   ◆  omega                   proj-b 3h",
+	})
+	check(t, render(Panel{View: StateView, Words: QueryWords("delta")}), []string{
+		"| DONE · 1",
+		"=host-c:1.0| ✗    delta  failed: exit 1 · host-c 1m",
+	})
+	if got := RenderPickRows(nil, testSessions, Panel{View: StateView, Width: 39}); len(got) != 1 || !got[0].IsLabel() {
+		t.Errorf("no agents: %+v, want one label", got)
+	}
+}
+
+// A narrow row cuts the right part first, down to 14 characters of the
+// name; then the name.
+func TestLineCutsTheRightFirst(t *testing.T) {
+	p := Panel{Width: 30}
+	for _, tt := range []struct{ name, right, want string }{
+		{"a-long-window-name", "a reason too long · 4m", " ? a-long-window… a reason to…"},
+		{"short", "permission · 4m", " ? short       permission · 4m"},
+		{"a-very-long-window-name-indeed", "", " ? a-very-long-window-name-in…"},
+	} {
+		got := escape.ReplaceAllString(line(" ?", 2, tt.name, "", tt.right, p).Text, "")
+		if got != tt.want {
+			t.Errorf("line(%q, %q) = %q, want %q", tt.name, tt.right, got, tt.want)
 		}
-		if !slices.Equal(got, tt.want) {
-			t.Errorf("query %q: %v, want %v", tt.query, got, tt.want)
-		}
 	}
 }
 
-// The name underlines each match of each word.
-func TestDisplayHighlights(t *testing.T) {
-	r := PickRow{Session: "proj-a", Window: "dot dotfiles", Target: "=proj-a:1", Lead: "   1", Name: "dot dotfiles"}
-	want := "   1 \x1b[4mdot\x1b[24m \x1b[4mdot\x1b[24mfil\x1b[4mes\x1b[24m"
-	if got := r.Display([]string{"DOT", "es"}); got != want {
+// An agent's labels make a second line, under its name; with none the row
+// keeps one line.
+func TestLabelsLine(t *testing.T) {
+	r := line(" ? ✳ ", 5, "gamma", "", "", Panel{Width: 39})
+	if strings.Contains(r.Display(), "\n") {
+		t.Errorf("a row without labels has two lines: %q", r.Display())
+	}
+	r.Labels = []string{"⎇ main", "3/12"}
+	got := escape.ReplaceAllString(r.Display(), "")
+	if want := " ? ✳  gamma\n      ⎇ main · 3/12"; got != want {
 		t.Errorf("Display = %q, want %q", got, want)
 	}
-	s := PickRow{Session: "proj-a", Target: "=proj-a:", Name: "proj-a"}
-	if got := s.Display([]string{"j-a"}); got != "\x1b[1mpro\x1b[4mj-a\x1b[24m\x1b[0m" {
-		t.Errorf("session Display = %q", got)
+}
+
+// The name underlines each match of each word; a session's name is bold.
+func TestDisplayHighlights(t *testing.T) {
+	r := line("   1", 4, "dot dotfiles", "", "", Panel{Width: 39, Words: []string{"DOT", "es"}})
+	want := "   1 \x1b[4mdot\x1b[24m \x1b[4mdot\x1b[24mfil\x1b[4mes\x1b[24m"
+	if r.Text != want {
+		t.Errorf("Text = %q, want %q", r.Text, want)
+	}
+	rows := RenderPickRows(panelPanes(), testSessions, Panel{View: TreeView, Width: 39, Words: []string{"j-a"}})
+	if got := rows[0].Text; got != "\x1b[1mpro\x1b[4mj-a\x1b[24m\x1b[0m" {
+		t.Errorf("session Text = %q", got)
 	}
 }

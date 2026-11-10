@@ -105,7 +105,8 @@ func TestPickSwitchesAfterASlowChoice(t *testing.T) {
 }
 
 // Picking a window line switches the client to that window, and marks a
-// done flag there as seen; the picker lists each session's windows.
+// done flag there as seen. The picker lists each session's flagged and
+// agent windows, and folds the others into one row that opens the session.
 func TestPickSwitchesToAWindow(t *testing.T) {
 	tmuxtest.Require(t, "tmux")
 	sb := tmuxtest.NewSandbox(t)
@@ -132,7 +133,7 @@ func TestPickSwitchesToAWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"proj-b\t=proj-b:\t", "\t=proj-b:1\t", "\t=proj-a:0\t"} {
+	for _, want := range []string{"proj-b\t=proj-b:\t", "\t=proj-b:1\t", "\t=proj-a:\t"} {
 		if !strings.Contains(string(in), want) {
 			t.Errorf("picker lines lack %q:\n%s", want, in)
 		}
@@ -181,15 +182,17 @@ func TestPickEscGoesBack(t *testing.T) {
 	}
 }
 
-// In the panel's real fzf, the arrows step over the session lines from
-// window to window, and the client follows the cursor. A search for a
-// session's name keeps all its windows; Enter stays on the chosen one.
+// In the panel's real fzf, the arrows step over the session lines, and
+// the client follows the cursor: a fold row shows its session. Enter on a
+// fold opens it; Tab switches to the agents by state and back. A search
+// for a session's name lists all its windows; Enter stays on the chosen
+// one.
 func TestPanelSkipsSessionLines(t *testing.T) {
 	tmuxtest.Require(t, "tmux", "fzf")
 	sb := tmuxtest.NewSandbox(t)
 	selftest.Install(t, sb)
 	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
-	s.MustTmux(t, "new-session", "-d", "-s", "proj-b", ";", "new-window", "-d", "-t", "=proj-b:1")
+	s.MustTmux(t, "new-session", "-d", "-s", "proj-b", "-n", "w-one", ";", "new-window", "-d", "-t", "=proj-b:1", "-n", "w-two")
 	s.Attach(t, "proj-a", 100, 30)
 	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
 	where := func() string {
@@ -200,18 +203,30 @@ func TestPanelSkipsSessionLines(t *testing.T) {
 		tmuxtest.WaitFor(t, 5*time.Second, step+": client on "+want, func() bool { return where() == want })
 	}
 	// The panel runs in a session @skip_sessions leaves out of its rows,
-	// as in its own terminal. Rows: proj-a, 0, proj-b, 0, 1.
+	// as in its own terminal. Rows: proj-a, its fold, proj-b, its fold.
 	s.MustTmux(t, "new-session", "-d", "-s", "ov-panel", "-x", "40", "-y", "20", "tmux-agent pick "+shell.Quote(client))
 	s.WaitForContent(t, "=ov-panel:", "proj-b")
 	keys := func(k ...string) { s.MustTmux(t, append([]string{"send-keys", "-t", "=ov-panel:"}, k...)...) }
+	shows := func(step, text string) {
+		t.Helper()
+		tmuxtest.WaitFor(t, 5*time.Second, step+": the panel shows "+text, func() bool {
+			out, err := s.Tmux("capture-pane", "-p", "-t", "=ov-panel:")
+			return err == nil && strings.Contains(out, text)
+		})
+	}
 
 	keys("Down")
-	wantAt("down over proj-b's line", "proj-b:0")
+	wantAt("down over proj-b's line, onto its fold", "proj-b:0")
+	keys("Enter") // opens the fold: proj-b's windows, the cursor on the first
+	shows("enter on the fold", "      w-two") // a row of its own, under the marks' column
 	keys("Down")
 	wantAt("down", "proj-b:1")
-	keys("Up", "Up")
-	wantAt("up over proj-b's line", "proj-a:0")
-	keys("Up") // the top line is a session's: the cursor stays
+	keys("Up", "Up", "Up")
+	wantAt("up over proj-b's line, onto proj-a's fold", "proj-a:0")
+	keys("Tab")
+	shows("tab", "no agents")
+	keys("BTab")
+	shows("tab back", "[tree]")
 	keys("-l", "PROJ-B")
 	wantAt("search for a session", "proj-b:0")
 	keys("Down", "Enter")

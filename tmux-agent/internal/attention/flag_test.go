@@ -159,3 +159,23 @@ func TestRedrawManyWindows(t *testing.T) {
 		}
 	}
 }
+
+// A flag that goes leaves the time it was set in @attention_idle_at: for a
+// done flag seen, when the turn ended. The panel counts an idle agent's
+// age from it.
+func TestClearKeepsTheFlagTime(t *testing.T) {
+	s, p1, _ := panes(t)
+	ended := time.Unix(1_700_000_000, 0)
+	c := &Core{Tmux: s.Client, Now: func() time.Time { return ended }}
+	ctx := context.Background()
+	if _, _, err := c.Set(ctx, p1, Flag{State: Done}); err != nil {
+		t.Fatal(err)
+	}
+	c.Now = func() time.Time { return ended.Add(time.Hour) }
+	if err := c.Clear(ctx, p1); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Display(t, p1, "#{@attention}|#{@attention_at}|#{@attention_idle_at}"); got != "||1700000000" {
+		t.Errorf("flag|at|idle_at = %q, want ||1700000000", got)
+	}
+}

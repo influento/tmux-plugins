@@ -55,6 +55,9 @@ func (Claude) Command() string { return "claude" }
 // runs as node and sets its process name to claude.
 func (Claude) ProcessNames() []string { return []string{"claude"} }
 
+// Mark is Claude Code's mark in the panel: its spinner's star, in its colour.
+func (Claude) Mark() (glyph, colour string) { return "✳", "#d97757" }
+
 // OneShot reports a -p/--print run: one turn, then exit.
 func (Claude) OneShot(args []string) bool {
 	for _, a := range args {

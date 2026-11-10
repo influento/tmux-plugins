@@ -44,8 +44,10 @@ const usage = `usage:
                                        client shows each row as the cursor reaches it
   tmux-agent popup [CLIENT]            open the panel left of the terminal, or close
                                        it: a sway window, else a tmux popup
-  tmux-agent pick-rows [QUERY]         the lines pick lists: the windows whose session
-                                       or window name holds every word of QUERY
+  tmux-agent pick-rows [--fzf] [QUERY] the rows pick lists in the tree: the windows whose
+                                       session or window name holds every word of QUERY;
+                                       --fzf takes the query, view and width from fzf
+  tmux-agent pick-key KEY [FOLD]       what tab or enter does in the panel, as fzf actions
   tmux-agent kill TARGET               kill a picker row's session, window or pane,
                                        unless it ends the last session
   tmux-agent rows                      one line per session, its windows' flags inline
@@ -80,6 +82,22 @@ type app struct {
 // Registry is every agent tmux-agent knows: one line per adapter.
 func Registry() *agent.Registry {
 	return agent.NewRegistry(claude.Claude{})
+}
+
+// marks are the panel's marks of the agents that have one, by name and by
+// command.
+func marks(reg *agent.Registry) map[string]attention.AgentMark {
+	m := map[string]attention.AgentMark{}
+	for _, ag := range reg.Agents() {
+		mk, ok := ag.(agent.Marker)
+		if !ok {
+			continue
+		}
+		glyph, colour := mk.Mark()
+		m[ag.Name()] = attention.AgentMark{Glyph: glyph, Colour: colour}
+		m[agent.CommandName(ag)] = attention.AgentMark{Glyph: glyph, Colour: colour}
+	}
+	return m
 }
 
 // Main runs tmux-agent with args (without the program name) and returns
@@ -152,7 +170,7 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 		}
 	}
 	a.tmux = &tmux.Client{Timeout: 2 * time.Second}
-	a.core = &attention.Core{Tmux: a.tmux, Agents: a.reg.CommandNames(), Notify: a.spawnNotify}
+	a.core = &attention.Core{Tmux: a.tmux, Agents: a.reg.CommandNames(), Marks: marks(a.reg), Notify: a.spawnNotify}
 	a.env = &agent.Env{
 		Tmux: a.tmux, Core: a.core, Registry: a.reg,
 		Store:    &store.Store{Dir: store.StateDir(getenv)},
@@ -276,7 +294,9 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 	case "pick":
 		return a.pick(ctx, first(args))
 	case "pick-rows":
-		return a.pickRows(ctx, strings.Join(args, " "))
+		return a.pickRows(ctx, args)
+	case "pick-key":
+		return a.pickKey(args)
 	case "popup":
 		return a.popup(ctx, first(args))
 	case "kill-session":
@@ -415,16 +435,65 @@ func (a *app) rows(ctx context.Context) error {
 	return nil
 }
 
-// pickRows prints the picker's lines that match the query, for its
-// search and its reload after a kill.
-func (a *app) pickRows(ctx context.Context, query string) error {
-	rows, err := a.core.PickRows(ctx)
+// pickRows prints the panel's rows that match the query, for its search,
+// its reloads and a look from the shell. With --fzf they are for fzf: the
+// query, the view and the open folds, and the width come from the
+// variables fzf sets, and each row ends in a NUL, as a row can have two
+// lines.
+func (a *app) pickRows(ctx context.Context, args []string) error {
+	p := attention.Panel{View: attention.TreeView, Width: ui.PanelWidth - 1}
+	end := "\n"
+	if len(args) > 0 && args[0] == "--fzf" {
+		st := ui.ParsePanelState(a.getenv("FZF_HEADER_LABEL"))
+		p.View, p.Open = st.View, st.Open
+		p.Words = attention.QueryWords(a.getenv("FZF_QUERY"))
+		if cols, err := strconv.Atoi(a.getenv("FZF_COLUMNS")); err == nil && cols > 1 {
+			p.Width = cols - 1
+		}
+		end = "\x00"
+	} else {
+		p.Words = attention.QueryWords(strings.Join(args, " "))
+	}
+	rows, err := a.core.PickRows(ctx, p)
 	if err != nil {
 		return err
 	}
-	words := attention.QueryWords(query)
-	for _, r := range attention.FilterPickRows(rows, words) {
-		fmt.Fprintln(a.stdout, ui.PickLine(r, words))
+	for _, r := range rows {
+		fmt.Fprint(a.stdout, ui.PickLine(r)+end)
+	}
+	return nil
+}
+
+// pickKey prints the fzf actions of a key in the panel. tab switches the
+// view; enter on a fold (its session id in FOLD) opens it, and on any
+// other row accepts it. The state is the header's label (see ui.Pick).
+func (a *app) pickKey(args []string) error {
+	if len(args) == 0 {
+		return errUsage
+	}
+	st := ui.ParsePanelState(a.getenv("FZF_HEADER_LABEL"))
+	list := "reload-sync(" + shell.Quote(a.self) + " pick-rows --fzf)"
+	switch args[0] {
+	case "tab":
+		st = st.Next()
+		width := ui.PanelWidth - 1
+		if cols, err := strconv.Atoi(a.getenv("FZF_COLUMNS")); err == nil && cols > 1 {
+			width = cols - 1
+		}
+		fmt.Fprintln(a.stdout, "change-header-label("+st.String()+")+change-header("+ui.Header(st.View, width)+")+"+list)
+	case "enter":
+		fold := ""
+		if len(args) > 1 {
+			fold = args[1]
+		}
+		if fold == "" {
+			fmt.Fprintln(a.stdout, "accept")
+			return nil
+		}
+		st.Open = append(st.Open, fold)
+		fmt.Fprintln(a.stdout, "change-header-label("+st.String()+")+"+list)
+	default:
+		return errUsage
 	}
 	return nil
 }
@@ -433,7 +502,9 @@ func (a *app) pick(ctx context.Context, client string) error {
 	if err := a.sweepAgents(ctx); err != nil {
 		return err
 	}
-	rows, err := a.core.PickRows(ctx)
+	state := ui.PanelState{View: attention.TreeView}
+	width := ui.RowWidth(os.Stdin)
+	rows, err := a.core.PickRows(ctx, attention.Panel{View: state.View, Width: width})
 	if err != nil {
 		return err
 	}
@@ -447,16 +518,22 @@ func (a *app) pick(ctx context.Context, client string) error {
 		return err
 	}
 	startPane, startWindow, _ := strings.Cut(here, " ")
-	start := 2 // the first session's first window
+	start := 2 // the first session's first row
+	startSession, _, _ := strings.Cut(strings.TrimPrefix(startWindow, "="), ":")
 	for i, r := range rows {
 		if r.Target == startWindow {
+			start = i + 1
+			break
+		}
+		if r.Fold != "" && r.Session == startSession { // the window is in the fold
 			start = i + 1
 		}
 	}
 	prefix, key := a.panelKeys(ctx)
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
-		Self: shell.Quote(a.self), Client: client, Start: start, Prefix: prefix, Key: key})
+		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width,
+		Prefix: prefix, Key: key})
 	if err != nil {
 		return err
 	}

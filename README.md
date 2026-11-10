@@ -19,8 +19,9 @@ rainbow labels (Catppuccin Mocha).
 ### tmux-agent
 
 Shows what each agent pane needs: flags on windows and borders, counts in the
-status bar, a side panel of sessions and windows (`prefix f`) and a jump
-key, desktop notifications. Agents start
+status bar, a side panel (`prefix f`) with two views on Tab (each session's
+agent windows with the other windows folded, or the agents by state) and a
+jump key, desktop notifications. Agents start
 through one launcher; Claude Code is the first integration.
 `tmux-agent --help` lists the subcommands.
 

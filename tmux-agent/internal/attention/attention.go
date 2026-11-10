@@ -7,7 +7,7 @@
 //
 // The state lives in tmux options and goes with the server:
 //
-//	pane    @attention, @attention_reason, @attention_at
+//	pane    @attention, @attention_reason, @attention_at, @attention_idle_at
 //	        @attention_owner   the command the flag belongs to, when one was named
 //	        @attention_gone    what a sweep dropped: "<state> · <owner> exited"
 //	window  @attention_win     the highest-ranked state among its panes
@@ -104,6 +104,8 @@ type Core struct {
 	Notify func(pane string, s State)
 	// Agents are the commands whose idle panes List shows as agents.
 	Agents []string
+	// Marks are the panel's agent marks, by agent name and by command.
+	Marks map[string]AgentMark
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 }
@@ -286,9 +288,10 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 	return cur, true, nil
 }
 
-// unflagArgs unsets a pane's flag options.
+// unflagArgs unsets a pane's flag options. The time the flag was set
+// stays in @attention_idle_at: for a done flag, when the turn ended.
 func unflagArgs(pane string) []string {
-	var args []string
+	args := []string{"set-option", "-pF", "-t", pane, "@attention_idle_at", "#{@attention_at}", ";"}
 	for _, o := range []string{"@attention", "@attention_reason", "@attention_at", "@attention_owner", "@attention_failed", "@attention_mark"} {
 		args = append(args, "set-option", "-pu", "-t", pane, o, ";")
 	}

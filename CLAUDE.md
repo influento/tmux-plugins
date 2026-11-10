@@ -221,11 +221,22 @@ Rules:
   command deadline leaves out the time the user takes.
 - The panel (`prefix f` runs `popup`): under sway, a ghostty window 40
   columns wide left of the terminal, found by its title, so the same key
-  closes it; elsewhere a tmux popup at the left edge. fzf only displays:
-  `pick-rows QUERY` filters by session and window name, so a session's
-  name keeps all its windows. Session lines are labels the cursor steps
-  over. The client follows the cursor; Enter stays, Esc goes back to where
-  the panel opened, ctrl-x kills the window or pane and reloads.
+  closes it; elsewhere a tmux popup at the left edge. Two views, Tab
+  switches: the tree (opens first) lists each session's agent windows
+  (flag, the agent's mark from its adapter's `Mark`, name, no index; a ?
+  or ✓ row keeps its reason, the others show only the age) and folds the
+  other windows into one dim row; Enter on a fold opens it, a search opens
+  all. By state lists only agents under Needs you, Working, Done (✗
+  included) and Idle, the session as a column. An idle agent's age counts
+  from `@attention_idle_at`, the time its last flag was set. A row's
+  second line is the slot for labels; nothing fills it until C1. fzf only
+  displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
+  have two lines) and filters by session and window name, so a session's
+  name keeps all its windows; `pick-key` gives Tab's and Enter's actions.
+  The view and the open folds are fzf's header label, which shows
+  nowhere. Labels (session names, group titles) the cursor steps over.
+  The client follows the cursor; Enter stays, Esc goes back to where the
+  panel opened, ctrl-x kills the window or pane and reloads.
 - tmux-agent draws the flags: every change sets `@attention_mark` on the
   pane and `@attention_win_mark` on its window (the window shows its
   best-ranked pane), a ready-to-print glyph in its `@attention_fg_*` colour,

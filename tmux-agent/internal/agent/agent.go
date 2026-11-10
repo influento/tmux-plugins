@@ -62,6 +62,12 @@ type Interrupter interface {
 	Interrupted(transcript string) (at time.Time, ok bool)
 }
 
+// Marker gives the glyph and the colour (#rrggbb) the panel marks the
+// agent's windows with. Without it the agent gets the panel's default mark.
+type Marker interface {
+	Mark() (glyph, colour string)
+}
+
 // Generic is an agent the registry does not know: a name that is also its
 // command. It gets what the launcher reports and nothing else.
 type Generic string
