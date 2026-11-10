@@ -217,7 +217,7 @@ func TestPanelSkipsSessionLines(t *testing.T) {
 
 	keys("Down")
 	wantAt("down over proj-b's line, onto its fold", "proj-b:0")
-	keys("Enter") // opens the fold: proj-b's windows, the cursor on the first
+	keys("Enter")                             // opens the fold: proj-b's windows, the cursor on the first
 	shows("enter on the fold", "      w-two") // a row of its own, under the marks' column
 	keys("Down")
 	wantAt("down", "proj-b:1")
