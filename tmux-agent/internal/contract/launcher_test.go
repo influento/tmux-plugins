@@ -64,18 +64,20 @@ exec {nap}<> "$d/$tag.fifo"
 wait_release() {
   until [[ -e $d/release ]]; do read -r -t 0.02 -u "$nap" _ || true; done
 }
+# The traps come before the pid, the sign of ready: a Ctrl-C that arrives
+# while bash waits for mv, and mv exits normally, bash otherwise ignores.
+if [[ ${STUB_MODE:-exit} == wait ]]; then
+  if [[ -n ${STUB_TRAP:-} ]]; then
+    trap 'echo INT > "$d/$tag.INT"' INT
+    trap 'echo QUIT > "$d/$tag.QUIT"' QUIT
+  else
+    trap 'trap - INT; kill -INT "$$"' INT
+  fi
+fi
 printf '%s\n' "$$" > "$d/$tag.pid.tmp"
 mv "$d/$tag.pid.tmp" "$d/$tag.pid"
 case ${STUB_MODE:-exit} in
-  wait)
-    if [[ -n ${STUB_TRAP:-} ]]; then
-      trap 'echo INT > "$d/$tag.INT"' INT
-      trap 'echo QUIT > "$d/$tag.QUIT"' QUIT
-    else
-      trap 'trap - INT; kill -INT "$$"' INT
-    fi
-    wait_release
-    ;;
+  wait) wait_release ;;
   raw)
     saved=$(stty -g)
     stty raw -echo
