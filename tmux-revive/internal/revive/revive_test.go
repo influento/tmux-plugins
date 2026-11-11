@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/layout"
 	"github.com/influento/tmux-plugins/internal/shell"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
@@ -427,6 +428,36 @@ func TestSaveLeavesOutSkippedSessions(t *testing.T) {
 	}
 	if after, _ := e.latest(t); after == nil || after.Sessions[0].Name != "proj-a" {
 		t.Errorf("latest = %+v, want the proj-a snapshot kept", after)
+	}
+}
+
+// A pane marked @revive_skip (tmux-agent's sidebar) is not saved, and its
+// window's layout is saved without it, scaled to the whole window.
+func TestSaveLeavesOutSkippedPanes(t *testing.T) {
+	e := newEnv(t, "")
+	e.start(t, "proj-a", e.Home)
+	e.mustTmux(t, "split-window", "-h", "-t", "=proj-a:")
+	e.mustTmux(t, "split-window", "-v", "-t", "=proj-a:")
+	panel := strings.TrimSpace(e.mustTmux(t, "split-window", "-h", "-b", "-f", "-l", "20", "-t", "=proj-a:", "-P", "-F", "#{pane_id}"))
+	e.mustTmux(t, "set-option", "-p", "-t", panel, "@revive_skip", "1")
+	e.saveNow(t)
+	snap, _ := e.latest(t)
+	if snap == nil || snap.Panes() != 3 {
+		t.Fatalf("snapshot = %+v, want 3 panes", snap)
+	}
+	if id := e.mustTmux(t, "show-options", "-p", "-qv", "-t", panel, "@revive_pane"); strings.TrimSpace(id) != "" {
+		t.Errorf("the skipped pane got the id %q", id)
+	}
+	w := snap.Sessions[0].Windows[0]
+	l, err := layout.Parse(w.Layout)
+	if err != nil {
+		t.Fatalf("layout %q: %v", w.Layout, err)
+	}
+	if ids := l.Panes(); len(ids) != 3 || slices.Contains(ids, panel) {
+		t.Errorf("layout panes = %v, want the 3 others", ids)
+	}
+	if l.Root.X != 0 || l.Root.W != w.Width || l.Root.H != w.Height {
+		t.Errorf("layout root = %+v, want the whole %dx%d window", l.Root, w.Width, w.Height)
 	}
 }
 

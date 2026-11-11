@@ -26,6 +26,24 @@ report`) and a jump key, desktop notifications. Agents start
 through one launcher; Claude Code is the first integration.
 `tmux-agent --help` lists the subcommands.
 
+The panel is a tmux pane at the left edge, full height, 40 columns, that
+follows its client to every window and session; the same key closes it.
+`tmux-agent tmux-init` sets its hooks. These keys move the panel and switch
+in one step, so tmux draws once; with no panel open they do what tmux's
+own keys do:
+
+```tmux
+bind f run-shell -b "tmux-agent popup #{client_name}"
+bind n if -F '#{@sidebar_open}' "run-shell \"tmux-agent sidebar step '#{client_name}' +\"" 'next-window'
+bind p if -F '#{@sidebar_open}' "run-shell \"tmux-agent sidebar step '#{client_name}' -\"" 'previous-window'
+bind 1 if -F '#{@sidebar_open}' "run-shell \"tmux-agent sidebar step '#{client_name}' 1\"" 'select-window -t :=1'
+# ... the same for 2 to 9
+bind Space if -F '#{@sidebar_open}' "run-shell \"tmux-agent sidebar layout '#{client_name}' next\"" 'next-layout'
+bind M-1 if -F '#{@sidebar_open}' "run-shell \"tmux-agent sidebar layout '#{client_name}' even-horizontal\"" 'select-layout even-horizontal'
+# ... M-2 even-vertical, M-3 main-horizontal, M-4 main-vertical, M-5 tiled
+set -g @sidebar_style 'bg=#181825'   # optional: the panel's background
+```
+
 ### tmux-revive
 
 Saves all of tmux on every change and restores it after a restart: sessions,

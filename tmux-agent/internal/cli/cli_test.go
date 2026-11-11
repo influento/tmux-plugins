@@ -53,7 +53,8 @@ func TestTmuxInit(t *testing.T) {
 				ours = append(ours, l)
 			}
 		}
-		if len(ours) != 1 || !strings.HasPrefix(ours[0], ev+"[10] run-shell -b ") {
+		inBackground := len(ours) == 1 && strings.Contains(ours[0], "run-shell -b ")
+		if !inBackground || !(strings.HasPrefix(ours[0], ev+"[10] run-shell ") || strings.HasPrefix(ours[0], ev+"[10] if-shell -F ")) {
 			t.Errorf("%s hooks with tmux-agent = %q, want one at [10] that runs in the background", ev, ours)
 		}
 	}
@@ -174,21 +175,6 @@ func TestReport(t *testing.T) {
 	}
 }
 
-// pick-key start lays the panel out again only when fzf's width differs
-// from the one the rows were built for.
-func TestPickKeyStart(t *testing.T) {
-	t.Setenv("FZF_COLUMNS", "40")
-	t.Setenv("FZF_HEADER_LABEL", "tree")
-	if out, code := run(t, "pick-key", "start", "39"); code != 0 || out != "" {
-		t.Errorf("same width: %q, exit %d; want nothing", out, code)
-	}
-	out, code := run(t, "pick-key", "start", "68")
-	if code != 0 || !strings.HasPrefix(out, "change-header(") || !strings.Contains(out, "reload-sync(") {
-		t.Errorf("another width: %q, exit %d", out, code)
-	}
-}
-
-// The panel starts on the current window's row, also when that row goes to
 // the window's agent pane; else on its session's fold.
 func TestStartRow(t *testing.T) {
 	rows := []attention.PickRow{

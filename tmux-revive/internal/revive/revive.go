@@ -45,6 +45,10 @@ const (
 	// OptCommand is what restore types into a pane's shell. tmux-agent
 	// sets it for an agent's resume; anything else may set it too.
 	OptCommand = "@revive_cmd"
+	// OptSkip, set to 1 on a pane, leaves the pane out of the save, and
+	// its cell out of its window's layout. tmux-agent sets it on its
+	// sidebar, a pane that moves between windows.
+	OptSkip = "@revive_skip"
 	// OptPrograms lists the programs a pane may run that restore starts
 	// again, space separated.
 	OptPrograms = "@revive_programs"

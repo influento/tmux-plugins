@@ -13,6 +13,7 @@ tmux-plugins/
     tmuxtest/          # private-server test harness, self-install of test binaries
   internal/shell/      # quoting words for a POSIX shell or zsh
   internal/lockfile/   # flock locks: Lock waits until ctx ends, TryLock does not
+  internal/layout/     # tmux 3.8 JSON layouts: remove panes, scale, number
   tmux-warp/           # search-and-jump; tmux-warp.sh stays at this path
   tmux-agent/          # agent flags, pickers, hooks, launcher (P0 step 2)
     internal/          # its packages; the compiler keeps them from tmux-revive
@@ -174,6 +175,7 @@ Packages in `tmux-agent/internal/`:
 - `store`: one JSON record per session in
   `$XDG_STATE_HOME/tmux-agent/sessions/<agent>/<id>.json` (mode 0600, never
   deleted), and the lock.
+- `sidebar`: the panel as a pane that follows its client (see below).
 - `ui`: fzf, notify-send, swaymsg. `cli`: the subcommands, wiring the rest.
 - `selftest`: lets a test binary stand in for tmux-agent.
 - `conformance`: one suite, two drivers: the Go code, and dotfiles' bash
@@ -222,16 +224,27 @@ Rules:
 - `popup` waits until the user closes the popup, with no timeout; `pick`
   gives the tmux calls after the choice their own deadline. The 30 s
   command deadline leaves out the time the user takes.
-- The panel (`prefix f` runs `popup`): under sway, a ghostty window 40
-  columns wide left of the terminal, found by its title, so the same key
-  closes it; elsewhere a tmux popup at the left edge. sway sizes the
-  window after `pick` lays out the rows, sometimes before fzf starts:
-  `pick-key start` and `pick-key resize` lay them out again for fzf's
-  width. Two views, Tab
+- The panel (`prefix f` runs `popup`, which opens or closes it): a tmux
+  pane at the left edge, full height, 40 columns, one per client (pane
+  option `@sidebar_client`), that moves with join-pane into every window
+  the client goes to. Each window keeps its main area's layout (its panes
+  without the panel) in `@sidebar_main`; the panel's arrival, departure
+  and every resize lay the whole window out again from it, in one command
+  list with the move and the switch, so tmux draws once. tmux 3.8's
+  `select-layout` takes JSON, places panes by their `"I"` id, refuses two
+  panes with one `"i"`, and does not scale: `internal/layout` scales. The
+  hooks (follow, keep, reload) run only while `@sidebar_open` is set.
+  Keep puts the panel back after a split, a resize, a preset or a swap;
+  not while zoomed, nor in a window that looks as it left it
+  (`@sidebar_mark`). A panel left alone in its window moves elsewhere with
+  its client; kill and kill-session move it out first. The panel is no
+  row, counts for no border line, and carries `@revive_skip`.
+  `display-message -c CLIENT` does not read that client's pane (it takes
+  the newest session's): read it through `list-clients`. Two views, Tab
   switches: the tree (opens first) lists each session's agent windows
   (flag, the agent's mark from its adapter's `Mark`, name, no index; a ?
   or ✓ row keeps its reason, the others show only the age) and folds the
-  other windows into one dim row; Enter on a fold opens it, a search opens
+  other windows into one row; Enter on a fold opens it, a search opens
   all. By state lists only agents under Needs you, Working, Done (✗
   included) and Idle, the session as a column. An idle agent's age counts
   from `@attention_idle_at`, the time its last flag was set. A split
@@ -240,11 +253,15 @@ Rules:
   is its pane's labels (see below), dim, cut to the width. fzf only
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
   have two lines) and filters by session and window name, so a session's
-  name keeps all its windows; `pick-key` gives Tab's and Enter's actions.
+  name keeps all its windows; `pick-key` gives Tab's and Enter's actions,
+  and `place` the cursor after a reload (F12, which `sidebar reload`
+  sends when windows come, go or are renamed).
   The view and the open folds are fzf's header label, which shows
   nowhere. Labels (session names, group titles) the cursor steps over.
-  The client follows the cursor; Enter stays, Esc goes back to where the
-  panel opened, ctrl-x kills the window or pane and reloads.
+  The client and the panel follow the cursor (`sidebar go`); Enter stays
+  and closes the panel, Esc goes back to where it opened, ctrl-x kills the
+  window or pane and reloads, C-l gives focus to the pane on the right
+  (vim-tmux-navigator sends C-l to fzf).
 - Labels (C1): what a source says about a pane, in the pane option
   `@labels` (a JSON list, one entry per source in the order they first
   reported). `tmux-agent report --source S --text T --token k=v --ttl D`
@@ -301,7 +318,9 @@ Packages in `tmux-revive/internal/`:
   the bash script (characterization) and tmux-revive.
 
 Options: `@revive_ready` (server), `@revive_forgotten` (session),
-`@revive_id` (window), `@revive_pane` and `@revive_cmd` (pane), and in
+`@revive_id` (window), `@revive_pane`, `@revive_cmd` and `@revive_skip`
+(pane: not saved, and its cell left out of the window's layout; tmux-agent
+sets it on the panel), and in
 tmux.conf `@revive_programs`, `@revive_scrollback_lines` (2000),
 `@revive_scrollback_interval` (300 s, 0 for off), `@revive_snapshots` (20)
 and `@skip_sessions` (`ov-*`).

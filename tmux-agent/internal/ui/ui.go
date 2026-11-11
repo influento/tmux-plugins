@@ -1,6 +1,5 @@
 // Package ui is what tmux-agent shows outside tmux's own status bar: the
-// session and window picker through fzf, the popup it opens in, and desktop
-// notifications.
+// session and window picker through fzf, and desktop notifications.
 package ui
 
 import (
@@ -37,29 +36,12 @@ type PickOptions struct {
 	Start  int    // the row the cursor starts on, from 1
 	State  PanelState
 	Width  int // the columns of a row
-	// Prefix and Key are the panel's own tmux binding, as fzf names keys:
-	// pressing them in the panel closes it, as Enter does. Either "": none.
-	Prefix, Key string
 }
 
-// FzfKey names a tmux key as fzf does: C-Space is ctrl-space, M-a alt-a.
-// "" for a key fzf has no name for.
-func FzfKey(key string) string {
-	mod, base := "", key
-	switch {
-	case strings.HasPrefix(key, "C-"):
-		mod, base = "ctrl-", key[2:]
-	case strings.HasPrefix(key, "M-"):
-		mod, base = "alt-", key[2:]
-	}
-	switch {
-	case base == "Space":
-		return mod + "space"
-	case len(base) == 1 && base[0] > ' ' && base[0] < 0x7f:
-		return mod + strings.ToLower(base)
-	}
-	return ""
-}
+// ReloadKey is the key, as fzf names it, that reads the rows again and
+// puts the cursor on the client's window: the sidebar sends it when
+// windows come, go or are renamed.
+const ReloadKey = "f12"
 
 // PickLine is a row as fzf reads it, tab separated: a label's text ("" on
 // the other rows), the switch-client target, what the row shows, what
@@ -71,7 +53,8 @@ func PickLine(r attention.PickRow) string {
 // Pick lets the user choose a session, a window or a pane with fzf and
 // returns its switch-client target; "" when the picker was left without a
 // choice. The client shows each row as the cursor reaches it, from the
-// start row on. Labels (a session's name, a group's title) the cursor
+// start row on, through tmux-agent sidebar go: the client's panel comes
+// along. Labels (a session's name, a group's title) the cursor
 // skips. Search runs in tmux-agent pick-rows, which matches session and
 // window names. ctrl-x kills the row and reloads the list; Tab switches
 // the view and Enter on a fold opens it, through tmux-agent pick-key. The
@@ -85,10 +68,7 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 	for _, r := range rows {
 		in.WriteString(PickLine(r) + "\x00")
 	}
-	show := "tmux switch-client"
-	if opts.Client != "" {
-		show += " -c " + shell.Quote(opts.Client)
-	}
+	show := opts.Self + " sidebar go " + shell.Quote(opts.Client)
 	list := opts.Self + " pick-rows --fzf"
 	// A session line has its name in field 1: moves step over it, onto the
 	// next window in their direction (down from the top line).
@@ -109,31 +89,26 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		fmt.Sprintf("--bind=ctrl-x:execute-silent([ -z {4} ] || %s kill {4})+reload(%s)", opts.Self, list),
 		"--bind=tab:transform:" + opts.Self + " pick-key tab",
 		"--bind=btab:transform:" + opts.Self + " pick-key tab",
-		"--bind=resize:transform:" + opts.Self + " pick-key resize",
 		"--bind=down:" + skipDown, "--bind=ctrl-j:" + skipDown, "--bind=ctrl-n:" + skipDown, "--bind=scroll-down:" + skipDown,
 		"--bind=up:" + skipUp, "--bind=ctrl-k:" + skipUp, "--bind=ctrl-p:" + skipUp, "--bind=scroll-up:" + skipUp,
 		// A new list: a search starts on its first window; otherwise the
 		// cursor leaves a session line it landed on.
 		`--bind=result:transform:if [ -n {q} ]; then echo 'pos(2)'; elif [ -n {1} ]; then echo down; fi`,
 		"--bind=enter:transform:[ -n {1} ] || " + opts.Self + " pick-key enter {5}",
-		"--bind=focus:execute-silent([ -n {1} ] || " + show + " -t {2})",
-		// The client stays where it is until the cursor is on its row.
-		// The panel's window may get its width between the rows' layout and
-		// fzf's start (sway sizes it): lay out again when the width differs.
-		fmt.Sprintf("--bind=start:unbind(focus)+transform(%s pick-key start %d)", opts.Self, opts.Width),
+		"--bind=focus:execute-silent([ -n {1} ] || " + show + " {2})",
+		// The client stays where it is until the cursor is on its row: the
+		// first row fires a focus event before the cursor moves.
+		"--bind=start:unbind(focus)",
 		fmt.Sprintf("--bind=load:pos(%d)+rebind(focus)+unbind(load)", max(opts.Start, 1)),
+		// Windows came, went or were renamed: the rows again, the cursor on
+		// the client's window, with no focus event on the way.
+		fmt.Sprintf("--bind=%s:unbind(focus)+reload-sync(%s)+transform(%s pick-key place %s)+rebind(focus)",
+			ReloadKey, list, opts.Self, shell.Quote(opts.Client)),
+		"--bind=change:" + change,
+		// vim-tmux-navigator sends C-l to fzf as to vim: fzf passes it on,
+		// so focus leaves the panel for the pane on its right.
+		`--bind=ctrl-l:execute-silent(tmux select-pane -R -t "$TMUX_PANE")`,
 	}
-	if opts.Prefix != "" && opts.Key != "" {
-		// The prefix arms the prompt; the key then closes the panel, and any
-		// other change to the query disarms it.
-		const armed = " prefix "
-		args = append(args,
-			"--bind="+opts.Prefix+":change-prompt("+armed+")",
-			fmt.Sprintf("--bind=%s:transform:[ \"$FZF_PROMPT\" = %s ] && echo accept || echo %s",
-				opts.Key, shell.Quote(armed), shell.Quote("put("+opts.Key+")")))
-		change += "+change-prompt( )"
-	}
-	args = append(args, "--bind=change:"+change)
 	cmd := exec.CommandContext(ctx, "fzf", args...)
 	cmd.Stdin = strings.NewReader(in.String())
 	var out bytes.Buffer

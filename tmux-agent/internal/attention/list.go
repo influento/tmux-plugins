@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/influento/tmux-plugins/tmux-agent/internal/sidebar"
 )
 
 // DefaultSkipSessions hides tmux-overlay's sessions when the global option
@@ -19,6 +21,11 @@ const DefaultSkipSessions = "ov-*"
 // skipper returns a test for sessions the list, the pickers and the jump
 // leave out: names matching a pattern in @skip_sessions (globs, space
 // separated).
+// Skipper reports the sessions @skip_sessions leaves out of the lists.
+func (c *Core) Skipper(ctx context.Context) (func(session string) bool, error) {
+	return c.skipper(ctx)
+}
+
 func (c *Core) skipper(ctx context.Context) (func(session string) bool, error) {
 	v, ok, err := c.Tmux.Option(ctx, "-g", "", "@skip_sessions")
 	if err != nil {
@@ -101,7 +108,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 		"#{session_name}", "#{window_index}.#{pane_index}", "#{pane_id}", "#{window_name}",
 		"#{@attention}", "#{@attention_reason}", "#{@attention_at}", "#{pane_current_command}",
 		"#{@attention_gone}", "#{@agent}", "#{pane_title}", "#{@attention_failed}", "#{@attention_idle_at}",
-		"#{" + OptLabels + "}",
+		"#{" + OptLabels + "}", "#{" + sidebar.OptClient + "}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -110,8 +117,8 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 14)
-		if skip(f[0]) {
+		f := split(l, 15)
+		if skip(f[0]) || f[14] != "" { // the panel is no row of its own
 			continue
 		}
 		r := Row{

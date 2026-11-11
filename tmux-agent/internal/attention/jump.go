@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/influento/tmux-plugins/tmux-agent/internal/sidebar"
 )
 
 // KillSession kills the named session from the picker. The last session
@@ -120,13 +122,14 @@ func (c *Core) GoTo(ctx context.Context, pane string) error {
 // window that is gone has no borders to set.
 func (c *Core) Borders(ctx context.Context, window string) error {
 	if window != "" {
-		out, err := c.Tmux.Output(ctx, "list-panes", "-t", window, "-F", "#{pane_id}")
+		// The panel's pane does not count: it splits no window of its own.
+		out, err := c.Tmux.Output(ctx, "list-panes", "-t", window, "-F", "#{?#{"+sidebar.OptClient+"},,1}")
 		switch {
 		case err != nil && !isGone(err):
 			return err
 		case err == nil:
 			status := "off"
-			if len(lines(out)) > 1 {
+			if strings.Count(out, "1") > 1 {
 				status = "top"
 			}
 			if _, err := c.Tmux.Run(ctx, "set-option", "-w", "-t", window, "pane-border-status", status); err != nil {

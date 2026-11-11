@@ -112,6 +112,7 @@ func (r *Reviver) saveLocked(ctx context.Context) (SaveResult, error) {
 	// A server left with only those is treated as one with none: kill-server
 	// closes sessions one by one, and the real ones may go first.
 	skip := r.skipper(ctx)
+	panes = withoutSkipped(panes)
 	kept := panes[:0]
 	for _, p := range panes {
 		if !skip(p.session) {

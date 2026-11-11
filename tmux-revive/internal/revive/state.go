@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/influento/tmux-plugins/internal/layout"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/snapshot"
 )
 
@@ -36,6 +37,7 @@ type livePane struct {
 	command    string // @revive_cmd
 
 	ready bool // the server's @revive_ready
+	skip  bool // @revive_skip: the pane is not saved
 }
 
 // paneFields is the list-panes format, one field per livePane field.
@@ -44,7 +46,7 @@ var paneFields = []string{
 	"#{window_id}", "#{window_index}", "#{" + OptWindowID + "}", "#{window_name}", "#{automatic-rename}",
 	"#{window_layout}", "#{window_width}", "#{window_height}", "#{window_active}", "#{window_zoomed_flag}",
 	"#{pane_id}", "#{pane_index}", "#{" + OptPaneID + "}", "#{pane_current_path}", "#{pane_active}", "#{pane_pid}",
-	"#{" + OptCommand + "}", "#{" + OptReady + "}",
+	"#{" + OptCommand + "}", "#{" + OptReady + "}", "#{" + OptSkip + "}",
 }
 
 // sep separates fields in a format; end ends a record, so that a newline
@@ -76,10 +78,50 @@ func (r *Reviver) readPanes(ctx context.Context) ([]livePane, error) {
 			window: f[3], winIndex: atoi(f[4]), windowID: f[5], windowName: f[6], autoRename: isOn(f[7]),
 			layout: f[8], width: atoi(f[9]), height: atoi(f[10]), winActive: f[11] == "1", zoomed: f[12] == "1",
 			pane: f[13], paneIndex: atoi(f[14]), paneID: f[15], cwd: f[16], paneActive: f[17] == "1", pid: atoi(f[18]),
-			command: f[19], ready: f[20] == "1",
+			command: f[19], ready: f[20] == "1", skip: f[21] == "1",
 		})
 	}
 	return panes, nil
+}
+
+// withoutSkipped is panes less those marked @revive_skip, and their
+// windows' layouts without them, scaled to the window. A layout tmux-revive
+// cannot read is dropped: restore lays out nothing rather than a layout
+// with a pane too many.
+func withoutSkipped(panes []livePane) []livePane {
+	skipped := map[string][]string{} // tmux window id → skipped pane ids
+	for _, p := range panes {
+		if p.skip {
+			skipped[p.window] = append(skipped[p.window], p.pane)
+		}
+	}
+	if len(skipped) == 0 {
+		return panes
+	}
+	layouts := map[string]string{}
+	for w, ids := range skipped {
+		for _, p := range panes {
+			if p.window != w {
+				continue
+			}
+			l, err := layout.Parse(p.layout)
+			if main, ok := l.Without(ids...); err == nil && ok {
+				layouts[w] = main.Scale(p.width, p.height).String()
+			}
+			break
+		}
+	}
+	var kept []livePane
+	for _, p := range panes {
+		if p.skip {
+			continue
+		}
+		if _, ok := skipped[p.window]; ok {
+			p.layout = layouts[p.window]
+		}
+		kept = append(kept, p)
+	}
+	return kept
 }
 
 func isOn(s string) bool { return s == "1" || s == "on" }
