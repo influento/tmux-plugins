@@ -893,7 +893,7 @@ var tmuxHooks = []struct {
 }{
 	{"pane-focus-in", "seen #{pane_id}", false},
 	{"after-select-window", "seen #{pane_id}", false},
-	{"after-select-pane", "seen #{pane_id}", false},
+	{"after-select-pane", "seen #{pane_id}", false}, // and sidebar.RecordLast
 	{"after-split-window", "borders #{window_id}", false},
 	{"after-kill-pane", "sweep --window #{window_id}", false},
 	{"pane-exited", "sweep --window #{window_id}", false},
@@ -922,6 +922,9 @@ func (a *app) tmuxInit(ctx context.Context) error {
 		cmd := fmt.Sprintf(`run-shell -b "tmux-agent %s"`, h.command)
 		if h.sidebar {
 			cmd = fmt.Sprintf(`if-shell -F "#{%s}" '%s'`, sidebar.OptOpen, cmd)
+		}
+		if h.event == "after-select-pane" {
+			cmd += " ; " + sidebar.RecordLast
 		}
 		args = append(args, "set-hook", "-g", fmt.Sprintf("%s[%d]", h.event, hookIndex), cmd)
 	}

@@ -2,9 +2,13 @@ package sidebar_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/sidebar"
@@ -299,5 +303,104 @@ func TestEvacuate(t *testing.T) {
 	e.wantPanel(t, wb)
 	if got := e.where(t); got != wb {
 		t.Errorf("client on %s, want %s", got, wb)
+	}
+}
+
+// A split key pressed with the focus in the panel splits the panel: the
+// new pane moves to the main pane that had the focus last, split the same
+// way at half its size, its shell started again in that pane's folder.
+func TestSplitFromThePanel(t *testing.T) {
+	e := newEnv(t)
+	w := e.Display(t, "=proj-a:", "#{window_id}")
+	main := e.Display(t, w, "#{pane_id}")
+	cwd := e.Display(t, main, "#{pane_current_path}")
+	must(t, e.side.Toggle(e.ctx(), e.client))
+	p := e.panel(t)
+
+	right := e.MustTmux(t, "split-window", "-h", "-c", "/", "-t", p, "-P", "-F", "#{pane_id}")
+	must(t, e.side.Keep(e.ctx()))
+	e.wantPanel(t, w)
+	m, r := e.geo(t, main), e.geo(t, right)
+	if m.top != r.top || m.height != r.height || r.left != m.left+m.width+1 || m.width-r.width > 1 || r.width-m.width > 1 {
+		t.Errorf("after | from the panel: main %+v, new %+v; want two halves side by side", m, r)
+	}
+	tmuxtest.WaitFor(t, 5*time.Second, "the new shell in the main pane's folder", func() bool {
+		return e.Display(t, right, "#{pane_current_path}") == cwd
+	})
+
+	e.MustTmux(t, "select-pane", "-t", p)
+	below := e.MustTmux(t, "split-window", "-v", "-t", p, "-P", "-F", "#{pane_id}")
+	must(t, e.side.Keep(e.ctx()))
+	e.wantPanel(t, w)
+	m, b := e.geo(t, main), e.geo(t, below)
+	if b.left != m.left || b.width != m.width || b.top != m.top+m.height+1 {
+		t.Errorf("after - from the panel: main %+v, new %+v; want the new one below the main pane", m, b)
+	}
+}
+
+// The README's | and - keys split the main pane that had the focus last
+// when the focus is in the panel, in that pane's folder, with no hook
+// after: the panel never splits, so tmux draws once. With the focus in a
+// main pane they split it as tmux's own keys do.
+func TestSplitKeys(t *testing.T) {
+	e := newEnv(t)
+	readme, err := os.ReadFile("../../../README.md")
+	must(t, err)
+	var binds []string
+	for l := range strings.Lines(string(readme)) {
+		if strings.HasPrefix(l, "bind | ") || strings.HasPrefix(l, "bind - ") {
+			binds = append(binds, l)
+		}
+	}
+	if len(binds) != 2 {
+		t.Fatalf("README has %d of the | and - lines, want 2", len(binds))
+	}
+	conf := filepath.Join(t.TempDir(), "split.conf")
+	must(t, os.WriteFile(conf, []byte(strings.Join(binds, "")), 0o600))
+	e.MustTmux(t, "source-file", conf)
+	prefix := e.MustTmux(t, "show-options", "-gv", "prefix")
+	press := func(key string) string {
+		t.Helper()
+		before := strings.Fields(e.MustTmux(t, "list-panes", "-a", "-F", "#{pane_id}"))
+		e.MustTmux(t, "send-keys", "-K", "-c", e.client, prefix, key)
+		var id string
+		tmuxtest.WaitFor(t, 5*time.Second, "a new pane after prefix "+key, func() bool {
+			id = e.MustTmux(t, "display-message", "-p", "-c", e.client, "#{pane_id}")
+			return !slices.Contains(before, id)
+		})
+		return id
+	}
+
+	w := e.Display(t, "=proj-a:", "#{window_id}")
+	main := e.Display(t, w, "#{pane_id}")
+	dir := t.TempDir()
+	e.MustTmux(t, "respawn-pane", "-k", "-c", dir, "-t", main)
+	must(t, e.side.Toggle(e.ctx(), e.client))
+	p := e.panel(t)
+
+	right := press("|")
+	e.wantPanel(t, w)
+	m, r := e.geo(t, main), e.geo(t, right)
+	if m.top != r.top || m.height != r.height || r.left != m.left+m.width+1 || m.width-r.width > 1 || r.width-m.width > 1 {
+		t.Errorf("after | from the panel: main %+v, new %+v; want two halves side by side", m, r)
+	}
+	tmuxtest.WaitFor(t, 5*time.Second, "the new shell in the main pane's folder", func() bool {
+		return e.Display(t, right, "#{pane_current_path}") == dir
+	})
+
+	e.MustTmux(t, "select-pane", "-t", p)
+	below := press("-")
+	e.wantPanel(t, w)
+	m, b := e.geo(t, main), e.geo(t, below)
+	if b.left != m.left || b.width != m.width || b.top != m.top+m.height+1 {
+		t.Errorf("after - from the panel: main %+v, new %+v; want the new one below the main pane", m, b)
+	}
+
+	// From a main pane: tmux's own split of that pane.
+	e.MustTmux(t, "select-pane", "-t", right)
+	under := press("-")
+	r, u := e.geo(t, right), e.geo(t, under)
+	if u.left != r.left || u.width != r.width || u.top != r.top+r.height+1 {
+		t.Errorf("after - from a main pane: %+v, new %+v; want the new one below it", r, u)
 	}
 }

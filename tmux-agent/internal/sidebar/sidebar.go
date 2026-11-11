@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -27,6 +28,7 @@ const (
 	OptMain   = "@sidebar_main"   // window: its main area's layout
 	OptSize   = "@sidebar_size"   // window: "W H", the size the window was laid out for
 	OptMark   = "@sidebar_mark"   // window: its panes' places as the sidebar left them
+	OptLast   = "@sidebar_last"   // window: the main pane that had the focus last
 	OptOpen   = "@sidebar_open"   // global: 1 while a panel is open; the hooks run only then
 	OptStyle  = "@sidebar_style"  // global, from tmux.conf: the panel's window-style
 	// OptReviveSkip keeps the panel out of tmux-revive's saves.
@@ -35,6 +37,12 @@ const (
 
 // DefaultWidth is the panel's width in columns.
 const DefaultWidth = 40
+
+// RecordLast is the tmux command an after-select-pane hook runs: while a
+// panel is open, it records a selected pane that is not a panel as its
+// window's OptLast. tmux runs it without a process.
+const RecordLast = `if-shell -F "#{&&:#{` + OptOpen + `},#{?#{` + OptClient + `},0,1}}" ` +
+	`"set-option -wF ` + OptLast + ` \"#{pane_id}\""`
 
 // ReloadKey is the key Reload sends a panel: its list reads the windows
 // again.
@@ -79,6 +87,7 @@ type client struct {
 // window is what the sidebar reads of a window.
 type window struct {
 	id, session   string
+	active, last  string // its active pane; OptLast
 	layout        string
 	width, height int
 	zoomed        bool
@@ -162,15 +171,16 @@ func (s *Sidebar) window(ctx context.Context, target string) (window, error) {
 	out, err := s.Tmux.Output(ctx, "display-message", "-p", "-t", target, strings.Join([]string{
 		"#{window_id}", "#{session_name}", "#{window_layout}", "#{window_width}", "#{window_height}",
 		"#{window_zoomed_flag}", "#{" + OptMain + "}", "#{" + OptSize + "}", "#{" + OptMark + "}",
+		"#{pane_id}", "#{" + OptLast + "}",
 	}, sep))
 	if err != nil {
 		return window{}, err
 	}
-	f := split(out, 9)
+	f := split(out, 11)
 	w, _ := strconv.Atoi(f[3])
 	h, _ := strconv.Atoi(f[4])
 	return window{id: f[0], session: f[1], layout: f[2], width: w, height: h, zoomed: f[5] == "1",
-		main: f[6], size: f[7], mark: f[8]}, nil
+		main: f[6], size: f[7], mark: f[8], active: f[9], last: f[10]}, nil
 }
 
 // mark is where the window's panes are now, to tell the sidebar's own
@@ -321,6 +331,7 @@ func (s *Sidebar) open(ctx context.Context, clientName, origin string) error {
 		"select-pane", "-t", pane, "-T", "panel", ";",
 		"set-option", "-w", "-t", w.id, OptMain, main.String(), ";",
 		"set-option", "-w", "-t", w.id, OptSize, size(w.width, w.height), ";",
+		"set-option", "-w", "-t", w.id, OptLast, origin, ";",
 		"set-option", "-g", OptOpen, "1", ";",
 	}
 	if style, err := s.Tmux.Output(ctx, "show-options", "-gqv", OptStyle); err == nil && style != "" {
@@ -409,7 +420,7 @@ func (s *Sidebar) close(ctx context.Context, p panel, last bool, focus string) e
 // forget is the commands that drop the sidebar's options of a window.
 func forget(w string) []string {
 	var args []string
-	for _, o := range []string{OptMain, OptSize, OptMark} {
+	for _, o := range []string{OptMain, OptSize, OptMark, OptLast} {
 		args = append(args, "set-option", "-wu", "-t", w, o, ";")
 	}
 	return args
@@ -490,6 +501,7 @@ func (s *Sidebar) move(ctx context.Context, c client, p panel, target string) er
 		"switch-client", "-c", c.name, "-t", to.id, ";",
 		"set-option", "-w", "-t", to.id, OptMain, toMain.String(), ";",
 		"set-option", "-w", "-t", to.id, OptSize, size(w, h), ";",
+		"set-option", "-w", "-t", to.id, OptLast, to.active, ";",
 		"select-layout", "-t", to.id, craft(toMain, w, h, p.pane, width, p.active).String())
 	if _, err := s.Tmux.Run(ctx, args...); err != nil {
 		return err
@@ -689,6 +701,15 @@ func (s *Sidebar) keep(ctx context.Context, p panel, open int) error {
 	if _, ok := mainNow(w, p.pane); !ok {
 		return s.alone(ctx, p, open)
 	}
+	adopted, err := s.adopt(ctx, w, p)
+	if err != nil {
+		return err
+	}
+	if adopted {
+		if w, err = s.window(ctx, p.window); err != nil {
+			return err
+		}
+	}
 	m, err := s.mark(ctx, w.id)
 	if err != nil || m == w.mark {
 		return err
@@ -722,6 +743,84 @@ func (s *Sidebar) keep(ctx context.Context, p panel, open int) error {
 		return err
 	}
 	return s.setMark(ctx, w.id)
+}
+
+// adopt moves the panes split off the panel (a split key pressed with the
+// focus in it: tmux splits the active pane) to the main pane that had the
+// focus last, split the same way, at half its size. A new pane that runs
+// the default shell starts again in that pane's folder. It reports
+// whether it moved any.
+func (s *Sidebar) adopt(ctx context.Context, w window, p panel) (bool, error) {
+	saved, err := layout.Parse(w.main)
+	if err != nil {
+		return false, nil
+	}
+	known := saved.Panes()
+	out, err := s.Tmux.Output(ctx, "list-panes", "-t", w.id, "-F",
+		strings.Join([]string{"#{pane_id}", "#{pane_left}", "#{pane_start_command}", "#{pane_current_path}"}, sep))
+	if err != nil {
+		return false, err
+	}
+	type live struct {
+		id    string
+		left  int
+		start string
+		cwd   string
+	}
+	var mains, fresh []live
+	for _, l := range lines(out) {
+		f := split(l, 4)
+		left, _ := strconv.Atoi(f[1])
+		pn := live{id: f[0], left: left, start: f[2], cwd: f[3]}
+		switch {
+		case pn.id == p.pane:
+		case slices.Contains(known, pn.id):
+			mains = append(mains, pn)
+		case left < s.widthIn(w.width):
+			fresh = append(fresh, pn) // in the panel's column: split off it
+		}
+	}
+	if len(fresh) == 0 || len(mains) == 0 {
+		return false, nil
+	}
+	target := mains[0]
+	for _, want := range []string{w.last, saved.ActivePane()} {
+		if i := slices.IndexFunc(mains, func(m live) bool { return m.id == want }); want != "" && i >= 0 {
+			target = mains[i]
+			break
+		}
+	}
+	var args []string
+	for _, pn := range fresh {
+		dir := "-h" // beside the panel: a split side by side
+		if pn.left == 0 {
+			dir = "-v" // below it, at the same left edge: one above the other
+		}
+		args = append(args, "move-pane", dir, "-l", "50%", "-s", pn.id, "-t", target.id, ";")
+		if pn.start == "" {
+			args = append(args, "respawn-pane", "-k", "-t", pn.id, "-c", target.cwd, ";")
+		}
+	}
+	if _, err := s.Tmux.Run(ctx, args[:len(args)-1]...); err != nil {
+		return false, err
+	}
+	// tmux gave the room the new pane left to its neighbour before the
+	// split: lay the window out with each new pane and its target even.
+	if w, err = s.window(ctx, w.id); err != nil {
+		return false, err
+	}
+	main, ok := mainNow(w, p.pane)
+	if !ok {
+		return true, nil
+	}
+	for _, pn := range fresh {
+		main = main.Even(target.id, pn.id)
+	}
+	_, err = s.Tmux.Run(ctx,
+		"set-option", "-w", "-t", w.id, OptMain, main.String(), ";",
+		"set-option", "-w", "-t", w.id, OptSize, size(w.width, w.height), ";",
+		"select-layout", "-t", w.id, craft(main, w.width, w.height, p.pane, s.widthIn(w.width), w.active == p.pane).String())
+	return true, err
 }
 
 // alone moves a panel that is all its window has left to another window,

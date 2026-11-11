@@ -236,8 +236,15 @@ Rules:
   hooks (follow, keep, reload) run only while `@sidebar_open` is set.
   Keep puts the panel back after a split, a resize, a preset or a swap;
   not while zoomed, nor in a window that looks as it left it
-  (`@sidebar_mark`). A panel left alone in its window moves elsewhere with
-  its client; kill and kill-session move it out first. The panel is no
+  (`@sidebar_mark`). The README's `|` and `-`, with the focus in the
+  panel, split the main pane that had the focus last (`@sidebar_last`,
+  which the after-select-pane hook records without a process) in its
+  folder, through `run-shell -C` with no process: tmux draws once. A split
+  of the panel some other way (the mouse, tmux's own keys) splits the
+  panel: keep moves the new pane to that main pane, split the same way at
+  half its size, a default shell started again in that pane's folder; the
+  panel's split shows for a moment. A panel left alone in its window moves
+  elsewhere with its client; kill and kill-session move it out first. The panel is no
   row, counts for no border line, and carries `@revive_skip`.
   `display-message -c CLIENT` does not read that client's pane (it takes
   the newest session's): read it through `list-clients`. Two views, Tab

@@ -108,3 +108,14 @@ func TestInactive(t *testing.T) {
 		t.Error("Inactive changed the original")
 	}
 }
+
+func TestEven(t *testing.T) {
+	l, _ := Parse(three)
+	v := l.Even("%1", "%2").Root.Cells[1]
+	if v.Cells[0].H != v.Cells[1].H {
+		t.Errorf("heights = %d, %d; want them even", v.Cells[0].H, v.Cells[1].H)
+	}
+	if same := l.Even("%0", "%1"); same.String() != three {
+		t.Errorf("Even of panes in different splits changed the layout: %s", same)
+	}
+}

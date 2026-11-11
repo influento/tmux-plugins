@@ -98,6 +98,42 @@ func (l Layout) ActivePane() string {
 	return walk(l.Root)
 }
 
+// Even is the layout with panes a and b the same size, where they share a
+// split: their widths in a split side by side, their heights in one above
+// the other. Elsewhere it is the layout as it was.
+func (l Layout) Even(a, b string) Layout {
+	l.Root = even(l.Root, a, b)
+	return l
+}
+
+func even(c Cell, a, b string) Cell {
+	if c.Type == Pane {
+		return c
+	}
+	kids := make([]Cell, len(c.Cells))
+	ia, ib := -1, -1
+	for i, k := range c.Cells {
+		kids[i] = even(k, a, b)
+		if k.Type == Pane && k.ID == a {
+			ia = i
+		}
+		if k.Type == Pane && k.ID == b {
+			ib = i
+		}
+	}
+	if ia >= 0 && ib >= 0 {
+		if c.Type == Horizontal {
+			n := (kids[ia].W + kids[ib].W) / 2
+			kids[ia].W, kids[ib].W = n, n
+		} else {
+			n := (kids[ia].H + kids[ib].H) / 2
+			kids[ia].H, kids[ib].H = n, n
+		}
+	}
+	c.Cells = kids
+	return c
+}
+
 // Without is the layout with the panes ids taken out: a split left with
 // one child becomes that child. ok is false when no pane is left. Sizes
 // stay as they were; Scale fits them to a window.
