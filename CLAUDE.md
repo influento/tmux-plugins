@@ -174,7 +174,8 @@ Packages in `tmux-agent/internal/`:
   a linked worktree, in one `rev-parse` (a second for a detached HEAD).
 - `store`: one JSON record per session in
   `$XDG_STATE_HOME/tmux-agent/sessions/<agent>/<id>.json` (mode 0600, never
-  deleted), and the lock.
+  deleted), one per subagent in `<id>/subagents/<subagent id>.json`, and
+  the lock.
 - `sidebar`: the panel as a pane that follows its client (see below).
 - `ui`: fzf, notify-send, swaymsg. `cli`: the subcommands, wiring the rest.
 - `selftest`: lets a test binary stand in for tmux-agent.
@@ -225,6 +226,17 @@ Rules:
   its stop by the user, starts the next turn. A needs-you waits on one
   agent, the main one or a subagent (`@agent_wait_by`, the hooks'
   `agent_id`); only that agent's events end it.
+- Subagents (F6): the pane lists the running ones in `@agent_subagents`
+  (SubagentStart adds, SubagentStop removes, each Stop sets it, since a
+  subagent the user stops sends no SubagentStop); the panel shows the count
+  after the name (`⑂2`), in the working colour. A SubagentStop with an
+  empty type is a hidden helper: ignored. A subagent's record keeps its
+  prompt and result text (Claude Code deletes old transcripts) and its
+  tokens. The hook never reads Claude Code's subagent files (one ran to
+  2 GB): it spawns `subagents fill`, which waits for the meta file to say
+  finished or stopped, then reads the history; `tmux-init` spawns
+  `subagents scan`, the pass over every session's files. A complete record
+  is never read again. A subagent's own events never move the git label.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
 - `popup` waits until the user closes the popup, with no timeout; `pick`

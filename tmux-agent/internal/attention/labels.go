@@ -17,6 +17,11 @@ import (
 // one entry per source, in the order the sources first reported.
 const OptLabels = "@labels"
 
+// OptSubagents is the pane option that lists, by id and space-separated,
+// the subagents that run beside the pane's agent. The agent layer keeps
+// it; the panel shows how many.
+const OptSubagents = "@agent_subagents"
+
 // Label is what one source (a tool, or tmux-agent itself) says about a
 // pane: a short text the panel shows on the row's second line, and tokens
 // for tools to read. The core knows no source and no token.

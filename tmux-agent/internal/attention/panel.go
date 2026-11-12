@@ -49,6 +49,18 @@ type Panel struct {
 	Marks map[string]AgentMark // by agent name or command
 }
 
+// SubagentGlyph marks a row's count of running subagents.
+const SubagentGlyph = "⑂"
+
+// subagentTag is a row's count of running subagents, as the panel shows
+// it after the name in the working colour; "" for none.
+func subagentTag(r Row) string {
+	if r.Subagents == 0 {
+		return ""
+	}
+	return SubagentGlyph + strconv.Itoa(r.Subagents)
+}
+
 // PickRow is one item of the panel: a label (a session's name, a group's
 // title) the cursor steps over, a window, a pane of a split window, or a
 // session's fold.
@@ -224,13 +236,13 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 	var row PickRow
 	if agent {
 		lead := " " + glyphOf(r, p.Col) + " " + markOfWindow(w, p) + " "
-		row = line(lead, leadLen, r.Window, "", rightOf(r, ""), p)
+		row = line(lead, leadLen, r.Window, "", rightOf(r, ""), subagentTag(windowAgent(w)), p)
 	} else {
 		right := ""
 		if r.Command != "" && r.Command != r.Window {
 			right = r.Command
 		}
-		row = line(strings.Repeat(" ", leadLen), leadLen, r.Window, dim, right, p)
+		row = line(strings.Repeat(" ", leadLen), leadLen, r.Window, dim, right, "", p)
 	}
 	row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, w.target(), w.target()
 	if len(w.panes) < 2 {
@@ -257,7 +269,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		if pr.Rank < 4 {
 			right = rightOf(pr, "")
 		}
-		row := line(lead, paneLead, pr.Command, dim, right, p)
+		row := line(lead, paneLead, pr.Command, dim, right, subagentTag(pr), p)
 		row.Labels = shownLabels(pr)
 		target := w.target() + "." + strconv.Itoa(pn.index)
 		row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, target, target
@@ -303,7 +315,7 @@ func renderState(rows []Row, p Panel) []PickRow {
 				continue
 			}
 			lead := " " + glyphOf(r, p.Col) + " " + markOf(r, p) + " "
-			row := line(lead, leadLen, r.Window, "", rightOf(r, r.Session), p)
+			row := line(lead, leadLen, r.Window, "", rightOf(r, r.Session), subagentTag(r), p)
 			row.Session, row.Window, row.Target, row.Kill = r.Session, r.Window, "="+r.Target, "="+r.Target
 			row.Labels = shownLabels(r)
 			body = append(body, row)
@@ -396,16 +408,30 @@ func rightOf(r Row, session string) string {
 	return tail
 }
 
+// windowAgent is the row of the window's pane whose subagents the
+// window's row counts: the best one with any.
+func windowAgent(w *window) Row {
+	for _, pn := range w.panes {
+		if pn.row.Subagents > 0 {
+			return pn.row
+		}
+	}
+	return w.best()
+}
+
 // minName is how much of a name a row keeps before its right part is cut.
 const minName = 14
 
 // line lays out line one: the lead, the name (in colour nameFg, "" for
-// the default), and the right part dim at the row's right edge. The right
-// part gives way first, down to minName characters of the name; then the
-// name.
-func line(lead string, leadLen int, name, nameFg, right string, p Panel) PickRow {
+// the default), the tag after it in the working colour (never cut), and
+// the right part dim at the row's right edge. The right part gives way
+// first, down to minName characters of the name; then the name.
+func line(lead string, leadLen int, name, nameFg, right, tag string, p Panel) PickRow {
 	nameLen, rightLen := utf8.RuneCountInString(name), utf8.RuneCountInString(right)
 	room := p.Width - leadLen - 1 // after the lead and a space
+	if tag != "" {
+		room -= utf8.RuneCountInString(tag) + 1
+	}
 	if right != "" {
 		if maxRight := room - min(nameLen, minName) - 1; rightLen > maxRight {
 			right = truncEllipsis(right, max(maxRight, 0))
@@ -421,6 +447,9 @@ func line(lead string, leadLen int, name, nameFg, right string, p Panel) PickRow
 	b.WriteString(lead + " " + nameFg + highlight(shown, p.Words))
 	if nameFg != "" {
 		b.WriteString("\x1b[0m")
+	}
+	if tag != "" {
+		b.WriteString(" " + ansiFg(p.Col.Working) + tag + "\x1b[0m")
 	}
 	if right != "" {
 		b.WriteString(strings.Repeat(" ", max(room-shownLen, 0)+1))

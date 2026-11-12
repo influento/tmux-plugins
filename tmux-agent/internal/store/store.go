@@ -3,8 +3,9 @@
 // resumed conversation finds its flag and its window title again.
 //
 // Live state stays in tmux options and goes with the server. The records
-// live in <state>/sessions/<agent>/<id>.json, mode 0600 in 0700 folders. A
-// record is never deleted: an ended session is marked with how it ended.
+// live in <state>/sessions/<agent>/<id>.json, mode 0600 in 0700 folders,
+// and each subagent of a session in <state>/sessions/<agent>/<id>/subagents/.
+// A record is never deleted: an ended session is marked with how it ended.
 package store
 
 import (
@@ -77,15 +78,9 @@ func (s *Store) Load(agent, id string) (sess Session, ok bool, err error) {
 	if err != nil {
 		return Session{}, false, err
 	}
-	data, err := os.ReadFile(p)
-	if errors.Is(err, fs.ErrNotExist) {
-		return Session{}, false, nil
-	}
-	if err != nil {
+	ok, err = load(p, &sess)
+	if err != nil || !ok {
 		return Session{}, false, err
-	}
-	if err := json.Unmarshal(data, &sess); err != nil {
-		return Session{}, false, fmt.Errorf("store: %s: %w", p, err)
 	}
 	return sess, true, nil
 }
@@ -113,10 +108,31 @@ func (s *Store) Save(sess Session) error {
 	if err != nil {
 		return err
 	}
+	return writeJSON(p, sess)
+}
+
+// load reads the JSON file at p into v. ok is false when there is none.
+func load(p string, v any) (ok bool, err error) {
+	data, err := os.ReadFile(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return false, fmt.Errorf("store: %s: %w", p, err)
+	}
+	return true, nil
+}
+
+// writeJSON writes v to p through a temp file and a rename, so a reader
+// sees the old file or the new one. Folders are made 0700, the file 0600.
+func writeJSON(p string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(sess, "", "  ")
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}

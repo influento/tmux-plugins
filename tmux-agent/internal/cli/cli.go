@@ -71,6 +71,12 @@ const usage = `usage:
   tmux-agent borders WINDOW            borders on for a split window, off otherwise
   tmux-agent shell-init SHELL [NAME...]  shell functions that start agents through run
   tmux-agent tmux-init                 set tmux-agent's hooks, at index [10]
+  tmux-agent subagents scan            fill the records of ended subagents from each
+                                       agent's own files: those from before tmux-agent
+                                       kept records, and any whose end no hook told
+  tmux-agent subagents fill AGENT SESSION TRANSCRIPT ID...
+                                       the same for a few subagents of one session,
+                                       waiting for their files; the hooks run it
   tmux-agent --version
 `
 
@@ -141,6 +147,8 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 		}
 		a.env.Log = a.logf
 		return a.env.Revive(a.reg.Get(rest[0]), rest[1], self, stderr)
+	case "subagents":
+		return a.subagents(rest)
 	case "--version", "version":
 		fmt.Fprintln(stdout, version)
 		return 0
@@ -191,6 +199,7 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 		Pane:     getenv("TMUX_PANE"),
 		Run:      agent.RunFromEnv(getenv),
 		LockPath: filepath.Join(store.RuntimeDir(getenv), "lock"),
+		Fill:     a.spawnFill,
 	}
 	a.side = &sidebar.Sidebar{
 		Tmux:     a.tmux,
@@ -221,6 +230,77 @@ func (a *app) spawnNotify(pane string, s attention.State) {
 		return
 	}
 	_ = cmd.Process.Release() // never waited for
+}
+
+// spawnFill starts `subagents fill` for subagents that ended, in its own
+// session like the notifier: it waits for their files, which the hook must
+// not.
+func (a *app) spawnFill(ag agent.Agent, sf agent.SessionFiles, ids []string) {
+	cmd := exec.Command(a.self, append([]string{"subagents", "fill", ag.Name(), sf.Session, sf.Transcript}, ids...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		a.logf("subagents fill: %v", err)
+		return
+	}
+	_ = cmd.Process.Release() // never waited for
+}
+
+// spawnScan starts `subagents scan` in its own session.
+func (a *app) spawnScan() {
+	cmd := exec.Command(a.self, "subagents", "scan")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		a.logf("subagents scan: %v", err)
+		return
+	}
+	_ = cmd.Process.Release() // never waited for
+}
+
+// fillWait is how long a fill waits for the files of a subagent that
+// ended to say so.
+const fillWait = 30 * time.Second
+
+// scanTimeout bounds a pass over every agent's files: the first one reads
+// every subagent's history, gigabytes on a machine used for a while.
+const scanTimeout = 30 * time.Minute
+
+// subagents fills subagent records from the agents' files. It runs at a
+// low priority: it reads much and nothing waits on it.
+func (a *app) subagents(args []string) int {
+	_ = syscall.Setpriority(syscall.PRIO_PROCESS, 0, 10) // best effort
+	a.env.Log = a.logf
+	switch {
+	case len(args) == 1 && args[0] == "scan":
+		ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+		defer cancel()
+		code := 0
+		for _, ag := range a.reg.Agents() {
+			n, err := a.env.ScanAllSubagents(ctx, ag, a.getenv)
+			if err != nil {
+				fmt.Fprintf(a.stderr, "tmux-agent subagents scan %s: %v\n", ag.Name(), err)
+				code = 1
+			}
+			a.logf("subagents scan %s: %d filled", ag.Name(), n)
+		}
+		return code
+	case len(args) >= 5 && args[0] == "fill":
+		ag, ok := a.reg.Lookup(args[1])
+		if !ok {
+			fmt.Fprintf(a.stderr, "tmux-agent subagents fill: no agent %q\n", args[1])
+			return 1
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), fillWait+time.Minute)
+		defer cancel()
+		sf := agent.SessionFiles{Session: args[2], Transcript: args[3]}
+		if _, err := a.env.ScanSubagents(ctx, ag, sf, args[4:], fillWait); err != nil {
+			fmt.Fprintf(a.stderr, "tmux-agent subagents fill: %v\n", err)
+			a.logf("subagents fill: %v", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprint(a.stderr, usage)
+	return 2
 }
 
 // hook handles one hook event. It never writes stdout, which Claude Code
@@ -970,6 +1050,7 @@ func (a *app) tmuxInit(ctx context.Context) error {
 	if _, err := a.tmux.Run(ctx, args...); err != nil {
 		return err
 	}
+	a.spawnScan() // subagents whose end no hook told, such as all from before
 	return a.core.Redraw(ctx)
 }
 

@@ -118,7 +118,7 @@ func TestLineCutsTheRightFirst(t *testing.T) {
 		{"short", "permission · 4m", " ? short       permission · 4m"},
 		{"a-very-long-window-name-indeed", "", " ? a-very-long-window-name-in…"},
 	} {
-		got := escape.ReplaceAllString(line(" ?", 2, tt.name, "", tt.right, p).Text, "")
+		got := escape.ReplaceAllString(line(" ?", 2, tt.name, "", tt.right, "", p).Text, "")
 		if got != tt.want {
 			t.Errorf("line(%q, %q) = %q, want %q", tt.name, tt.right, got, tt.want)
 		}
@@ -128,7 +128,7 @@ func TestLineCutsTheRightFirst(t *testing.T) {
 // An agent's labels make a second line, under its name; with none the row
 // keeps one line.
 func TestLabelsLine(t *testing.T) {
-	r := line(" ? ✳ ", 5, "gamma", "", "", Panel{Width: 39})
+	r := line(" ? ✳ ", 5, "gamma", "", "", "", Panel{Width: 39})
 	if strings.Contains(r.Display(), "\n") {
 		t.Errorf("a row without labels has two lines: %q", r.Display())
 	}
@@ -141,7 +141,7 @@ func TestLabelsLine(t *testing.T) {
 
 // The name underlines each match of each word; a session's name is bold.
 func TestDisplayHighlights(t *testing.T) {
-	r := line("   1", 4, "dot dotfiles", "", "", Panel{Width: 39, Words: []string{"DOT", "es"}})
+	r := line("   1", 4, "dot dotfiles", "", "", "", Panel{Width: 39, Words: []string{"DOT", "es"}})
 	want := "   1 \x1b[4mdot\x1b[24m \x1b[4mdot\x1b[24mfil\x1b[4mes\x1b[24m"
 	if r.Text != want {
 		t.Errorf("Text = %q, want %q", r.Text, want)
@@ -196,4 +196,38 @@ func TestOneAgentPaneIsOneRow(t *testing.T) {
 		"=proj-a:|proj-a",
 		"=proj-a:1.1| ● ✳  work                           9s\n      ⎇ main",
 	})
+}
+
+// A row whose agent runs subagents shows how many after its name, in the
+// working colour. The count is never cut: the right part and a long name
+// give way to it, as they do to each other.
+func TestRenderSubagentCount(t *testing.T) {
+	rows := []Row{
+		{Target: "proj-a:1.0", Session: "proj-a", Window: "build-fix", State: "working", Rank: 2, Age: "3m", Command: "agent-a", IsAgent: true, Subagents: 2},
+		{Target: "proj-a:2.0", Session: "proj-a", Window: "a-very-long-window-name-here", State: "done", Rank: 1, Detail: "turn ended", Age: "1m", Command: "agent-a", IsAgent: true, Subagents: 12},
+		{Target: "proj-a:3.0", Session: "proj-a", Window: "docs", Rank: 3, Age: "-", Command: "agent-a", IsAgent: true, IdleAge: "2h"},
+	}
+	p := Panel{Width: 39, Marks: testMarks, Col: Colours{Working: "#89b4fa"}}
+	var got []string
+	for _, r := range RenderPickRows(rows, []Session{{ID: "$1", Name: "proj-a"}}, p) {
+		got = append(got, escape.ReplaceAllString(r.Display(), ""))
+	}
+	check(t, got, []string{
+		"proj-a",
+		" ● ✳  build-fix ⑂2                   3m",
+		" ✓ ✳  a-very-long-w… ⑂12 turn ended · …",
+		"   ✳  docs                           2h",
+	})
+	p.View = StateView
+	var state []string
+	for _, r := range RenderPickRows(rows, nil, p) {
+		state = append(state, escape.ReplaceAllString(r.Display(), ""))
+	}
+	if !slices.Contains(state, " ● ✳  build-fix ⑂2            proj-a 3m") {
+		t.Errorf("state view:\n%s", strings.Join(state, "\n"))
+	}
+	row := line(" ●", 2, "build-fix", "", "3m", "⑂2", p)
+	if !strings.Contains(row.Text, "\x1b[38;2;137;180;250m⑂2") {
+		t.Errorf("count not in the working colour: %q", row.Text)
+	}
 }

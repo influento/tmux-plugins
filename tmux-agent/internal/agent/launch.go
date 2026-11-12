@@ -177,6 +177,7 @@ func (e *Env) register(a Agent, args []string, oneShot bool) {
 		optAgent: a.Name(), optRun: strconv.Itoa(os.Getpid()), optOneShot: shot, optResume: resume,
 		optStarted: strconv.FormatInt(e.now().Unix(), 10),
 		optSession: "", optTranscript: "", optCwd: "", optState: "", optReason: "", optWait: "", optWaitBy: "", OptRevive: "",
+		attention.OptSubagents: "",
 	}
 	if err := e.paneOpts(ctx, opts); err != nil {
 		e.logf("register run: %v", err)
@@ -221,7 +222,7 @@ func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
 	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
 		e.logf("title end: %v", err)
 	}
-	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: ""}
+	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: "", attention.OptSubagents: ""}
 	end := EndKilled
 	if !killed {
 		end = EndExited

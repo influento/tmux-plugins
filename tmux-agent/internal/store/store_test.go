@@ -84,3 +84,40 @@ func TestDirs(t *testing.T) {
 		t.Errorf("RuntimeDir = %q", got)
 	}
 }
+
+// A subagent's record lives next to its session's, merges like it, and is
+// listed per session and per agent.
+func TestSubagentRecords(t *testing.T) {
+	s := &Store{Dir: t.TempDir()}
+	const id = "11111111-2222-4333-8444-555555555555"
+	if err := s.UpdateSubagent("agent-a", id, "a1", func(r *Subagent) { r.Type, r.Started = "Explore", 100 }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateSubagent("agent-a", id, "a1", func(r *Subagent) { r.Prompt, r.Tokens = "look", &Tokens{Input: 1, Output: 2} }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateSubagent("agent-a", id, "a0", func(r *Subagent) { r.Type = "general-purpose" }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Update("agent-a", id, func(r *Session) { r.State = "working" }); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(s.Dir, "sessions", "agent-a", id, "subagents", "a1.json")
+	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("record %s: %v (%v), want mode 0600", p, fi, err)
+	}
+	subs, err := s.Subagents("agent-a", id)
+	if err != nil || len(subs) != 2 || subs[0].ID != "a0" || subs[1].ID != "a1" {
+		t.Fatalf("Subagents = %+v (%v)", subs, err)
+	}
+	if r := subs[1]; r.Session != id || r.Agent != "agent-a" || r.Type != "Explore" || r.Started != 100 || r.Prompt != "look" || r.Tokens.Total() != 3 {
+		t.Errorf("a1 = %+v", r)
+	}
+	all, err := s.AllSubagents("agent-a")
+	if err != nil || len(all) != 2 {
+		t.Errorf("AllSubagents = %d (%v), want 2", len(all), err)
+	}
+	if _, err := s.Subagents("agent-a", "../x"); err == nil {
+		t.Error("a session id with a path in it was taken")
+	}
+}

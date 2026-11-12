@@ -23,9 +23,11 @@ func (e *Env) headOf(ctx context.Context, dir string) (git.Head, error) {
 // place keeps the pane's folder and its git label current: at a session
 // start, at a turn end (the agent may have switched branches) and whenever
 // the folder changes. The caller holds the lock. A folder git cannot read
-// (outside a checkout, or git too slow) clears the label.
+// (outside a checkout, or git too slow) clears the label. Only the agent's
+// own events move it.
 func (e *Env) place(ctx context.Context, a Agent, ev Event, l live, session string) error {
-	if ev.Cwd == "" {
+	if ev.Cwd == "" || ev.By != "" {
+		// A subagent's folder is its own, such as a worktree it was given.
 		return nil
 	}
 	moved := ev.Cwd != l.cwd

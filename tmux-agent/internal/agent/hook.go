@@ -42,6 +42,10 @@ type Env struct {
 	Git func(ctx context.Context, dir string) (git.Head, error)
 	// Log receives errors that must not reach the agent; none when nil.
 	Log func(format string, args ...any)
+	// Fill starts, in the background, the read of the agent's files for
+	// the subagents of the session that ended (ScanSubagents); none when
+	// nil. The files can be large, so the hook never reads them itself.
+	Fill func(a Agent, sf SessionFiles, ids []string)
 }
 
 func (e *Env) now() time.Time {
@@ -113,6 +117,7 @@ const (
 // live is a pane's live record and the facts about its window.
 type live struct {
 	agent, session, transcript, cwd, state, reason, wait, waitBy, named string
+	subagents                                                           []string
 	run, oneShot, resume, revive                                        string
 	flag                                                                attention.State
 	autoRename                                                          bool
@@ -124,7 +129,7 @@ var liveFormat = strings.Join([]string{
 	"#{" + optState + "}", "#{" + optReason + "}", "#{" + optWait + "}", "#{" + optNamed + "}",
 	"#{" + optRun + "}", "#{" + optOneShot + "}", "#{" + optResume + "}", "#{" + OptRevive + "}",
 	"#{@attention}", "#{automatic-rename}", "#{window_name}", "#{" + OptTitle + "}",
-	"#{" + optWaitBy + "}",
+	"#{" + optWaitBy + "}", "#{" + attention.OptSubagents + "}",
 }, "\x1f")
 
 func (e *Env) readLive(ctx context.Context) (live, error) { return e.liveOf(ctx, e.Pane) }
@@ -134,8 +139,8 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 	if err != nil {
 		return live{}, err
 	}
-	f := strings.SplitN(out, "\x1f", 17)
-	for len(f) < 17 {
+	f := strings.SplitN(out, "\x1f", 18)
+	for len(f) < 18 {
 		f = append(f, "")
 	}
 	return live{
@@ -143,7 +148,7 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 		state: f[4], reason: f[5], wait: f[6], named: f[7],
 		run: f[8], oneShot: f[9], resume: f[10], revive: f[11],
 		flag: attention.State(f[12]), autoRename: f[13] == "1", windowName: f[14], title: f[15],
-		waitBy: f[16],
+		waitBy: f[16], subagents: strings.Fields(f[17]),
 	}, nil
 }
 
@@ -261,6 +266,10 @@ func (e *Env) Apply(ctx context.Context, a Agent, ev Event) error {
 		err = e.needsInput(ctx, a, ev, session)
 	case TurnEnd:
 		err = e.turnEnd(ctx, a, ev, l, session)
+	case SubagentStart:
+		err = e.subagentStart(ctx, a, ev, l, session)
+	case SubagentEnd:
+		err = e.subagentEnd(ctx, a, ev, l, session)
 	}
 	if err != nil {
 		return err
@@ -349,6 +358,7 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 	opts := map[string]string{
 		optAgent: a.Name(), optSession: ev.SessionID, optTranscript: ev.Transcript, optCwd: ev.Cwd,
 		optState: string(state), optReason: reason, optWait: "", optWaitBy: "", optResume: "",
+		attention.OptSubagents: "",
 	}
 	if title != "" {
 		if err := e.applyTitle(ctx, title); err != nil {
@@ -377,6 +387,9 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 // working: a turn or a tool started, or a tool finished. A pending decision
 // stays unless the event ends it.
 func (e *Env) working(ctx context.Context, a Agent, ev Event, l live, session string) error {
+	if ev.Subagent != nil {
+		e.rememberSubagent(a, session, *ev.Subagent)
+	}
 	if l.flag == attention.NeedsYou && !endsWait(ev, l) {
 		return nil
 	}
@@ -427,6 +440,9 @@ func (e *Env) needsInput(ctx context.Context, a Agent, ev Event, session string)
 // until the turn their reports start ends, and the pending decision of a
 // subagent that still runs stays.
 func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session string) error {
+	if err := e.syncSubagents(ctx, a, ev, l, session); err != nil {
+		return err
+	}
 	if err := e.markTurnEnd(ctx, a, ev, l, session); err != nil {
 		return err
 	}
@@ -487,7 +503,7 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
 		return err
 	}
-	opts := map[string]string{optNamed: ""}
+	opts := map[string]string{optNamed: "", attention.OptSubagents: ""}
 	if ev.End == EndExited {
 		for _, o := range sessionOpts {
 			opts[o] = ""
@@ -505,7 +521,7 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 
 // sessionOpts are the pane options that name the pane's session; they go
 // when the session ends for good.
-var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive}
+var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive, attention.OptSubagents}
 
 // releaseTitle gives the window of pane back to tmux when its name is
 // still the title the pane's agent set.

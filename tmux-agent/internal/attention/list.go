@@ -66,6 +66,8 @@ type Row struct {
 	IsAgent bool    `json:"-"`                // the pane runs an agent
 	IdleAge string  `json:"-"`                // an idle agent's time since its last flag was set; "" for none
 	Labels  []Label `json:"labels,omitempty"` // what sources report about the pane
+	// Subagents is how many subagents run beside the pane's agent.
+	Subagents int `json:"subagents,omitempty"`
 }
 
 // Humanize renders an age in seconds as 5s, 3m, 2h or 4d.
@@ -108,7 +110,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 		"#{session_name}", "#{window_index}.#{pane_index}", "#{pane_id}", "#{window_name}",
 		"#{@attention}", "#{@attention_reason}", "#{@attention_at}", "#{pane_current_command}",
 		"#{@attention_gone}", "#{@agent}", "#{pane_title}", "#{@attention_failed}", "#{@attention_idle_at}",
-		"#{" + OptLabels + "}", "#{" + sidebar.OptClient + "}",
+		"#{" + OptLabels + "}", "#{" + sidebar.OptClient + "}", "#{" + OptSubagents + "}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -117,7 +119,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 15)
+		f := split(l, 16)
 		if skip(f[0]) || f[14] != "" { // the panel is no row of its own
 			continue
 		}
@@ -125,7 +127,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 			Session: f[0], Target: f[0] + ":" + f[1], Pane: f[2], Window: f[3],
 			State: f[4], Reason: f[5], Command: f[7], Gone: f[8], Agent: f[9], Title: f[10],
 			Failed: f[4] == string(Done) && f[11] == "1",
-			Labels: ParseLabels(f[13], now),
+			Labels: ParseLabels(f[13], now), Subagents: len(strings.Fields(f[15])),
 		}
 		r.At, _ = strconv.ParseInt(f[6], 10, 64) // unset or garbled: no age
 		r.IsAgent = c.isAgent(r.Command, r.Agent)

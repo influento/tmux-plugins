@@ -18,6 +18,11 @@
 //	SessionEnd                               session end: unknown for reason
 //	                                         "other" (a kill, or a -p run
 //	                                         ending), exited otherwise
+//	SubagentStart, SubagentStop              subagent start, subagent end;
+//	                                         dropped with an empty type
+//	                                         (Claude Code's hidden helpers)
+//	PostToolUse Agent                        working, with the subagent the
+//	                                         call started and its prompt
 //
 // Every event carries the session's folder (cwd), which follows the agent
 // into a worktree (EnterWorktree, claude -w). A subagent's tool hooks carry
@@ -162,6 +167,7 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 		}
 	case "PostToolUse":
 		ev.Kind, ev.ToolEnd, ev.Tool = agent.Working, true, toolKey(f)
+		ev.Subagent = f.spawned()
 	case "PermissionRequest":
 		ev.Kind, ev.Tool = agent.NeedsInput, toolKey(f)
 		ev.Reason = label(or(f.str("tool_name"), "tool"), f.obj("tool_input"))
@@ -174,6 +180,15 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 		}
 	case "Stop":
 		ev.Kind, ev.Subagents = agent.TurnEnd, f.runningSubagents()
+	case "SubagentStart", "SubagentStop":
+		if f.str("agent_type") == "" || ev.By == "" {
+			return agent.Event{}, false, nil
+		}
+		ev.Kind = agent.SubagentStart
+		ev.Subagent = &agent.Subagent{ID: ev.By, Type: f.str("agent_type")}
+		if f.str("hook_event_name") == "SubagentStop" {
+			ev.Kind, ev.Subagent.Transcript = agent.SubagentEnd, f.str("agent_transcript_path")
+		}
 	default:
 		return agent.Event{}, false, nil
 	}
@@ -197,6 +212,33 @@ func (f fields) runningSubagents() []string {
 		}
 	}
 	return ids
+}
+
+// spawned is the subagent an Agent tool call started, from its
+// PostToolUse: the id it got, and what it was asked. nil for another tool.
+func (f fields) spawned() *agent.Subagent {
+	if name := f.str("tool_name"); name != "Agent" && name != "Task" {
+		return nil
+	}
+	resp, in := f.obj("tool_response"), f.obj("tool_input")
+	id := resp.str("agentId")
+	if id == "" {
+		return nil
+	}
+	return &agent.Subagent{
+		ID: id, Type: in.str("subagent_type"), Description: or(resp.str("description"), in.str("description")),
+		Prompt: or(resp.rawStr("prompt"), in.rawStr("prompt")), Model: resp.str("resolvedModel"),
+	}
+}
+
+// rawStr returns a string field as it is, newlines kept; "" for another
+// type.
+func (f fields) rawStr(key string) string {
+	var s string
+	if raw, ok := f[key]; ok {
+		_ = json.Unmarshal(raw, &s) // not a string: ""
+	}
+	return s
 }
 
 // question is the first question an AskUserQuestion input asks.

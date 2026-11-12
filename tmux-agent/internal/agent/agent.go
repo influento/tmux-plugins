@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+
+	"github.com/influento/tmux-plugins/tmux-agent/internal/store"
 )
 
 // Agent is the one required part of an integration: with only a name and a
@@ -61,6 +63,48 @@ type Titler interface {
 type Interrupter interface {
 	Interrupted(transcript string) (at time.Time, ok bool)
 }
+
+// SubagentReader reads a session's subagents from the agent's own files,
+// which hold more than its hooks: the result, the tokens, how each ended.
+// The files can be large, so they are read outside the hook, after the
+// subagent ended (see ScanSubagents).
+type SubagentReader interface {
+	// SubagentIDs lists the subagents in the files of the session whose
+	// transcript is given.
+	SubagentIDs(transcript string) ([]string, error)
+	// ReadSubagent reads one of them. Its Outcome is "" while it runs; the
+	// rest of the files is then left unread.
+	ReadSubagent(transcript, id string) (Subagent, error)
+	// SubagentSessions lists every session whose files hold subagents.
+	SubagentSessions(getenv func(string) string) ([]SessionFiles, error)
+}
+
+// SessionFiles names a session and its transcript.
+type SessionFiles struct {
+	Session, Transcript string
+}
+
+// Subagent is what an event or the agent's files tell about one subagent.
+type Subagent struct {
+	ID, Type, Description, Prompt, Result, Model, Transcript string
+	Depth                                                    int
+	Started, Ended                                           time.Time
+	Outcome                                                  Outcome
+	Tokens                                                   *Tokens
+}
+
+// Tokens are the tokens a subagent's model calls used, by kind.
+type Tokens = store.Tokens
+
+// Outcome is how a subagent ended.
+type Outcome string
+
+// The outcomes. The zero Outcome is a subagent that still runs.
+const (
+	OutcomeDone    Outcome = "done"    // it finished and reported
+	OutcomeStopped Outcome = "stopped" // the user stopped it
+	OutcomeUnknown Outcome = "unknown" // its files stop without saying
+)
 
 // Marker gives the glyph and the colour (#rrggbb) the panel marks the
 // agent's windows with. Without it the agent gets the panel's default mark.
@@ -139,12 +183,14 @@ type Kind int
 
 // The neutral events. The zero Kind is no event.
 const (
-	KindNone     Kind = iota
-	SessionStart      // a session began, resumed, or replaced the last one (/clear)
-	Working           // a turn started, or a tool started or finished
-	NeedsInput        // the agent waits on a decision
-	TurnEnd           // a turn finished
-	SessionEnd        // the session ended
+	KindNone      Kind = iota
+	SessionStart       // a session began, resumed, or replaced the last one (/clear)
+	Working            // a turn started, or a tool started or finished
+	NeedsInput         // the agent waits on a decision
+	TurnEnd            // a turn finished
+	SessionEnd         // the session ended
+	SubagentStart      // a subagent started
+	SubagentEnd        // a subagent ended
 )
 
 // End is how a session ended.
@@ -181,4 +227,8 @@ type Event struct {
 	Subagents []string
 	// End is how a SessionEnd ended.
 	End End
+	// Subagent is what the event tells about a subagent: the one a
+	// SubagentStart or SubagentEnd is about, or on a Working event one that
+	// the agent's tool call started, with its prompt. nil for none.
+	Subagent *Subagent
 }

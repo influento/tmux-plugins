@@ -23,6 +23,12 @@ func payload(t *testing.T, m map[string]any) []byte {
 
 func TestReadHook(t *testing.T) {
 	const sid = "11111111-2222-4333-8444-555555555555"
+	agentInput := map[string]any{"description": "probe", "prompt": "look\nhere", "subagent_type": "Explore"}
+	var agentCall fields
+	if err := json.Unmarshal(payload(t, map[string]any{"tool_name": "Agent", "tool_input": agentInput}), &agentCall); err != nil {
+		t.Fatal(err)
+	}
+	agentKey := toolKey(agentCall)
 	cases := []struct {
 		name string
 		in   map[string]any
@@ -57,7 +63,19 @@ func TestReadHook(t *testing.T) {
 			true, agent.Event{Kind: agent.TurnEnd}},
 		{"subagent tool", map[string]any{"hook_event_name": "PostToolUse", "agent_id": "a1", "tool_name": "Bash"},
 			true, agent.Event{Kind: agent.Working, ToolEnd: true, By: "a1", Tool: toolKey(fields{"tool_name": json.RawMessage(`"Bash"`)})}},
-		{"unknown", map[string]any{"hook_event_name": "SubagentStop"}, false, agent.Event{}},
+		{"unknown", map[string]any{"hook_event_name": "TeammateIdle"}, false, agent.Event{}},
+		{"subagent start", map[string]any{"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"},
+			true, agent.Event{Kind: agent.SubagentStart, By: "a1", Subagent: &agent.Subagent{ID: "a1", Type: "general-purpose"}}},
+		{"subagent end", map[string]any{"hook_event_name": "SubagentStop", "agent_id": "a1", "agent_type": "Explore", "agent_transcript_path": "/t/subagents/agent-a1.jsonl"},
+			true, agent.Event{Kind: agent.SubagentEnd, By: "a1", Subagent: &agent.Subagent{ID: "a1", Type: "Explore", Transcript: "/t/subagents/agent-a1.jsonl"}}},
+		// Claude Code's hidden helpers (prompt suggestions) end with no
+		// type and never start.
+		{"hidden helper end", map[string]any{"hook_event_name": "SubagentStop", "agent_id": "a2", "agent_type": ""}, false, agent.Event{}},
+		{"subagent end without id", map[string]any{"hook_event_name": "SubagentStop", "agent_type": "Explore"}, false, agent.Event{}},
+		{"agent call", map[string]any{"hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_input": agentInput,
+			"tool_response": map[string]any{"status": "async_launched", "agentId": "a3", "description": "probe", "resolvedModel": "model-a", "prompt": "look\nhere"}},
+			true, agent.Event{Kind: agent.Working, ToolEnd: true, Tool: agentKey,
+				Subagent: &agent.Subagent{ID: "a3", Type: "Explore", Description: "probe", Prompt: "look\nhere", Model: "model-a"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
