@@ -404,3 +404,30 @@ func TestSplitKeys(t *testing.T) {
 		t.Errorf("after - from a main pane: %+v, new %+v; want the new one below it", r, u)
 	}
 }
+
+// The panel takes @sidebar_style, and @sidebar_active_style while it has
+// the focus; with only the first, it serves both.
+func TestPanelStyles(t *testing.T) {
+	for _, c := range []struct {
+		name, active, want string
+	}{
+		{"one style", "", "bg=#181825"},
+		{"a focused style", "bg=#181825,fg=#cdd6f4", "bg=#181825,fg=#cdd6f4"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.MustTmux(t, "set-option", "-g", sidebar.OptStyle, "bg=#181825")
+			if c.active != "" {
+				e.MustTmux(t, "set-option", "-g", sidebar.OptActiveStyle, c.active)
+			}
+			must(t, e.side.Toggle(e.ctx(), e.client))
+			p := e.panel(t)
+			if got := e.MustTmux(t, "show-options", "-pqv", "-t", p, "window-style"); got != "bg=#181825" {
+				t.Errorf("window-style = %q, want bg=#181825", got)
+			}
+			if got := e.MustTmux(t, "show-options", "-pqv", "-t", p, "window-active-style"); got != c.want {
+				t.Errorf("window-active-style = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

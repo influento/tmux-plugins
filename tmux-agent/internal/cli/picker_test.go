@@ -200,3 +200,28 @@ func TestPanelSkipsSessionLines(t *testing.T) {
 		t.Errorf("client on %q after Enter, want proj-b:1", got)
 	}
 }
+
+// @sidebar_cursor_style colours the panel's cursor row: fzf gets its bg
+// and fg after FZF_DEFAULT_OPTS, so they win there.
+func TestPickCursorStyle(t *testing.T) {
+	tmuxtest.Require(t, "tmux")
+	sb := tmuxtest.NewSandbox(t)
+	args := filepath.Join(sb.Dir, "fzf-args")
+	sb.Stub(t, "fzf", "#!/bin/sh\nprintf '%s\\n' \"$@\" >"+shell.Quote(args)+"\ncat >/dev/null\nexit 130\n")
+	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	s.MustTmux(t, "set-option", "-g", "@sidebar_cursor_style", "bg=#45475a,fg=#b4befe")
+	s.Attach(t, "proj-a", 100, 30)
+	s.InPane(t, s.Display(t, "proj-a:0.0", "#{pane_id}"))
+	t.Setenv("PATH", sb.Bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := cli.Pick(context.Background()); err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	got, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "\n--color=bg+:#45475a,fg+:#b4befe\n") {
+		t.Errorf("fzf arguments lack the cursor row's colours:\n%s", got)
+	}
+}

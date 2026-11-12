@@ -393,13 +393,9 @@ and checks them against `SHA256SUMS`. (Until the P0 cutover it still follows
 `<tag>/tmux-warp/tmux-warp.sh`, which therefore stays at that path.)
 tmux.conf binds: `bind s run-shell '~/.local/bin/tmux-warp.sh'`
 
-tmux-agent renders what tmux.conf prints: `@attention_status` (the counts)
-in the status line, `@attention_mark` in the pane border and
-`@attention_win_mark` in the window list. tmux.conf only sets the colours
-(`@attention_fg_needs_you`, `_done`, `_failed`, `_working`, `_dim`) and
-places the three options. Until the cutover, dotfiles' formats still build
-the glyphs from `@attention` and `@attention_win` (they draw a failed run as
-a plain ✓); at the cutover they print the marks instead.
+tmux.conf places `@attention_status` in the status line and
+`@attention_win_mark` in the window list; tmux-agent draws both. tmux.conf
+sets only the colours, of the flags and of the panel.
 
 At the cutover, tmux-revive takes over from tmux-resurrect, tmux-continuum
 and tmux-attach. The terminal starts `tmux-revive attach`; tmux.conf runs

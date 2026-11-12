@@ -36,6 +36,33 @@ type PickOptions struct {
 	Start  int    // the row the cursor starts on, from 1
 	State  PanelState
 	Width  int // the columns of a row
+	// Cursor is the cursor row's tmux style (@sidebar_cursor_style): its
+	// bg and fg replace FZF_DEFAULT_OPTS's bg+ and fg+ in the panel only.
+	Cursor string
+}
+
+var hexColour = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// CursorColors turns a tmux style into fzf's colours for the cursor row:
+// "bg=#45475a,fg=#b4befe" is "bg+:#45475a,fg+:#b4befe". Only bg and fg
+// count, as #rrggbb or default; fzf refuses to start on a colour it does
+// not know, so anything else is left out. "" when nothing is left.
+func CursorColors(style string) string {
+	var out []string
+	for _, f := range strings.FieldsFunc(style, func(r rune) bool { return r == ',' || r == ' ' }) {
+		name, colour, ok := strings.Cut(f, "=")
+		if !ok || (name != "bg" && name != "fg") {
+			continue
+		}
+		switch {
+		case colour == "default":
+			colour = "-1"
+		case !hexColour.MatchString(colour):
+			continue
+		}
+		out = append(out, name+"+:"+colour)
+	}
+	return strings.Join(out, ",")
 }
 
 // ReloadKey is the key, as fzf names it, that reads the rows again and
@@ -80,7 +107,10 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		// filters on each change of the query.
 		"--read0", "--delimiter=\t", "--with-nth=3", "--disabled", "--no-hscroll",
 		"--header=" + Header(opts.State.View, opts.Width), "--header-first", "--header-label=" + opts.State.String(),
-		"--color=header:-1", // the views in the text's colour, not the theme's header colour
+		// The views in the text's colour, not the theme's header colour. The
+		// text and the background are the pane's, not a theme's from
+		// FZF_DEFAULT_OPTS: tmux's styles colour the panel, focused or not.
+		"--color=header:-1,fg:-1,bg:-1",
 		// Plain: no borders, labels or footer; one column before the rows.
 		"--margin=0", "--padding=0", "--border=none", "--list-border=none", "--input-border=none",
 		"--info=hidden", "--no-scrollbar", "--no-separator", "--highlight-line",
@@ -108,6 +138,9 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		// vim-tmux-navigator sends C-l to fzf as to vim: fzf passes it on,
 		// so focus leaves the panel for the pane on its right.
 		`--bind=ctrl-l:execute-silent(tmux select-pane -R -t "$TMUX_PANE")`,
+	}
+	if c := CursorColors(opts.Cursor); c != "" {
+		args = append(args, "--color="+c)
 	}
 	cmd := exec.CommandContext(ctx, "fzf", args...)
 	cmd.Stdin = strings.NewReader(in.String())

@@ -31,6 +31,12 @@ const (
 	OptLast   = "@sidebar_last"   // window: the main pane that had the focus last
 	OptOpen   = "@sidebar_open"   // global: 1 while a panel is open; the hooks run only then
 	OptStyle  = "@sidebar_style"  // global, from tmux.conf: the panel's window-style
+	// OptActiveStyle, from tmux.conf, is the panel's style while it has the
+	// focus; without it, OptStyle serves both.
+	OptActiveStyle = "@sidebar_active_style"
+	// OptCursorStyle, from tmux.conf, colours the panel's cursor row: its
+	// bg and fg, as #rrggbb. Without it, FZF_DEFAULT_OPTS's bg+ and fg+.
+	OptCursorStyle = "@sidebar_cursor_style"
 	// OptReviveSkip keeps the panel out of tmux-revive's saves.
 	OptReviveSkip = "@revive_skip"
 )
@@ -334,10 +340,22 @@ func (s *Sidebar) open(ctx context.Context, clientName, origin string) error {
 		"set-option", "-w", "-t", w.id, OptLast, origin, ";",
 		"set-option", "-g", OptOpen, "1", ";",
 	}
-	if style, err := s.Tmux.Output(ctx, "show-options", "-gqv", OptStyle); err == nil && style != "" {
-		args = append(args,
-			"set-option", "-p", "-t", pane, "window-style", style, ";",
-			"set-option", "-p", "-t", pane, "window-active-style", style, ";")
+	style, err := s.Tmux.Output(ctx, "show-options", "-gqv", OptStyle)
+	if err != nil {
+		return err
+	}
+	active, err := s.Tmux.Output(ctx, "show-options", "-gqv", OptActiveStyle)
+	if err != nil {
+		return err
+	}
+	if active == "" {
+		active = style
+	}
+	if style != "" {
+		args = append(args, "set-option", "-p", "-t", pane, "window-style", style, ";")
+	}
+	if active != "" {
+		args = append(args, "set-option", "-p", "-t", pane, "window-active-style", active, ";")
 	}
 	args = append(args, "select-layout", "-t", w.id, craft(main, w.width, w.height, pane, width, true).String())
 	if _, err := s.Tmux.Run(ctx, args...); err != nil {

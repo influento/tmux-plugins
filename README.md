@@ -44,7 +44,12 @@ bind - if -F '#{&&:#{@sidebar_client},#{P:#{?#{==:#{pane_id},#{@sidebar_last}},1
 bind Space if -F '#{@sidebar_open}' "run-shell \"tmux-agent sidebar layout '#{client_name}' next\"" 'next-layout'
 bind M-1 if -F '#{@sidebar_open}' "run-shell \"tmux-agent sidebar layout '#{client_name}' even-horizontal\"" 'select-layout even-horizontal'
 # ... M-2 even-vertical, M-3 main-horizontal, M-4 main-vertical, M-5 tiled
-set -g @sidebar_style 'bg=#181825'   # optional: the panel's background
+# optional: the panel's colours, while it has the focus, and its cursor row
+set -g @sidebar_style 'bg=#1e1e2e,fg=#a6adc8'
+set -g @sidebar_active_style 'bg=#1e1e2e,fg=#cdd6f4'
+set -g @sidebar_cursor_style 'bg=#45475a,fg=#b4befe'
+# optional: no label line above the panes of a split window
+set -g @attention_borders off
 ```
 
 ### tmux-revive

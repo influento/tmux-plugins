@@ -651,9 +651,13 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 		}
 		inPanel = p == self
 	}
+	cursor, _, err := a.tmux.Option(ctx, "-g", "", sidebar.OptCursorStyle)
+	if err != nil {
+		return err
+	}
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
-		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width})
+		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width, Cursor: cursor})
 	if err != nil {
 		return err
 	}

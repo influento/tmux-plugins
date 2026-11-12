@@ -117,22 +117,30 @@ func (c *Core) GoTo(ctx context.Context, pane string) error {
 	return c.Seen(ctx, pane)
 }
 
+// OptBorders, set to "off" in tmux.conf, keeps the label lines off: Borders
+// then leaves each window to the global pane-border-status.
+const OptBorders = "@attention_borders"
+
 // Borders turns pane borders on for a split window and off for a single
 // pane, then renders the counts, since a pane that left took its flag. A
 // window that is gone has no borders to set.
 func (c *Core) Borders(ctx context.Context, window string) error {
 	if window != "" {
 		// The panel's pane does not count: it splits no window of its own.
-		out, err := c.Tmux.Output(ctx, "list-panes", "-t", window, "-F", "#{?#{"+sidebar.OptClient+"},,1}")
+		out, err := c.Tmux.Output(ctx, "list-panes", "-t", window, "-F",
+			"#{?#{"+sidebar.OptClient+"},0,1}#{"+OptBorders+"}")
 		switch {
 		case err != nil && !isGone(err):
 			return err
 		case err == nil:
-			status := "off"
-			if strings.Count(out, "1") > 1 {
-				status = "top"
+			args := []string{"set-option", "-w", "-t", window, "pane-border-status", "off"}
+			switch {
+			case strings.HasSuffix(strings.TrimSpace(out), "off"):
+				args = []string{"set-option", "-wu", "-t", window, "pane-border-status"}
+			case strings.Count(out, "1") > 1:
+				args[len(args)-1] = "top"
 			}
-			if _, err := c.Tmux.Run(ctx, "set-option", "-w", "-t", window, "pane-border-status", status); err != nil {
+			if _, err := c.Tmux.Run(ctx, args...); err != nil {
 				return err
 			}
 		}
