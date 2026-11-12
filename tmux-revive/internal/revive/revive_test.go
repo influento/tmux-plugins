@@ -438,8 +438,10 @@ func TestSaveLeavesOutSkippedPanes(t *testing.T) {
 	e.start(t, "proj-a", e.Home)
 	e.mustTmux(t, "split-window", "-h", "-t", "=proj-a:")
 	e.mustTmux(t, "split-window", "-v", "-t", "=proj-a:")
-	panel := strings.TrimSpace(e.mustTmux(t, "split-window", "-h", "-b", "-f", "-l", "20", "-t", "=proj-a:", "-P", "-F", "#{pane_id}"))
-	e.mustTmux(t, "set-option", "-p", "-t", panel, "@revive_skip", "1")
+	// Marked in the split's command, as tmux-agent's panel is: the hooks'
+	// background save cannot land in between.
+	panel := strings.TrimSpace(e.mustTmux(t, "split-window", "-h", "-b", "-f", "-l", "20", "-t", "=proj-a:", "-P", "-F", "#{pane_id}", ";",
+		"set-option", "-p", "@revive_skip", "1"))
 	e.saveNow(t)
 	snap, _ := e.latest(t)
 	if snap == nil || snap.Panes() != 3 {

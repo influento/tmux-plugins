@@ -431,3 +431,46 @@ func TestPanelStyles(t *testing.T) {
 		})
 	}
 }
+
+// seenBySaves runs every tmux call of the sidebar, then lists the panes
+// as a save from another client would see them between two calls: the
+// panes without @revive_skip.
+type seenBySaves struct {
+	sidebar.Tmux
+	t     *testing.T
+	s     *tmuxtest.Server
+	marks []string // per call: the panes left unmarked after it
+}
+
+func (o *seenBySaves) look() {
+	o.marks = append(o.marks, o.s.MustTmux(o.t, "list-panes", "-a", "-f", "#{?#{"+sidebar.OptReviveSkip+"},0,1}", "-F", "#{pane_id}"))
+}
+
+func (o *seenBySaves) Run(ctx context.Context, args ...string) (string, error) {
+	defer o.look()
+	return o.Tmux.Run(ctx, args...)
+}
+
+func (o *seenBySaves) Output(ctx context.Context, args ...string) (string, error) {
+	defer o.look()
+	return o.Tmux.Output(ctx, args...)
+}
+
+// tmux-revive saves in the background after every split, so a save can
+// land between any two tmux calls the sidebar makes: the panel is never
+// there without @revive_skip, or a save keeps it as a pane of its window.
+func TestPanelHiddenFromSaves(t *testing.T) {
+	e := newEnv(t)
+	seen := &seenBySaves{Tmux: e.side.Tmux, t: t, s: e.Server}
+	e.side.Tmux = seen
+	must(t, e.side.Toggle(e.ctx(), e.client))
+	p := e.panel(t)
+	if p == "" {
+		t.Fatal("no panel")
+	}
+	for i, unmarked := range seen.marks {
+		if slices.Contains(strings.Fields(unmarked), p) {
+			t.Errorf("after tmux call %d of %d the panel %s has no @revive_skip", i+1, len(seen.marks), p)
+		}
+	}
+}

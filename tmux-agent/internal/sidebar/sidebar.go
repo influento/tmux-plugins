@@ -324,14 +324,18 @@ func (s *Sidebar) open(ctx context.Context, clientName, origin string) error {
 		return err
 	}
 	width := s.widthIn(w.width)
+	// The split marks the panel in the same command: tmux-revive's hooks
+	// save in the background, and a save between two calls would keep the
+	// panel as a pane of the window. Without -d the new pane is the target
+	// of the commands after the split.
 	pane, err := s.Tmux.Output(ctx, "split-window", "-h", "-b", "-f", "-l", strconv.Itoa(width),
-		"-t", first, "-P", "-F", "#{pane_id}", s.Command(clientName, origin))
+		"-t", first, "-P", "-F", "#{pane_id}", s.Command(clientName, origin), ";",
+		"set-option", "-p", OptReviveSkip, "1")
 	if err != nil {
 		return err
 	}
 	args := []string{
 		"set-option", "-p", "-t", pane, OptClient, clientName, ";",
-		"set-option", "-p", "-t", pane, OptReviveSkip, "1", ";",
 		"select-pane", "-t", pane, "-T", "panel", ";",
 		"set-option", "-w", "-t", w.id, OptMain, main.String(), ";",
 		"set-option", "-w", "-t", w.id, OptSize, size(w.width, w.height), ";",
