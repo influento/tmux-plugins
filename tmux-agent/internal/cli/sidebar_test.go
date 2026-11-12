@@ -72,6 +72,10 @@ func TestSidebarEndToEnd(t *testing.T) {
 	s.MustTmux(t, "select-window", "-t", w1)
 	tmuxtest.WaitFor(t, 5*time.Second, "the panel to follow to "+w1, func() bool { return panelIn() == w1 })
 
+	// A renamed window reloads the panel, through its fzf's socket.
+	s.MustTmux(t, "rename-window", "-t", w1, "w-renamed")
+	s.WaitForContent(t, panel, "w-renamed")
+
 	s.MustTmux(t, "send-keys", "-t", panel, "Escape")
 	tmuxtest.WaitFor(t, 5*time.Second, "the panel to close", func() bool { return panelIn() == "" })
 	if got := s.MustTmux(t, "list-clients", "-F", "#{pane_id}"); got != origin {

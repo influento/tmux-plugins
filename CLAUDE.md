@@ -261,8 +261,7 @@ Rules:
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
   have two lines) and filters by session and window name, so a session's
   name keeps all its windows; `pick-key` gives Tab's and Enter's actions,
-  and `place` the cursor after a reload (F12, which `sidebar reload`
-  sends when windows come, go or are renamed).
+  and `place` the cursor after a reload.
   The view and the open folds are fzf's header label, which shows
   nowhere. Labels (session names, group titles) the cursor steps over.
   The client and the panel follow the cursor (`sidebar go`); Enter stays

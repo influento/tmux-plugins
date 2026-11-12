@@ -37,6 +37,8 @@ const (
 	// OptCursorStyle, from tmux.conf, colours the panel's cursor row: its
 	// bg and fg, as #rrggbb. Without it, FZF_DEFAULT_OPTS's bg+ and fg+.
 	OptCursorStyle = "@sidebar_cursor_style"
+	// OptListen is the unix socket a panel's fzf takes actions on: Reload's.
+	OptListen = "@sidebar_listen"
 	// OptReviveSkip keeps the panel out of tmux-revive's saves.
 	OptReviveSkip = "@revive_skip"
 )
@@ -49,10 +51,6 @@ const DefaultWidth = 40
 // window's OptLast. tmux runs it without a process.
 const RecordLast = `if-shell -F "#{&&:#{` + OptOpen + `},#{?#{` + OptClient + `},0,1}}" ` +
 	`"set-option -wF ` + OptLast + ` \"#{pane_id}\""`
-
-// ReloadKey is the key Reload sends a panel: its list reads the windows
-// again.
-const ReloadKey = "F12"
 
 // Tmux is what the sidebar needs of a tmux client.
 type Tmux interface {
@@ -959,16 +957,23 @@ func (s *Sidebar) Evacuate(ctx context.Context, target string) error {
 	return errors.Join(errs...)
 }
 
-// Reload tells every panel that windows came, went or were renamed.
-func (s *Sidebar) Reload(ctx context.Context) error {
-	ps, err := s.panels(ctx)
+// Reload tells every panel that windows came, went or were renamed: send
+// reaches the fzf of client's panel on its socket. A panel not listening
+// yet reads the windows when it starts.
+func (s *Sidebar) Reload(ctx context.Context, send func(ctx context.Context, client, socket string) error) error {
+	out, err := s.Tmux.Output(ctx, "list-panes", "-a", "-F", "#{"+OptClient+"}"+sep+"#{"+OptListen+"}")
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, p := range ps {
-		_, err := s.Tmux.Run(ctx, "send-keys", "-t", p.pane, ReloadKey)
-		errs = append(errs, err)
+	seen := map[string]bool{}
+	for _, l := range lines(out) {
+		f := split(l, 2)
+		if f[0] == "" || f[1] == "" || seen[f[1]] { // a linked window lists its panes again
+			continue
+		}
+		seen[f[1]] = true
+		errs = append(errs, send(ctx, f[0], f[1]))
 	}
 	return errors.Join(errs...)
 }

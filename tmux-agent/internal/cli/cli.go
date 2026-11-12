@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -621,6 +622,28 @@ func clientArgs(client string) []string {
 	return []string{"-c", client}
 }
 
+// listen names the socket the panel's fzf in pane takes reloads on, and
+// records it on the pane. The name is fixed per server and pane: a panel
+// that was killed leaves its socket for the next one to take.
+func (a *app) listen(ctx context.Context, pane string) (string, error) {
+	server := strings.Split(a.getenv("TMUX"), ",")
+	if len(server) < 2 || server[1] == "" {
+		return "", nil
+	}
+	dir := store.RuntimeDir(a.getenv)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	socket := filepath.Join(dir, "panel-"+server[1]+"-"+strings.TrimPrefix(pane, "%")+".sock")
+	if err := os.Remove(socket); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if _, err := a.tmux.Run(ctx, "set-option", "-p", "-t", pane, sidebar.OptListen, socket); err != nil {
+		return "", err
+	}
+	return socket, nil
+}
+
 // pick runs the panel's list. In the client's sidebar pane, Enter closes
 // the panel on the chosen pane, Esc goes back to origin first. Run on its
 // own, it switches the client to the choice, or back on Esc.
@@ -655,9 +678,19 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	if err != nil {
 		return err
 	}
+	listen := ""
+	if inPanel {
+		if listen, err = a.listen(ctx, self); err != nil {
+			return err
+		}
+	}
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
-		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width, Cursor: cursor})
+		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width,
+		Cursor: cursor, Listen: listen})
+	if listen != "" {
+		_ = os.Remove(listen) // fzf is gone; the panel may be too, so no tmux call
+	}
 	if err != nil {
 		return err
 	}
@@ -781,7 +814,9 @@ func (a *app) sidebar(ctx context.Context, args []string) error {
 	case action == "keep" && len(rest) == 0:
 		return a.side.Keep(ctx)
 	case action == "reload" && len(rest) == 0:
-		return a.side.Reload(ctx)
+		return a.side.Reload(ctx, func(ctx context.Context, client, socket string) error {
+			return ui.Reload(ctx, socket, shell.Quote(a.self), client)
+		})
 	}
 	return errUsage
 }

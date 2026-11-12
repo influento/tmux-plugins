@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -39,6 +42,10 @@ type PickOptions struct {
 	// Cursor is the cursor row's tmux style (@sidebar_cursor_style): its
 	// bg and fg replace FZF_DEFAULT_OPTS's bg+ and fg+ in the panel only.
 	Cursor string
+	// Listen is the unix socket fzf takes actions on, for Reload; "" for
+	// none. A key would do for fzf, but one that lands just after the
+	// user's Esc turns both into an Alt key, and Esc is lost.
+	Listen string
 }
 
 var hexColour = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
@@ -64,11 +71,6 @@ func CursorColors(style string) string {
 	}
 	return strings.Join(out, ",")
 }
-
-// ReloadKey is the key, as fzf names it, that reads the rows again and
-// puts the cursor on the client's window: the sidebar sends it when
-// windows come, go or are renamed.
-const ReloadKey = "f12"
 
 // PickLine is a row as fzf reads it, tab separated: a label's text ("" on
 // the other rows), the switch-client target, what the row shows, what
@@ -130,10 +132,6 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		// first row fires a focus event before the cursor moves.
 		"--bind=start:unbind(focus)",
 		fmt.Sprintf("--bind=load:pos(%d)+rebind(focus)+unbind(load)", max(opts.Start, 1)),
-		// Windows came, went or were renamed: the rows again, the cursor on
-		// the client's window, with no focus event on the way.
-		fmt.Sprintf("--bind=%s:unbind(focus)+reload-sync(%s)+transform(%s pick-key place %s)+rebind(focus)",
-			ReloadKey, list, opts.Self, shell.Quote(opts.Client)),
 		"--bind=change:" + change,
 		// vim-tmux-navigator sends C-l to fzf as to vim: fzf passes it on,
 		// so focus leaves the panel for the pane on its right.
@@ -141,6 +139,9 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 	}
 	if c := CursorColors(opts.Cursor); c != "" {
 		args = append(args, "--color="+c)
+	}
+	if opts.Listen != "" {
+		args = append(args, "--listen="+opts.Listen)
 	}
 	cmd := exec.CommandContext(ctx, "fzf", args...)
 	cmd.Stdin = strings.NewReader(in.String())
@@ -158,6 +159,38 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		return "", nil
 	}
 	return f[1], nil
+}
+
+// reloadAction reads the rows again and puts the cursor on the client's
+// window, with no focus event on the way.
+func reloadAction(self, client string) string {
+	return fmt.Sprintf("unbind(focus)+reload-sync(%s pick-rows --fzf)+transform(%s pick-key place %s)+rebind(focus)",
+		self, self, shell.Quote(client))
+}
+
+// Reload tells the panel's fzf listening on socket that windows came, went
+// or were renamed. self and client are Pick's.
+func Reload(ctx context.Context, socket, self, client string) error {
+	hc := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://fzf/", strings.NewReader(reloadAction(self, client)))
+	if err != nil {
+		return err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("ui: reload the panel: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("ui: reload the panel: %s: %s", resp.Status, bytes.TrimSpace(body))
+	}
+	return nil
 }
 
 // Notify sends a desktop notification and, where notify-send supports
