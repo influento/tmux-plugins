@@ -232,6 +232,14 @@ func (d *bashDriver) KnownBug(name string) string {
 	switch name {
 	case "TestNotifyNotForVisiblePane":
 		return "pane_visible reads #{client_focused}, which tmux 3.8 does not have, so the pane on screen still notifies"
+	case "TestHookStopWithSubagentsKeepsWorking/subagent_running",
+		"TestHookStopWithSubagentsKeepsWorking/subagent_and_shell":
+		return "claude-tmux flags every Stop done, also while a subagent runs"
+	case "TestHookSubagentDecisions/subagent_tool_beside_a_question",
+		"TestHookSubagentDecisions/main_tool_beside_a_subagent's_permission",
+		"TestHookSubagentDecisions/turn_end_while_a_subagent_waits",
+		"TestHookSubagentDecisions/turn_end_after_the_waiting_subagent_stopped":
+		return "claude-tmux takes a subagent's hooks for the main agent's"
 	}
 	return ""
 }

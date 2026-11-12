@@ -13,13 +13,15 @@
 //	PermissionRequest                        needs input  "Bash(…)", "Edit(file)"
 //	Notification elicitation_dialog,         needs input  the message
 //	  agent_needs_input (others: dropped)
-//	Stop                                     turn end
+//	Stop                                     turn end, with the subagents
+//	                                         background_tasks lists running
 //	SessionEnd                               session end: unknown for reason
 //	                                         "other" (a kill, or a -p run
 //	                                         ending), exited otherwise
 //
 // Every event carries the session's folder (cwd), which follows the agent
-// into a worktree (EnterWorktree, claude -w).
+// into a worktree (EnterWorktree, claude -w). A subagent's tool hooks carry
+// its agent_id: the event says it came from that subagent.
 //
 // A turn the user cuts short (Esc, a declined permission) sends no hook;
 // Interrupted reads it from the transcript for the agent layer's sweep.
@@ -133,7 +135,7 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 	if err := json.Unmarshal(payload, &f); err != nil {
 		return agent.Event{}, false, err
 	}
-	ev := agent.Event{SessionID: f.str("session_id"), Transcript: f.str("transcript_path"), Cwd: f.str("cwd")}
+	ev := agent.Event{SessionID: f.str("session_id"), Transcript: f.str("transcript_path"), Cwd: f.str("cwd"), By: f.str("agent_id")}
 	switch f.str("hook_event_name") {
 	case "SessionStart":
 		source := f.str("source")
@@ -171,11 +173,30 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 			return agent.Event{}, false, nil
 		}
 	case "Stop":
-		ev.Kind = agent.TurnEnd
+		ev.Kind, ev.Subagents = agent.TurnEnd, f.runningSubagents()
 	default:
 		return agent.Event{}, false, nil
 	}
 	return ev, true, nil
+}
+
+// runningSubagents are the ids of the subagents a Stop's background_tasks
+// lists as running: the agent_id their own hooks carry. Claude Code 2.1.322
+// runs every subagent in the background, and the turn that started it ends
+// while it works. Background shells do not count: a dev server runs for as
+// long as the session.
+func (f fields) runningSubagents() []string {
+	var tasks []fields
+	if raw, ok := f["background_tasks"]; ok {
+		_ = json.Unmarshal(raw, &tasks) // not a list: none
+	}
+	var ids []string
+	for _, t := range tasks {
+		if t.str("type") == "subagent" && t.str("status") == "running" {
+			ids = append(ids, t.str("id"))
+		}
+	}
+	return ids
 }
 
 // question is the first question an AskUserQuestion input asks.

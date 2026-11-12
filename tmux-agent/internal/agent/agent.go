@@ -173,6 +173,12 @@ type Event struct {
 	Tool string
 	// ToolEnd marks a Working event sent when a tool finished.
 	ToolEnd bool
+	// By is the subagent that sent the event; "" for the agent itself. The
+	// agent's subagents run beside it, in its session and pane.
+	By string
+	// Subagents are, on a TurnEnd, the subagents still running, by the ids
+	// their events carry in By. Each one's report starts another turn.
+	Subagents []string
 	// End is how a SessionEnd ended.
 	End End
 }

@@ -176,7 +176,7 @@ func (e *Env) register(a Agent, args []string, oneShot bool) {
 	opts := map[string]string{
 		optAgent: a.Name(), optRun: strconv.Itoa(os.Getpid()), optOneShot: shot, optResume: resume,
 		optStarted: strconv.FormatInt(e.now().Unix(), 10),
-		optSession: "", optTranscript: "", optCwd: "", optState: "", optReason: "", optWait: "", OptRevive: "",
+		optSession: "", optTranscript: "", optCwd: "", optState: "", optReason: "", optWait: "", optWaitBy: "", OptRevive: "",
 	}
 	if err := e.paneOpts(ctx, opts); err != nil {
 		e.logf("register run: %v", err)

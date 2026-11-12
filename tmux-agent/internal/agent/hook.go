@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +96,7 @@ const (
 	optState      = "@agent_state"      // its last state, kept when a flag is seen
 	optReason     = "@agent_reason"     // the state's reason
 	optWait       = "@agent_wait"       // the tool a needs-you waits on
+	optWaitBy     = "@agent_wait_by"    // the subagent it waits on; unset for the agent
 	optNamed      = "@agent_named"      // the window title this pane's agent set
 	optRun        = "@agent_run"        // the launcher's pid
 	optOneShot    = "@agent_oneshot"    // "1" for a one-turn run
@@ -110,11 +112,11 @@ const (
 
 // live is a pane's live record and the facts about its window.
 type live struct {
-	agent, session, transcript, cwd, state, reason, wait, named string
-	run, oneShot, resume, revive                                string
-	flag                                                        attention.State
-	autoRename                                                  bool
-	windowName, title                                           string
+	agent, session, transcript, cwd, state, reason, wait, waitBy, named string
+	run, oneShot, resume, revive                                        string
+	flag                                                                attention.State
+	autoRename                                                          bool
+	windowName, title                                                   string
 }
 
 var liveFormat = strings.Join([]string{
@@ -122,6 +124,7 @@ var liveFormat = strings.Join([]string{
 	"#{" + optState + "}", "#{" + optReason + "}", "#{" + optWait + "}", "#{" + optNamed + "}",
 	"#{" + optRun + "}", "#{" + optOneShot + "}", "#{" + optResume + "}", "#{" + OptRevive + "}",
 	"#{@attention}", "#{automatic-rename}", "#{window_name}", "#{" + OptTitle + "}",
+	"#{" + optWaitBy + "}",
 }, "\x1f")
 
 func (e *Env) readLive(ctx context.Context) (live, error) { return e.liveOf(ctx, e.Pane) }
@@ -131,8 +134,8 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 	if err != nil {
 		return live{}, err
 	}
-	f := strings.SplitN(out, "\x1f", 16)
-	for len(f) < 16 {
+	f := strings.SplitN(out, "\x1f", 17)
+	for len(f) < 17 {
 		f = append(f, "")
 	}
 	return live{
@@ -140,6 +143,7 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 		state: f[4], reason: f[5], wait: f[6], named: f[7],
 		run: f[8], oneShot: f[9], resume: f[10], revive: f[11],
 		flag: attention.State(f[12]), autoRename: f[13] == "1", windowName: f[14], title: f[15],
+		waitBy: f[16],
 	}, nil
 }
 
@@ -344,7 +348,7 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 	}
 	opts := map[string]string{
 		optAgent: a.Name(), optSession: ev.SessionID, optTranscript: ev.Transcript, optCwd: ev.Cwd,
-		optState: string(state), optReason: reason, optWait: "", optResume: "",
+		optState: string(state), optReason: reason, optWait: "", optWaitBy: "", optResume: "",
 	}
 	if title != "" {
 		if err := e.applyTitle(ctx, title); err != nil {
@@ -370,17 +374,33 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 	return nil
 }
 
-// working: a turn or a tool started, or a tool finished. A decision that is
-// pending on one tool stays when another tool, run beside it, finishes.
+// working: a turn or a tool started, or a tool finished. A pending decision
+// stays unless the event ends it.
 func (e *Env) working(ctx context.Context, a Agent, ev Event, l live, session string) error {
-	if ev.ToolEnd && l.flag == attention.NeedsYou && l.wait != "" && ev.Tool != l.wait {
+	if l.flag == attention.NeedsYou && !endsWait(ev, l) {
 		return nil
 	}
+	return e.markWorking(ctx, a, session)
+}
+
+// endsWait reports whether ev ends the decision a needs-you flag waits on.
+// The agent and its subagents run side by side, so only the event of the
+// one that waits counts; and a tool's end counts only for the tool waited
+// on, not for another tool run beside it.
+func endsWait(ev Event, l live) bool {
+	if ev.By != l.waitBy {
+		return false
+	}
+	return !ev.ToolEnd || l.wait == "" || ev.Tool == l.wait
+}
+
+// markWorking flags the pane working.
+func (e *Env) markWorking(ctx context.Context, a Agent, session string) error {
 	changed, err := e.flag(ctx, a, attention.Working, "")
 	if err != nil || !changed {
 		return err
 	}
-	if err := e.paneOpts(ctx, map[string]string{optState: string(attention.Working), optReason: "", optWait: ""}); err != nil {
+	if err := e.paneOpts(ctx, map[string]string{optState: string(attention.Working), optReason: "", optWait: "", optWaitBy: ""}); err != nil {
 		return err
 	}
 	e.remember(a, session, func(s *store.Session) { s.State, s.Reason = string(attention.Working), "" })
@@ -391,7 +411,7 @@ func (e *Env) needsInput(ctx context.Context, a Agent, ev Event, session string)
 	if _, err := e.flag(ctx, a, attention.NeedsYou, ev.Reason); err != nil {
 		return err
 	}
-	if err := e.paneOpts(ctx, map[string]string{optState: string(attention.NeedsYou), optReason: ev.Reason, optWait: ev.Tool}); err != nil {
+	if err := e.paneOpts(ctx, map[string]string{optState: string(attention.NeedsYou), optReason: ev.Reason, optWait: ev.Tool, optWaitBy: ev.By}); err != nil {
 		return err
 	}
 	e.remember(a, session, func(s *store.Session) { s.State, s.Reason = string(attention.NeedsYou), ev.Reason })
@@ -402,17 +422,13 @@ func (e *Env) needsInput(ctx context.Context, a Agent, ev Event, session string)
 // named, automatic-rename is off and the name stays. The one change is the
 // agent's own title for the session, which replaces a stand-in this pane's
 // agent gave, as long as the window still carries it.
+//
+// A turn that ends while subagents run is not done: the pane stays working
+// until the turn their reports start ends, and the pending decision of a
+// subagent that still runs stays.
 func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session string) error {
-	const reason = "turn ended"
-	changed, err := e.flag(ctx, a, attention.Done, reason)
-	if err != nil {
+	if err := e.markTurnEnd(ctx, a, ev, l, session); err != nil {
 		return err
-	}
-	if changed {
-		if err := e.paneOpts(ctx, map[string]string{optState: string(attention.Done), optReason: reason, optWait: ""}); err != nil {
-			return err
-		}
-		e.remember(a, session, func(s *store.Session) { s.State, s.Reason = string(attention.Done), reason })
 	}
 	t, ok := a.(Titler)
 	ours := l.named != "" && l.title == l.named && l.windowName == l.named
@@ -430,6 +446,26 @@ func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session st
 		return err
 	}
 	e.remember(a, session, func(s *store.Session) { s.Title = title })
+	return nil
+}
+
+// markTurnEnd sets the flag a turn end leaves.
+func (e *Env) markTurnEnd(ctx context.Context, a Agent, ev Event, l live, session string) error {
+	if len(ev.Subagents) > 0 {
+		if l.flag == attention.NeedsYou && l.waitBy != "" && slices.Contains(ev.Subagents, l.waitBy) {
+			return nil
+		}
+		return e.markWorking(ctx, a, session)
+	}
+	const reason = "turn ended"
+	changed, err := e.flag(ctx, a, attention.Done, reason)
+	if err != nil || !changed {
+		return err
+	}
+	if err := e.paneOpts(ctx, map[string]string{optState: string(attention.Done), optReason: reason, optWait: "", optWaitBy: ""}); err != nil {
+		return err
+	}
+	e.remember(a, session, func(s *store.Session) { s.State, s.Reason = string(attention.Done), reason })
 	return nil
 }
 
@@ -469,7 +505,7 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 
 // sessionOpts are the pane options that name the pane's session; they go
 // when the session ends for good.
-var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, OptRevive}
+var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive}
 
 // releaseTitle gives the window of pane back to tmux when its name is
 // still the title the pane's agent set.

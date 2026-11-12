@@ -219,6 +219,12 @@ Rules:
   status, sweep, list, jump and the picker read the transcript's last
   message: Claude Code's interrupt line, written at or after the flag,
   clears the flag.
+- Subagents run beside their agent, in its session and pane; Claude Code
+  2.1.322 runs every one in the background. A turn that ends while one
+  runs (Stop's `background_tasks`) leaves the pane working: its report, or
+  its stop by the user, starts the next turn. A needs-you waits on one
+  agent, the main one or a subagent (`@agent_wait_by`, the hooks'
+  `agent_id`); only that agent's events end it.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
 - `popup` waits until the user closes the popup, with no timeout; `pick`

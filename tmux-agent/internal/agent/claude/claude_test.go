@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -46,12 +47,22 @@ func TestReadHook(t *testing.T) {
 		{"stop", map[string]any{"hook_event_name": "Stop", "transcript_path": "/t"}, true, agent.Event{Kind: agent.TurnEnd, Transcript: "/t"}},
 		{"stop in a worktree", map[string]any{"hook_event_name": "Stop", "cwd": "/src/proj-a/.claude/worktrees/wt-a"},
 			true, agent.Event{Kind: agent.TurnEnd, Cwd: "/src/proj-a/.claude/worktrees/wt-a"}},
+		{"stop with subagents", map[string]any{"hook_event_name": "Stop", "background_tasks": []any{
+			map[string]any{"id": "a1", "type": "subagent", "status": "running"},
+			map[string]any{"id": "b2", "type": "shell", "status": "running"},
+			map[string]any{"id": "a3", "type": "subagent", "status": "completed"},
+			map[string]any{"id": "a4", "type": "subagent", "status": "running"},
+		}}, true, agent.Event{Kind: agent.TurnEnd, Subagents: []string{"a1", "a4"}}},
+		{"stop with odd tasks", map[string]any{"hook_event_name": "Stop", "background_tasks": "none"},
+			true, agent.Event{Kind: agent.TurnEnd}},
+		{"subagent tool", map[string]any{"hook_event_name": "PostToolUse", "agent_id": "a1", "tool_name": "Bash"},
+			true, agent.Event{Kind: agent.Working, ToolEnd: true, By: "a1", Tool: toolKey(fields{"tool_name": json.RawMessage(`"Bash"`)})}},
 		{"unknown", map[string]any{"hook_event_name": "SubagentStop"}, false, agent.Event{}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ev, ok, err := Claude{}.ReadHook(payload(t, c.in))
-			if err != nil || ok != c.ok || ev != c.want {
+			if err != nil || ok != c.ok || !reflect.DeepEqual(ev, c.want) {
 				t.Errorf("ReadHook = %+v, %v, %v; want %+v, %v", ev, ok, err, c.want, c.ok)
 			}
 		})

@@ -230,7 +230,7 @@ func (e *Env) SweepTurns(ctx context.Context) error {
 		if err := e.Core.Clear(ctx, p.id); err != nil && !isGone(err) {
 			return err
 		}
-		if err := e.optsOf(ctx, p.id, map[string]string{optState: "", optReason: "", optWait: ""}); err != nil && !isGone(err) {
+		if err := e.optsOf(ctx, p.id, map[string]string{optState: "", optReason: "", optWait: "", optWaitBy: ""}); err != nil && !isGone(err) {
 			return err
 		}
 		e.remember(e.Registry.Get(p.agent), p.session, func(s *store.Session) { s.State, s.Reason = "", "" })

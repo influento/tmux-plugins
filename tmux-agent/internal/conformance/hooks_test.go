@@ -161,6 +161,129 @@ func TestHookStopFlagsDone(t *testing.T) {
 	})
 }
 
+// stop is a Stop whose background_tasks lists what still runs, as Claude
+// Code 2.1.322 sends it.
+func stop(transcript string, tasks ...map[string]any) Event {
+	bg := []any{}
+	for _, task := range tasks {
+		bg = append(bg, task)
+	}
+	return Event{Name: "Stop", Payload: map[string]any{"transcript_path": transcript, "background_tasks": bg}}
+}
+
+func subagentTask(status string) map[string]any {
+	return map[string]any{"id": "a1b2c3d4e5f6a7b8c", "type": "subagent", "status": status,
+		"description": "probe", "agent_type": "general-purpose"}
+}
+
+var shellTask = map[string]any{"id": "b4oc37ih8", "type": "shell", "status": "running",
+	"description": "make serve", "command": "make serve"}
+
+// fromSubagent marks an event as sent by a subagent of the session: Claude
+// Code sends a subagent's tool hooks with its agent_id and agent_type.
+func fromSubagent(ev Event) Event {
+	ev.Payload["agent_id"] = "a1b2c3d4e5f6a7b8c"
+	ev.Payload["agent_type"] = "general-purpose"
+	return ev
+}
+
+// A turn that ends while a subagent still runs leaves the pane working: the
+// subagent's report starts the next turn, and that turn's end is done. A
+// background shell (a dev server) does not count. The window is named at
+// either turn end.
+func TestHookStopWithSubagentsKeepsWorking(t *testing.T) {
+	cases := []struct {
+		name       string
+		tasks      []map[string]any
+		wantState  string
+		wantReason string
+	}{
+		{"subagent running", []map[string]any{subagentTask("running")}, "working", ""},
+		{"subagent and shell", []map[string]any{shellTask, subagentTask("running")}, "working", ""},
+		{"only a shell", []map[string]any{shellTask}, "done", "turn ended"},
+		{"subagent finished", []map[string]any{subagentTask("completed")}, "done", "turn ended"},
+		{"nothing", nil, "done", "turn ended"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			each(t, func(t *testing.T, e *env) {
+				p := e.claudeWindow(t, "proj-a")
+				tr := e.writeTranscript(t, userPrompt("fix the waybar clock"))
+				e.d.Hook(t, e.Server, p, Event{Name: "UserPromptSubmit"})
+				e.d.Hook(t, e.Server, p, stop(tr, c.tasks...))
+				e.wantFlag(t, p, c.wantState, c.wantReason)
+				if r := e.d.Record(t, e.Server, p); r.State != c.wantState {
+					t.Errorf("record state = %q, want %s", r.State, c.wantState)
+				}
+				if name, _ := e.windowName(t, p); name != "fix the waybar" {
+					t.Errorf("window = %q, want %q", name, "fix the waybar")
+				}
+			})
+		})
+	}
+}
+
+// A decision pending for one agent of the session (the main agent or a
+// subagent, which run side by side) goes only with that agent's own
+// events: another agent's tool calls, and the main agent's turn end while
+// the subagent waits, leave it.
+func TestHookSubagentDecisions(t *testing.T) {
+	question := toolEvent("PreToolUse", "AskUserQuestion", map[string]any{
+		"questions": []any{map[string]any{"question": "Which store?"}},
+	})
+	touch := map[string]any{"command": "touch probe-file"}
+	t.Run("subagent tool beside a question", func(t *testing.T) {
+		each(t, func(t *testing.T, e *env) {
+			p := e.claudeWindow(t, "proj-a")
+			e.d.Hook(t, e.Server, p, question)
+			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PreToolUse", "Bash", map[string]any{"command": "ls"})))
+			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PostToolUse", "Bash", map[string]any{"command": "ls"})))
+			e.wantFlag(t, p, "needs-you", "question: Which store?")
+		})
+	})
+	t.Run("main tool beside a subagent's permission", func(t *testing.T) {
+		each(t, func(t *testing.T, e *env) {
+			p := e.claudeWindow(t, "proj-a")
+			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PermissionRequest", "Bash", touch)))
+			e.d.Hook(t, e.Server, p, toolEvent("PreToolUse", "Read", map[string]any{"file_path": "/src/proj-a/main.go"}))
+			e.wantFlag(t, p, "needs-you", "Bash(touch probe-file)")
+			// Granted: the subagent's tool ends.
+			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PostToolUse", "Bash", touch)))
+			e.wantFlag(t, p, "working", "")
+		})
+	})
+	t.Run("turn end while a subagent waits", func(t *testing.T) {
+		each(t, func(t *testing.T, e *env) {
+			p := e.claudeWindow(t, "proj-a")
+			e.d.Hook(t, e.Server, p, Event{Name: "UserPromptSubmit"})
+			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PermissionRequest", "Bash", touch)))
+			e.d.Hook(t, e.Server, p, stop(e.writeTranscript(t), subagentTask("running")))
+			e.wantFlag(t, p, "needs-you", "Bash(touch probe-file)")
+		})
+	})
+	t.Run("turn end after the waiting subagent stopped", func(t *testing.T) {
+		// The subagent was stopped while it waited; another one still runs.
+		each(t, func(t *testing.T, e *env) {
+			p := e.claudeWindow(t, "proj-a")
+			e.d.Hook(t, e.Server, p, Event{Name: "UserPromptSubmit"})
+			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PermissionRequest", "Bash", touch)))
+			other := subagentTask("running")
+			other["id"] = "f0e1d2c3b4a596870"
+			e.d.Hook(t, e.Server, p, stop(e.writeTranscript(t), other))
+			e.wantFlag(t, p, "working", "")
+		})
+	})
+	t.Run("subagent's own next tool", func(t *testing.T) {
+		// Declined with a note: the subagent goes on with another tool.
+		each(t, func(t *testing.T, e *env) {
+			p := e.claudeWindow(t, "proj-a")
+			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PermissionRequest", "Bash", touch)))
+			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PreToolUse", "Read", map[string]any{"file_path": "/src/proj-a/main.go"})))
+			e.wantFlag(t, p, "working", "")
+		})
+	})
+}
+
 // The window takes its name from the first prompt on Stop: openers dropped,
 // three words, cut at 15 characters, trailing punctuation trimmed. Slash
 // commands, tagged harness messages and tool results are not prompts.
