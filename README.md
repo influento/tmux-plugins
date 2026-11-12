@@ -48,6 +48,8 @@ bind M-1 if -F '#{@sidebar_open}' "run-shell \"tmux-agent sidebar layout '#{clie
 set -g @sidebar_style 'bg=#1e1e2e,fg=#a6adc8'
 set -g @sidebar_active_style 'bg=#1e1e2e,fg=#cdd6f4'
 set -g @sidebar_cursor_style 'bg=#45475a,fg=#b4befe'
+# optional: how often an open panel reads its rows again, in seconds (0: never)
+set -g @sidebar_refresh 30
 # optional: no label line above the panes of a split window
 set -g @attention_borders off
 ```

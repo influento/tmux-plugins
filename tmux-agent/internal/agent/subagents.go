@@ -68,9 +68,16 @@ func (e *Env) syncSubagents(ctx context.Context, a Agent, ev Event, l live, sess
 	return e.setRunning(ctx, ev.Subagents)
 }
 
-// setRunning writes the pane's running subagents.
+// setRunning writes the pane's running subagents and tells the panels,
+// which show how many.
 func (e *Env) setRunning(ctx context.Context, ids []string) error {
-	return e.paneOpts(ctx, map[string]string{attention.OptSubagents: strings.Join(ids, " ")})
+	if err := e.paneOpts(ctx, map[string]string{attention.OptSubagents: strings.Join(ids, " ")}); err != nil {
+		return err
+	}
+	if e.Core.Changed != nil {
+		e.Core.Changed(ctx)
+	}
+	return nil
 }
 
 // fill starts the read of the agent's files for the subagents ids of the

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
+	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/selftest"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/sidebar"
 )
@@ -84,4 +85,63 @@ func TestSidebarEndToEnd(t *testing.T) {
 	if got := s.MustTmux(t, "show-options", "-gqv", sidebar.OptOpen); got != "" {
 		t.Errorf("%s = %q with no panel open", sidebar.OptOpen, got)
 	}
+}
+
+// openPanel starts a server with tmux-init's hooks and a client, opens the
+// panel, and returns the server, the pane it opened from, and the panel.
+func openPanel(t *testing.T, before ...[]string) (s *tmuxtest.Server, origin, panel string) {
+	t.Helper()
+	tmuxtest.Require(t, "tmux", "fzf")
+	sb := tmuxtest.NewSandbox(t)
+	selftest.Install(t, sb)
+	s = tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	origin = s.Display(t, "=proj-a:0", "#{pane_id}")
+	s.MustTmux(t, "rename-window", "-t", "=proj-a:0", "w-one")
+	s.Attach(t, "proj-a", 120, 31)
+	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
+	for _, args := range before {
+		s.MustTmux(t, args...)
+	}
+	for _, args := range [][]string{{"tmux-init"}, {"popup", client}} {
+		if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+			t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+		}
+	}
+	tmuxtest.WaitFor(t, 5*time.Second, "the panel", func() bool {
+		panel = strings.TrimSpace(s.MustTmux(t, "list-panes", "-a", "-F", "#{?#{"+sidebar.OptClient+"},#{pane_id},}"))
+		return panel != ""
+	})
+	s.WaitForContent(t, panel, "w-one")
+	return s, origin, panel
+}
+
+// The panel is live: a flag set or cleared, by a hook or by hand, shows in
+// the open panel without a key pressed or a window renamed.
+func TestPanelShowsFlagChanges(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	flag := func(args ...string) {
+		t.Helper()
+		args = append([]string{"flag"}, append(args, "--pane", origin)...)
+		if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+			t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+		}
+	}
+	flag("needs-you", "--reason", "Bash(make)")
+	s.WaitForContent(t, panel, "Bash(make)")
+	flag("clear")
+	tmuxtest.WaitFor(t, 5*time.Second, "the cleared flag to leave the panel", func() bool {
+		return !strings.Contains(s.MustTmux(t, "capture-pane", "-p", "-t", panel), "Bash(make)")
+	})
+}
+
+// An open panel reads its rows again every @sidebar_refresh seconds, so
+// what changes with no hook to tell it (the ages) moves too.
+func TestPanelRefreshes(t *testing.T) {
+	s, origin, panel := openPanel(t, []string{"set-option", "-g", sidebar.OptRefresh, "1"})
+	if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", origin).CombinedOutput(); err != nil {
+		t.Fatalf("tmux-agent flag: %v: %s", err, out)
+	}
+	s.WaitForContent(t, panel, "●") // the flag's own reload is done
+	s.MustTmux(t, "set-option", "-p", "-t", origin, attention.OptSubagents, "a1 a2")
+	s.WaitForContent(t, panel, attention.SubagentGlyph+"2")
 }

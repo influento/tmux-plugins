@@ -37,6 +37,9 @@ const (
 	// OptCursorStyle, from tmux.conf, colours the panel's cursor row: its
 	// bg and fg, as #rrggbb. Without it, FZF_DEFAULT_OPTS's bg+ and fg+.
 	OptCursorStyle = "@sidebar_cursor_style"
+	// OptRefresh, from tmux.conf, is how often in seconds an open panel
+	// reads its rows again, so the ages move; 0 for never. Default 30.
+	OptRefresh = "@sidebar_refresh"
 	// OptListen is the unix socket a panel's fzf takes actions on: Reload's.
 	OptListen = "@sidebar_listen"
 	// OptReviveSkip keeps the panel out of tmux-revive's saves.

@@ -140,16 +140,19 @@ func (c *Core) Report(ctx context.Context, pane string, l Label) error {
 	if !expired && slices.EqualFunc(old, labels, sameLabel) {
 		return nil
 	}
-	if len(labels) == 0 {
-		_, err = c.Tmux.Run(ctx, "set-option", "-pu", "-t", pane, OptLabels)
+	args := []string{"set-option", "-pu", "-t", pane, OptLabels}
+	if len(labels) > 0 {
+		b, err := json.Marshal(labels)
+		if err != nil {
+			return err
+		}
+		args = []string{"set-option", "-p", "-t", pane, OptLabels, string(b)}
+	}
+	if _, err := c.Tmux.Run(ctx, args...); err != nil {
 		return err
 	}
-	b, err := json.Marshal(labels)
-	if err != nil {
-		return err
-	}
-	_, err = c.Tmux.Run(ctx, "set-option", "-p", "-t", pane, OptLabels, string(b))
-	return err
+	c.changed(ctx)
+	return nil
 }
 
 func sameLabel(a, b Label) bool {

@@ -103,6 +103,9 @@ type Core struct {
 	// without Quiet. It must return at once; the notification waits on its
 	// own (see Notification).
 	Notify func(pane string, s State)
+	// Changed, when set, is called after a pane's flag, reason or labels
+	// change, so the open panels read their rows again.
+	Changed func(ctx context.Context)
 	// Agents are the commands whose idle panes List shows as agents.
 	Agents []string
 	// Marks are the panel's agent marks, by agent name and by command.
@@ -247,8 +250,11 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 		}
 		args := []string{"set-option", "-p", "-t", pane, "@attention_reason", f.Reason}
 		if failed == f.Failed {
-			_, err := c.Tmux.Run(ctx, args...)
-			return cur, false, err
+			if _, err := c.Tmux.Run(ctx, args...); err != nil {
+				return cur, false, err
+			}
+			c.changed(ctx)
+			return cur, false, nil
 		}
 		// The failed mark changed, and with it the window's and the counts.
 		col := c.colours(ctx)
@@ -258,6 +264,7 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 		if err := c.rollUp(ctx, pane, col); err != nil {
 			return cur, false, err
 		}
+		c.changed(ctx)
 		return cur, false, c.Status(ctx)
 	}
 	at := strconv.FormatInt(c.now().Unix(), 10)
@@ -280,6 +287,7 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 	if err := c.rollUp(ctx, pane, col); err != nil {
 		return cur, true, err
 	}
+	c.changed(ctx)
 	if err := c.Status(ctx); err != nil {
 		return cur, true, err
 	}
@@ -312,6 +320,7 @@ func (c *Core) Clear(ctx context.Context, pane string) error {
 	if err := c.rollUp(ctx, pane, c.colours(ctx)); err != nil {
 		return err
 	}
+	c.changed(ctx)
 	return c.Status(ctx)
 }
 
@@ -428,7 +437,17 @@ func (c *Core) Sweep(ctx context.Context) (bool, error) {
 		}
 		dropped = true
 	}
+	if dropped {
+		c.changed(ctx)
+	}
 	return dropped, nil
+}
+
+// changed tells the open panels, through Changed, that rows changed.
+func (c *Core) changed(ctx context.Context) {
+	if c.Changed != nil {
+		c.Changed(ctx)
+	}
 }
 
 // isGone reports whether a tmux error says only that the target no longer

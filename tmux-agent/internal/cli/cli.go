@@ -201,6 +201,11 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 		LockPath: filepath.Join(store.RuntimeDir(getenv), "lock"),
 		Fill:     a.spawnFill,
 	}
+	a.core.Changed = func(ctx context.Context) {
+		if err := a.reloadPanels(ctx); err != nil {
+			a.logf("reload panels: %v", err)
+		}
+	}
 	a.side = &sidebar.Sidebar{
 		Tmux:     a.tmux,
 		LockPath: filepath.Join(store.RuntimeDir(getenv), "sidebar.lock"),
@@ -624,6 +629,7 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 	} else {
 		p.Words = attention.QueryWords(strings.Join(args, " "))
 	}
+	a.core.Changed = nil // see pickKey
 	rows, err := a.core.PickRows(ctx, p)
 	if err != nil {
 		return err
@@ -642,6 +648,9 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errUsage
 	}
+	// fzf waits on pick-rows and pick-key: a flag the sweep drops on the
+	// way must not send it a reload it cannot take until they return.
+	a.core.Changed = nil
 	st := ui.ParsePanelState(a.getenv("FZF_HEADER_LABEL"))
 	list := "reload-sync(" + shell.Quote(a.self) + " pick-rows --fzf)"
 	width := ui.PanelWidth - 1
@@ -700,6 +709,42 @@ func clientArgs(client string) []string {
 		return nil
 	}
 	return []string{"-c", client}
+}
+
+// refreshEvery is how often an open panel reads its rows again
+// (sidebar.OptRefresh); a value that is no number of seconds keeps the
+// default, so a typo in tmux.conf does not keep the panel shut.
+func (a *app) refreshEvery(ctx context.Context) (time.Duration, error) {
+	const def = 30 * time.Second
+	v, ok, err := a.tmux.Option(ctx, "-g", "", sidebar.OptRefresh)
+	if err != nil || !ok {
+		return def, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		a.logf("%s: not a number of seconds: %q", sidebar.OptRefresh, v)
+		return def, nil
+	}
+	return time.Duration(n) * time.Second, nil
+}
+
+// tickPanel has the panel's fzf, listening on socket, read its rows again
+// every so often until ctx ends, so the ages move with no other change.
+func (a *app) tickPanel(ctx context.Context, socket, client string, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			if err := ui.Reload(rctx, socket, shell.Quote(a.self), client); err != nil {
+				a.logf("tick panel: %v", err)
+			}
+			cancel()
+		}
+	}
 }
 
 // listen names the socket the panel's fzf in pane takes reloads on, and
@@ -764,10 +809,23 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 			return err
 		}
 	}
+	stopTick := func() {}
+	if listen != "" {
+		every, err := a.refreshEvery(ctx)
+		if err != nil {
+			return err
+		}
+		if every > 0 {
+			var tick context.Context
+			tick, stopTick = context.WithCancel(context.WithoutCancel(ctx))
+			go a.tickPanel(tick, listen, client, every)
+		}
+	}
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
 		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width,
 		Cursor: cursor, Listen: listen})
+	stopTick()
 	if listen != "" {
 		_ = os.Remove(listen) // fzf is gone; the panel may be too, so no tmux call
 	}
@@ -894,11 +952,16 @@ func (a *app) sidebar(ctx context.Context, args []string) error {
 	case action == "keep" && len(rest) == 0:
 		return a.side.Keep(ctx)
 	case action == "reload" && len(rest) == 0:
-		return a.side.Reload(ctx, func(ctx context.Context, client, socket string) error {
-			return ui.Reload(ctx, socket, shell.Quote(a.self), client)
-		})
+		return a.reloadPanels(ctx)
 	}
 	return errUsage
+}
+
+// reloadPanels tells every open panel to read its rows again.
+func (a *app) reloadPanels(ctx context.Context) error {
+	return a.side.Reload(ctx, func(ctx context.Context, client, socket string) error {
+		return ui.Reload(ctx, socket, shell.Quote(a.self), client)
+	})
 }
 
 // seenOn marks the pane the client shows seen, as a select hook would,
