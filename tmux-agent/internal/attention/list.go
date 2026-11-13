@@ -68,6 +68,9 @@ type Row struct {
 	Labels  []Label `json:"labels,omitempty"` // what sources report about the pane
 	// Subagents is how many subagents run beside the pane's agent.
 	Subagents int `json:"subagents,omitempty"`
+	// Nested are the agents that run below the pane's agent, by name,
+	// one entry each (OptNested).
+	Nested []string `json:"nested,omitempty"`
 }
 
 // Humanize renders an age in seconds as 5s, 3m, 2h or 4d.
@@ -111,6 +114,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 		"#{@attention}", "#{@attention_reason}", "#{@attention_at}", "#{pane_current_command}",
 		"#{@attention_gone}", "#{@agent}", "#{pane_title}", "#{@attention_failed}", "#{@attention_idle_at}",
 		"#{" + OptLabels + "}", "#{" + sidebar.OptClient + "}", "#{" + OptSubagents + "}",
+		"#{" + OptNested + "}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -119,7 +123,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 16)
+		f := split(l, 17)
 		if skip(f[0]) || f[14] != "" { // the panel is no row of its own
 			continue
 		}
@@ -128,6 +132,7 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 			State: f[4], Reason: f[5], Command: f[7], Gone: f[8], Agent: f[9], Title: f[10],
 			Failed: f[4] == string(Done) && f[11] == "1",
 			Labels: ParseLabels(f[13], now), Subagents: len(strings.Fields(f[15])),
+			Nested: strings.Fields(f[16]),
 		}
 		r.At, _ = strconv.ParseInt(f[6], 10, 64) // unset or garbled: no age
 		r.IsAgent = c.isAgent(r.Command, r.Agent)

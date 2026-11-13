@@ -22,6 +22,12 @@ const OptLabels = "@labels"
 // it; the panel shows how many.
 const OptSubagents = "@agent_subagents"
 
+// OptNested is the pane option that lists, by name and space-separated,
+// the agent processes that run below the pane's agent without being its
+// subagents: a script of claude -p runs it started, say. The agent layer
+// keeps it; the panel shows how many, with each agent's mark.
+const OptNested = "@agent_nested"
+
 // Label is what one source (a tool, or tmux-agent itself) says about a
 // pane: a short text the panel shows on the row's second line, and tokens
 // for tools to read. The core knows no source and no token.

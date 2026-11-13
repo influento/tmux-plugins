@@ -345,13 +345,17 @@ func (a *app) hook(args []string, stdin io.Reader) (code int) {
 	return 0
 }
 
-// sweepAgents ends the sessions of agents gone without a word, and clears
-// the flags of turns the user cut short: no hook reports either.
+// sweepAgents ends the sessions of agents gone without a word, clears the
+// flags of turns the user cut short, and counts the agents each agent
+// started: no hook reports any of these.
 func (a *app) sweepAgents(ctx context.Context) error {
 	if err := a.env.SweepAgents(ctx); err != nil {
 		return err
 	}
-	return a.env.SweepTurns(ctx)
+	if err := a.env.SweepTurns(ctx); err != nil {
+		return err
+	}
+	return a.env.SweepNested(ctx)
 }
 
 // pane is the pane a command is about: the one given, else the caller's.
@@ -630,6 +634,10 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 		p.Words = attention.QueryWords(strings.Join(args, " "))
 	}
 	a.core.Changed = nil // see pickKey
+	// Each reload counts the runs again: they start and end without a hook.
+	if err := a.env.SweepNested(ctx); err != nil {
+		a.logf("pick-rows: %v", err)
+	}
 	rows, err := a.core.PickRows(ctx, p)
 	if err != nil {
 		return err

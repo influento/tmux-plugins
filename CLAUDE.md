@@ -237,6 +237,14 @@ Rules:
   finished or stopped, then reads the history; `tmux-init` spawns
   `subagents scan`, the pass over every session's files. A complete record
   is never read again. A subagent's own events never move the git label.
+- Nested runs: agents an agent starts outside its subagents (a script of
+  `claude -p` runs in a background shell) send hooks tmux-agent drops, so
+  the process tree tells: the agent processes below the pane's agent with
+  no agent between, by name, in `@agent_nested`; the panel shows each
+  kind's mark and count after ⑂ (`✳6`). A turn that ends while they run
+  stays working, held (`@agent_held`); the agent's next turn drops the
+  hold, and the sweep (also each panel reload) ends the held turn when the
+  last run ends.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
 - `popup` waits until the user closes the popup, with no timeout; `pick`

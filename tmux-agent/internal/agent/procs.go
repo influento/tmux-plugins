@@ -119,6 +119,50 @@ func hasAgentBelow(pid int, names []string, tree map[int][]proc) bool {
 	return false
 }
 
+// agentName is the name of the agent process p: its process name, or for
+// a script run by an interpreter, its program's.
+func agentName(p proc, names []string) string {
+	if slices.Contains(names, p.comm) || len(p.argv) < 2 {
+		return p.comm
+	}
+	return filepath.Base(p.argv[1])
+}
+
+// nestedAgents returns, sorted by name, the agent processes below the
+// pane's agent: the first agent process at or below pid. Only those with
+// no other agent process between them and it count; what runs inside one
+// of them is its own.
+func nestedAgents(pid int, names []string, tree map[int][]proc) []string {
+	top := 0
+	if p, err := readProc(pid); err == nil && isAgentProc(p, names) {
+		top = pid
+	}
+	for queue := []int{pid}; top == 0 && len(queue) > 0; queue = queue[1:] {
+		for _, c := range tree[queue[0]] {
+			if isAgentProc(c, names) {
+				top = c.pid
+				break
+			}
+			queue = append(queue, c.pid)
+		}
+	}
+	if top == 0 {
+		return nil
+	}
+	var runs []string
+	for queue := []int{top}; len(queue) > 0; queue = queue[1:] {
+		for _, c := range tree[queue[0]] {
+			if isAgentProc(c, names) {
+				runs = append(runs, agentName(c, names))
+				continue
+			}
+			queue = append(queue, c.pid)
+		}
+	}
+	slices.Sort(runs)
+	return runs
+}
+
 // processTree reads every process and maps each pid to its children; nil
 // when the process table cannot be read.
 func processTree() map[int][]proc {

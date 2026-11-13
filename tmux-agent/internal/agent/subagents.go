@@ -74,9 +74,7 @@ func (e *Env) setRunning(ctx context.Context, ids []string) error {
 	if err := e.paneOpts(ctx, map[string]string{attention.OptSubagents: strings.Join(ids, " ")}); err != nil {
 		return err
 	}
-	if e.Core.Changed != nil {
-		e.Core.Changed(ctx)
-	}
+	e.changed(ctx)
 	return nil
 }
 

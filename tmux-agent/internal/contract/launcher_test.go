@@ -44,6 +44,9 @@ var agents = []string{"claude", "fakeagent"}
 //	die     kill itself with $STUB_SIG (TERM by default)
 //	nested  run $STUB_INNER as a tool call would, with $STUB_INNER_HOOK as
 //	        its hooks, then wait
+//	spawn   start $STUB_INNER in the background as a script would, in
+//	        mode wait with tag inner, send $STUB_LATE_HOOK once it is
+//	        ready, then wait; $STUB_DIR/inner.release ends it alone
 //
 // It waits on a FIFO, not with sleep, so the terminal's signals reach no
 // child of its own.
@@ -62,7 +65,7 @@ fi
 mkfifo "$d/$tag.fifo"
 exec {nap}<> "$d/$tag.fifo"
 wait_release() {
-  until [[ -e $d/release ]]; do read -r -t 0.02 -u "$nap" _ || true; done
+  until [[ -e $d/release || -e $d/$tag.release ]]; do read -r -t 0.02 -u "$nap" _ || true; done
 }
 # The traps come before the pid, the sign of ready: a Ctrl-C that arrives
 # while bash waits for mv, and mv exits normally, bash otherwise ignores.
@@ -99,6 +102,15 @@ case ${STUB_MODE:-exit} in
   nested)
     STUB_TAG=inner STUB_MODE=exit STUB_HOOK=${STUB_INNER_HOOK:-} $STUB_INNER
     echo "$?" > "$d/inner.rc"
+    wait_release
+    ;;
+  spawn)
+    STUB_TAG=inner STUB_MODE=wait STUB_HOOK= $STUB_INNER &
+    until [[ -e $d/inner.pid ]]; do read -r -t 0.02 -u "$nap" _ || true; done
+    while IFS= read -r line; do
+      tmux-agent hook claude <<< "$line"
+    done < "$STUB_LATE_HOOK"
+    echo sent > "$d/late.sent"
     wait_release
     ;;
 esac
@@ -656,6 +668,37 @@ func TestRunNestedAgent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A turn that ends while agents the agent started run below it (a script
+// of claude -p runs, as a background shell) leaves the pane working, with
+// the runs on the pane; when the last one ends, the turn is done.
+func TestRunNestedRunsHoldTheTurn(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	start := e.hooks(t, "start.jsonl",
+		hookEvent("SessionStart", sessionA, "source", "startup", "cwd", e.Home),
+		hookEvent("UserPromptSubmit", sessionA, "prompt", "run the tests"))
+	stop := e.hooks(t, "stop.jsonl", hookEvent("Stop", sessionA))
+	e.launch(t, "rc", fmt.Sprintf("STUB_MODE=spawn STUB_HOOK=%s STUB_LATE_HOOK=%s STUB_INNER=%s tmux-agent run claude",
+		shellQuote(start), shellQuote(stop), shellQuote("claude -p inner")))
+	e.file(t, "late.sent")
+	e.wantFlag(t, "working", "")
+	e.wantOpt(t, "@agent_nested", "claude")
+
+	if err := os.WriteFile(filepath.Join(e.dir, "inner.release"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmuxtest.WaitFor(t, 10*time.Second, "the turn to end with the run", func() bool {
+		if out, err := e.Command(t, e.pane, "tmux-agent", "status").CombinedOutput(); err != nil {
+			t.Fatalf("tmux-agent status: %v: %s", err, out)
+		}
+		return e.opt(t, "@attention") == "done"
+	})
+	e.wantFlag(t, "done", "turn ended")
+	e.wantOpt(t, "@agent_nested", "")
+	e.release(t)
+	e.number(t, "rc")
 }
 
 // --resume names the session the run resumes, so its start brings back what

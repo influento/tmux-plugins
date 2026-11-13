@@ -226,6 +226,18 @@ func TestRenderSubagentCount(t *testing.T) {
 	if !slices.Contains(state, " ● ✳  build-fix ⑂2            proj-a 3m") {
 		t.Errorf("state view:\n%s", strings.Join(state, "\n"))
 	}
+	// Agents the agent started count apart, each kind by its mark.
+	nested := Row{Target: "proj-a:4.0", Session: "proj-a", Window: "python", State: "working", Rank: 2, Age: "4m",
+		Command: "agent-a", IsAgent: true, Subagents: 1, Nested: []string{"agent-a", "agent-a", "other"}}
+	p.View = TreeView
+	var withRuns []string
+	for _, r := range RenderPickRows([]Row{nested}, []Session{{ID: "$1", Name: "proj-a"}}, p) {
+		withRuns = append(withRuns, escape.ReplaceAllString(r.Display(), ""))
+	}
+	check(t, withRuns, []string{
+		"proj-a",
+		" ● ✳  python ⑂1 ✳2 ◆1                4m",
+	})
 	row := line(" ●", 2, "build-fix", "", "3m", "⑂2", p)
 	if !strings.Contains(row.Text, "\x1b[38;2;137;180;250m⑂2") {
 		t.Errorf("count not in the working colour: %q", row.Text)

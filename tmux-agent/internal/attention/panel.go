@@ -52,13 +52,30 @@ type Panel struct {
 // SubagentGlyph marks a row's count of running subagents.
 const SubagentGlyph = "⑂"
 
-// subagentTag is a row's count of running subagents, as the panel shows
-// it after the name in the working colour; "" for none.
-func subagentTag(r Row) string {
-	if r.Subagents == 0 {
-		return ""
+// runsTag is what runs below a row's agent, as the panel shows it after
+// the name in the working colour: the count of its subagents, then of the
+// agents it started, each kind by its mark (✳6); "" for none.
+func runsTag(r Row, p Panel) string {
+	var parts []string
+	if r.Subagents > 0 {
+		parts = append(parts, SubagentGlyph+strconv.Itoa(r.Subagents))
 	}
-	return SubagentGlyph + strconv.Itoa(r.Subagents)
+	var kinds []string
+	count := map[string]int{}
+	for _, name := range r.Nested {
+		if count[name] == 0 {
+			kinds = append(kinds, name)
+		}
+		count[name]++
+	}
+	for _, name := range kinds {
+		m, ok := p.Marks[name]
+		if !ok {
+			m = DefaultMark
+		}
+		parts = append(parts, m.Glyph+strconv.Itoa(count[name]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // PickRow is one item of the panel: a label (a session's name, a group's
@@ -236,7 +253,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 	var row PickRow
 	if agent {
 		lead := " " + glyphOf(r, p.Col) + " " + markOfWindow(w, p) + " "
-		row = line(lead, leadLen, r.Window, "", rightOf(r, ""), subagentTag(windowAgent(w)), p)
+		row = line(lead, leadLen, r.Window, "", rightOf(r, ""), runsTag(windowAgent(w), p), p)
 	} else {
 		right := ""
 		if r.Command != "" && r.Command != r.Window {
@@ -269,7 +286,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		if pr.Rank < 4 {
 			right = rightOf(pr, "")
 		}
-		row := line(lead, paneLead, pr.Command, dim, right, subagentTag(pr), p)
+		row := line(lead, paneLead, pr.Command, dim, right, runsTag(pr, p), p)
 		row.Labels = shownLabels(pr)
 		target := w.target() + "." + strconv.Itoa(pn.index)
 		row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, target, target
@@ -315,7 +332,7 @@ func renderState(rows []Row, p Panel) []PickRow {
 				continue
 			}
 			lead := " " + glyphOf(r, p.Col) + " " + markOf(r, p) + " "
-			row := line(lead, leadLen, r.Window, "", rightOf(r, r.Session), subagentTag(r), p)
+			row := line(lead, leadLen, r.Window, "", rightOf(r, r.Session), runsTag(r, p), p)
 			row.Session, row.Window, row.Target, row.Kill = r.Session, r.Window, "="+r.Target, "="+r.Target
 			row.Labels = shownLabels(r)
 			body = append(body, row)
@@ -408,11 +425,11 @@ func rightOf(r Row, session string) string {
 	return tail
 }
 
-// windowAgent is the row of the window's pane whose subagents the
-// window's row counts: the best one with any.
+// windowAgent is the row of the window's pane whose runs the window's row
+// counts: the best one with any.
 func windowAgent(w *window) Row {
 	for _, pn := range w.panes {
-		if pn.row.Subagents > 0 {
+		if pn.row.Subagents > 0 || len(pn.row.Nested) > 0 {
 			return pn.row
 		}
 	}
