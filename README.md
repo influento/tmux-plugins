@@ -26,6 +26,12 @@ report`) and a jump key, desktop notifications. Agents start
 through one launcher; Claude Code is the first integration.
 `tmux-agent --help` lists the subcommands.
 
+Tools start agents in windows of their own and close them through
+tmux-agent, not tmux: `tmux-agent start --name NAME --cwd DIR -- claude
+ARGS` opens the window in the background and returns once the agent's
+session started (exit 3 when a window NAME is open), and `tmux-agent close
+NAME` closes it. Their `--json` output carries a `version` field.
+
 The panel is a tmux pane at the left edge, full height, 40 columns, that
 follows its client to every window and session; the same key closes it.
 `tmux-agent tmux-init` sets its hooks. These keys move the panel and switch

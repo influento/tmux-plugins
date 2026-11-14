@@ -68,6 +68,14 @@ func (c *Client) Interactive(ctx context.Context, args ...string) (string, error
 	return c.run(ctx, args)
 }
 
+// WaitFor waits until another command signals the wait-for channel, or
+// until ctx ends; it has no timeout of its own. A signal that came before
+// the wait counts: tmux keeps it until a waiter takes it.
+func (c *Client) WaitFor(ctx context.Context, channel string) error {
+	_, err := c.run(ctx, []string{"wait-for", channel})
+	return err
+}
+
 func (c *Client) run(ctx context.Context, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "tmux", c.argv(args)...)
 	cmd.Env = c.Env

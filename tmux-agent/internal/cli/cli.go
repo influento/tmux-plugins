@@ -36,6 +36,17 @@ import (
 
 const usage = `usage:
   tmux-agent run AGENT [ARGS...]       start an agent through the launcher
+  tmux-agent start [--name NAME] [--cwd DIR] [--session NAME] [--focus] [--timeout 30s]
+                   [--json] [--] AGENT [ARGS...]
+                                       open a window (in the caller's session, in the
+                                       background unless --focus) that runs the agent
+                                       through the launcher, then a login shell; return
+                                       once the agent's session started. Prints the
+                                       pane, or with --json the pane, window, session
+                                       and the agent's session. Exit 3: a window NAME
+                                       is open already
+  tmux-agent close [--json] NAME...    close every window with one of the names, in
+                                       any session, the caller's own last; prints each
   tmux-agent revive AGENT SESSION      resume a session through the launcher, as a
                                        restore types it; nothing when it is gone
   tmux-agent hook AGENT                handle one hook event (JSON on stdin)
@@ -161,6 +172,8 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 		}
 		a.env.Log = a.logf // the terminal belongs to the agent
 		return a.env.Launch(a.reg.Get(rest[0]), rest[1:], self, stderr)
+	case "start":
+		return a.start(rest)
 	case "revive":
 		if len(rest) != 2 {
 			fmt.Fprint(stderr, usage)
@@ -611,6 +624,8 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 			return err
 		}
 		return a.core.KillSession(ctx, args[0])
+	case "close":
+		return a.closeWindows(ctx, args)
 	case "kill":
 		if len(args) != 1 {
 			return errUsage

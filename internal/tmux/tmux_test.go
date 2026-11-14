@@ -268,3 +268,31 @@ func TestCommandUsesSandboxPath(t *testing.T) {
 		t.Fatal("the test process found the stub on its own PATH")
 	}
 }
+
+// A wait outlives the client's timeout, takes a signal sent before it, and
+// ends with its context.
+func TestWaitFor(t *testing.T) {
+	srv := tmuxtest.Start(t, tmuxtest.Options{})
+	c := *srv.Client
+	c.Timeout = 50 * time.Millisecond
+	ctx := context.Background()
+
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = srv.Tmux("wait-for", "-S", "ch-a")
+	}()
+	if err := c.WaitFor(ctx, "ch-a"); err != nil {
+		t.Fatalf("signalled later: %v", err)
+	}
+
+	srv.MustTmux(t, "wait-for", "-S", "ch-b")
+	if err := c.WaitFor(ctx, "ch-b"); err != nil {
+		t.Fatalf("signalled before: %v", err)
+	}
+
+	short, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if err := c.WaitFor(short, "ch-c"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("never signalled: %v, want the context's deadline", err)
+	}
+}

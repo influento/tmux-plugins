@@ -30,6 +30,7 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 	path, err := exec.LookPath(a.Command())
 	if err != nil {
 		fmt.Fprintf(stderr, "tmux-agent: %v\n", err)
+		e.signalStartNow()
 		return 127
 	}
 	argv := append([]string{a.Command()}, args...)
@@ -202,6 +203,12 @@ func (e *Env) register(a Agent, args []string, oneShot bool) {
 		optSession: "", optTranscript: "", optCwd: "", optState: "", optReason: "", optWait: "", optWaitBy: "", OptRevive: "",
 		attention.OptSubagents: "", attention.OptNested: "", optHeld: "", attention.OptContext: "",
 	}
+	channel := e.startChannel()
+	if _, hooks := a.(HookReader); hooks {
+		opts[OptStarting] = channel // the session's start signals it
+	} else {
+		defer e.signalStart(ctx, channel) // no hook tells more than this
+	}
 	if err := e.paneOpts(ctx, opts); err != nil {
 		e.logf("register run: %v", err)
 		return
@@ -227,6 +234,9 @@ func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
 	if err != nil || l.run != strconv.Itoa(os.Getpid()) {
 		return // the pane is gone, or another run took it
 	}
+	// A start still waiting learns that the run ended, once the pane says
+	// how.
+	defer e.signalStart(ctx, l.starting)
 	var flagErr error
 	switch {
 	case killed:

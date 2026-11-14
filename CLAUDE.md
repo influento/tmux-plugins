@@ -258,6 +258,18 @@ Rules:
   kind's mark and count after ⑂ (`✳6`). A turn that ends while they run
   stays working, held (`@agent_held`); the agent's next turn drops the
   hold, and the watcher ends the held turn when the last run ends.
+- `start` and `close` (step 5) are the contract for tools such as
+  workbench, which then call no tmux for agent windows; their JSON has
+  `version` (`contractVersion`). `start` opens a window that runs
+  `tmux-agent run`, then a login shell, and waits on a tmux `wait-for`
+  channel it names in the window's environment (`TMUX_AGENT_START`). The
+  launcher keeps it in `@agent_starting` before the agent starts, and
+  leaves it out of the agent's environment; the hook of the session's
+  start signals it, the launcher itself for an agent with no hooks, and
+  the run's end or a missing program too, so start never waits out its
+  timeout for an agent that is gone. A name in use is exit 3. `close`
+  matches window names in every session and closes the caller's own
+  window last, through the panel's kill.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
 - `popup` waits until the user closes the popup, with no timeout; `pick`
@@ -506,7 +518,8 @@ a release has it, run `make test` against it.
   exceptions are tmux-warp's label `command-prompt`, which holds its client
   until answered and is started without waiting, and tmux-agent's
   `display-popup -E`, which runs through `Client.Interactive` and waits
-  until the user closes the popup. `Option` returns ok=false
+  until the user closes the popup, and `Client.WaitFor` (`wait-for`), which
+  ends with its context. `Option` returns ok=false
   only for an unset `@option`; any other failure is an error. An argument
   that ends in `;` is escaped, since tmux reads it as a command separator;
   only a lone `;` separates commands. tmux 3.8 refuses a command line over

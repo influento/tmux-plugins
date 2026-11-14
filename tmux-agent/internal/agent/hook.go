@@ -134,6 +134,7 @@ type live struct {
 	held                                                                bool
 	panePid                                                             int
 	run, oneShot, resume, revive, context                               string
+	starting                                                            string // the channel of a start that waits
 	flag                                                                attention.State
 	autoRename                                                          bool
 	windowName, title                                                   string
@@ -146,7 +147,7 @@ var liveFormat = strings.Join([]string{
 	"#{@attention}", "#{automatic-rename}", "#{window_name}", "#{" + OptTitle + "}",
 	"#{" + optWaitBy + "}", "#{" + attention.OptSubagents + "}",
 	"#{" + attention.OptNested + "}", "#{" + optHeld + "}", "#{pane_pid}",
-	"#{" + attention.OptContext + "}",
+	"#{" + attention.OptContext + "}", "#{" + OptStarting + "}",
 }, "\x1f")
 
 func (e *Env) readLive(ctx context.Context) (live, error) { return e.liveOf(ctx, e.Pane) }
@@ -156,8 +157,8 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 	if err != nil {
 		return live{}, err
 	}
-	f := strings.SplitN(out, "\x1f", 22)
-	for len(f) < 22 {
+	f := strings.SplitN(out, "\x1f", 23)
+	for len(f) < 23 {
 		f = append(f, "")
 	}
 	return live{
@@ -167,6 +168,7 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 		flag: attention.State(f[12]), autoRename: f[13] == "1", windowName: f[14], title: f[15],
 		waitBy: f[16], subagents: strings.Fields(f[17]),
 		nested: strings.Fields(f[18]), held: f[19] == "1", panePid: atoi(f[20]), context: f[21],
+		starting: f[22],
 	}, nil
 }
 
@@ -292,6 +294,11 @@ func (e *Env) Apply(ctx context.Context, a Agent, ev Event) error {
 			return nil
 		}
 		return err
+	}
+	if ev.Kind == SessionStart && l.starting != "" {
+		// The agent is ready: the start that waits on it reads the pane
+		// once this event is applied.
+		defer e.signalStart(ctx, l.starting)
 	}
 	if e.ownRun(l) && l.oneShot == "1" {
 		return e.oneShot(ctx, a, ev, l)
@@ -655,12 +662,13 @@ func RunFromEnv(getenv func(string) string) int {
 	return n
 }
 
-// runEnv is the environment for the agent: the caller's, with the run set.
+// runEnv is the environment for the agent: the caller's, with the run set
+// and a start's channel left out, which only the launcher answers.
 func runEnv(pid int) []string {
 	env := os.Environ()
 	out := env[:0:0]
 	for _, kv := range env {
-		if !strings.HasPrefix(kv, "TMUX_AGENT_RUN=") {
+		if !strings.HasPrefix(kv, "TMUX_AGENT_RUN=") && !strings.HasPrefix(kv, StartEnv+"=") {
 			out = append(out, kv)
 		}
 	}
