@@ -64,6 +64,31 @@ type Interrupter interface {
 	Interrupted(transcript string) (at time.Time, ok bool)
 }
 
+// ContextGauge reads how full the agent's context is: the tokens its last
+// model call held, and the limit they count against. Both are read again
+// each time, so a changed setting shows at the next turn end. ok is false
+// before the first model call. cwd is the session's folder now; start, when
+// known, the folder the agent process started in, for a reader whose
+// environment is not the agent's (a watcher).
+type ContextGauge interface {
+	Context(transcript, cwd, start string, getenv func(string) string) (used, limit int64, ok bool)
+}
+
+// FileWatcher names the files and folders of the agent's own that the
+// watcher follows for the session whose transcript is given, beside the
+// transcript: a subagent's files, say. A path that does not exist yet is
+// followed once it does.
+type FileWatcher interface {
+	WatchedFiles(transcript string) []string
+}
+
+// SubagentEnder tells from the agent's files, without reading a history,
+// how a subagent ended; "" while it runs. A subagent the user stops sends
+// no hook, so only its files tell.
+type SubagentEnder interface {
+	SubagentEnded(transcript, id string) Outcome
+}
+
 // SubagentReader reads a session's subagents from the agent's own files,
 // which hold more than its hooks: the result, the tokens, how each ended.
 // The files can be large, so they are read outside the hook, after the
@@ -191,6 +216,7 @@ const (
 	SessionEnd         // the session ended
 	SubagentStart      // a subagent started
 	SubagentEnd        // a subagent ended
+	Compacted          // the agent compacted its context
 )
 
 // End is how a session ended.

@@ -22,6 +22,8 @@ type Head struct {
 	// Worktree is true for a linked worktree (git worktree add), false
 	// for a repository's main checkout.
 	Worktree bool
+	// Dir is the checkout's git folder, the one that holds its HEAD.
+	Dir string
 }
 
 // Timeout bounds each git call.
@@ -43,7 +45,7 @@ func HeadOf(ctx context.Context, dir string) (Head, error) {
 	if len(f) != 3 {
 		return Head{}, ErrNotARepo
 	}
-	h := Head{Worktree: filepath.Clean(f[0]) != filepath.Clean(f[1])}
+	h := Head{Worktree: filepath.Clean(f[0]) != filepath.Clean(f[1]), Dir: filepath.Clean(f[0])}
 	if b, ok := strings.CutPrefix(f[2], "refs/heads/"); ok {
 		h.Branch = b
 		return h, nil

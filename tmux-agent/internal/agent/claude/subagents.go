@@ -76,6 +76,31 @@ func (Claude) SubagentSessions(getenv func(string) string) ([]agent.SessionFiles
 	return out, nil
 }
 
+// WatchedFiles are the session's subagent files: their meta files say
+// when one ends.
+func (Claude) WatchedFiles(transcript string) []string {
+	return []string{subagentsDir(transcript)}
+}
+
+// SubagentEnded reads how a subagent ended from its meta file alone.
+func (Claude) SubagentEnded(transcript, id string) agent.Outcome {
+	data, err := os.ReadFile(filepath.Join(subagentsDir(transcript), "agent-"+id+".meta.json"))
+	if err != nil {
+		return ""
+	}
+	var m meta
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	switch {
+	case m.Finished:
+		return agent.OutcomeDone
+	case m.StoppedByUser:
+		return agent.OutcomeStopped
+	}
+	return ""
+}
+
 // meta is a subagent's meta file.
 type meta struct {
 	AgentType     string `json:"agentType"`

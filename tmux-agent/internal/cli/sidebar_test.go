@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
-	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/selftest"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/sidebar"
 )
@@ -134,14 +133,22 @@ func TestPanelShowsFlagChanges(t *testing.T) {
 	})
 }
 
-// An open panel reads its rows again every @sidebar_refresh seconds, so
-// what changes with no hook to tell it (the ages) moves too.
-func TestPanelRefreshes(t *testing.T) {
-	s, origin, panel := openPanel(t, []string{"set-option", "-g", sidebar.OptRefresh, "1"})
-	if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", origin).CombinedOutput(); err != nil {
-		t.Fatalf("tmux-agent flag: %v: %s", err, out)
+// An open panel reads its rows again when what they show changes with no
+// event to tell: an age moves on, a label's time ends.
+func TestPanelTicks(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+			t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+		}
 	}
+	run("flag", "working", "--pane", origin)
 	s.WaitForContent(t, panel, "●") // the flag's own reload is done
-	s.MustTmux(t, "set-option", "-p", "-t", origin, attention.OptSubagents, "a1 a2")
-	s.WaitForContent(t, panel, attention.SubagentGlyph+"2")
+	s.WaitForContent(t, panel, " 3s")
+	run("report", "--source", "probe", "--text", "tick-label", "--ttl", "2s", "--pane", origin)
+	s.WaitForContent(t, panel, "tick-label")
+	tmuxtest.WaitFor(t, 5*time.Second, "the label to go at its time", func() bool {
+		return !strings.Contains(s.MustTmux(t, "capture-pane", "-p", "-t", panel), "tick-label")
+	})
 }

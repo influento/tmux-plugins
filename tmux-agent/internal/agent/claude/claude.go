@@ -7,7 +7,8 @@
 // done here:
 //
 //	event                                    neutral event
-//	SessionStart (source compact: dropped)   session start; resume for source resume
+//	SessionStart                             session start; resume for source
+//	                                         resume; compacted for source compact
 //	UserPromptSubmit, PreToolUse, PostToolUse working
 //	PreToolUse AskUserQuestion               needs input  "question: …"
 //	PermissionRequest                        needs input  "Bash(…)", "Edit(file)"
@@ -46,13 +47,16 @@ import (
 type Claude struct{}
 
 var (
-	_ agent.Agent        = Claude{}
-	_ agent.HookReader   = Claude{}
-	_ agent.OneShotter   = Claude{}
-	_ agent.Resumer      = Claude{}
-	_ agent.ProcessNamer = Claude{}
-	_ agent.Titler       = Claude{}
-	_ agent.Interrupter  = Claude{}
+	_ agent.Agent         = Claude{}
+	_ agent.HookReader    = Claude{}
+	_ agent.OneShotter    = Claude{}
+	_ agent.Resumer       = Claude{}
+	_ agent.ProcessNamer  = Claude{}
+	_ agent.Titler        = Claude{}
+	_ agent.Interrupter   = Claude{}
+	_ agent.ContextGauge  = Claude{}
+	_ agent.FileWatcher   = Claude{}
+	_ agent.SubagentEnder = Claude{}
 )
 
 // Name is the registry name.
@@ -145,9 +149,10 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 	case "SessionStart":
 		source := f.str("source")
 		if source == "compact" {
-			// Compaction restarts the session mid-turn; nothing changed
-			// for the pane.
-			return agent.Event{}, false, nil
+			// Compaction restarts the session, mid-turn or at /compact:
+			// only the context changed.
+			ev.Kind = agent.Compacted
+			break
 		}
 		ev.Kind, ev.Resume = agent.SessionStart, source == "resume"
 	case "SessionEnd":

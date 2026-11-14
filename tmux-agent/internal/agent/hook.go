@@ -40,12 +40,18 @@ type Env struct {
 	Now func() time.Time
 	// Git reads a folder's checkout; git.HeadOf when nil.
 	Git func(ctx context.Context, dir string) (git.Head, error)
+	// Getenv reads the agent's environment, for its settings; os.Getenv
+	// when nil.
+	Getenv func(string) string
 	// Log receives errors that must not reach the agent; none when nil.
 	Log func(format string, args ...any)
 	// Fill starts, in the background, the read of the agent's files for
 	// the subagents of the session that ended (ScanSubagents); none when
 	// nil. The files can be large, so the hook never reads them itself.
 	Fill func(a Agent, sf SessionFiles, ids []string)
+	// Watcher starts, in the background, a watcher (Watch) for the agent
+	// in pane, process pid, which runs without one; none when nil.
+	Watcher func(a Agent, pane string, pid int)
 }
 
 func (e *Env) now() time.Time {
@@ -121,7 +127,7 @@ type live struct {
 	subagents, nested                                                   []string
 	held                                                                bool
 	panePid                                                             int
-	run, oneShot, resume, revive                                        string
+	run, oneShot, resume, revive, context                               string
 	flag                                                                attention.State
 	autoRename                                                          bool
 	windowName, title                                                   string
@@ -134,6 +140,7 @@ var liveFormat = strings.Join([]string{
 	"#{@attention}", "#{automatic-rename}", "#{window_name}", "#{" + OptTitle + "}",
 	"#{" + optWaitBy + "}", "#{" + attention.OptSubagents + "}",
 	"#{" + attention.OptNested + "}", "#{" + optHeld + "}", "#{pane_pid}",
+	"#{" + attention.OptContext + "}",
 }, "\x1f")
 
 func (e *Env) readLive(ctx context.Context) (live, error) { return e.liveOf(ctx, e.Pane) }
@@ -143,8 +150,8 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 	if err != nil {
 		return live{}, err
 	}
-	f := strings.SplitN(out, "\x1f", 21)
-	for len(f) < 21 {
+	f := strings.SplitN(out, "\x1f", 22)
+	for len(f) < 22 {
 		f = append(f, "")
 	}
 	return live{
@@ -153,7 +160,7 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 		run: f[8], oneShot: f[9], resume: f[10], revive: f[11],
 		flag: attention.State(f[12]), autoRename: f[13] == "1", windowName: f[14], title: f[15],
 		waitBy: f[16], subagents: strings.Fields(f[17]),
-		nested: strings.Fields(f[18]), held: f[19] == "1", panePid: atoi(f[20]),
+		nested: strings.Fields(f[18]), held: f[19] == "1", panePid: atoi(f[20]), context: f[21],
 	}, nil
 }
 
@@ -223,10 +230,43 @@ func (e *Env) Hook(ctx context.Context, a Agent, payload []byte) error {
 		nested = NestedHook
 	}
 	if nested(e.Registry.ProcessNames(), e.Run) {
+		// A run the agent started: its watcher counts the runs again.
+		e.wake(e.Pane, wakeScan)
 		return nil
 	}
+	err = e.applyLocked(ctx, a, ev)
+	e.keepWatched(a, ev)
+	return err
+}
+
+func (e *Env) applyLocked(ctx context.Context, a Agent, ev Event) error {
 	defer e.lock(ctx)()
 	return e.Apply(ctx, a, ev)
+}
+
+// keepWatched tells the pane's watcher about an event that may change what
+// it follows (a new session's transcript, a subagent's files, runs started
+// during a turn), or starts a watcher when the pane has none: an agent run
+// without the launcher, or one started before tmux-agent had watchers. A
+// one-turn run gets none.
+func (e *Env) keepWatched(a Agent, ev Event) {
+	word := wakePing
+	switch ev.Kind {
+	case SessionEnd:
+		return
+	case SessionStart, SubagentStart, TurnEnd, Compacted:
+		word = wakeScan
+	}
+	if e.wake(e.Pane, word) || e.Watcher == nil {
+		return
+	}
+	names := e.Registry.ProcessNames()
+	if OneShotHook(a, names, e.Run) {
+		return
+	}
+	if pid := nearestAgentPid(os.Getppid(), names); pid > 0 {
+		e.Watcher(a, e.Pane, pid)
+	}
 }
 
 // Apply does what a neutral event means for the pane. The caller holds the
@@ -251,9 +291,11 @@ func (e *Env) Apply(ctx context.Context, a Agent, ev Event) error {
 		if err := e.start(ctx, a, ev, l); err != nil {
 			return err
 		}
-		return e.place(ctx, a, ev, l, ev.SessionID)
+		return e.refresh(ctx, a, ev, l, ev.SessionID)
 	case SessionEnd:
 		return e.end(ctx, a, ev, l)
+	case Compacted:
+		return e.refresh(ctx, a, ev, l, l.session)
 	}
 	session := l.session
 	if ev.SessionID != "" && ev.SessionID != l.session {
@@ -285,7 +327,7 @@ func (e *Env) Apply(ctx context.Context, a Agent, ev Event) error {
 	if err != nil {
 		return err
 	}
-	return e.place(ctx, a, ev, l, session)
+	return e.refresh(ctx, a, ev, l, session)
 }
 
 // adopt makes the event's session the pane's.
@@ -457,12 +499,19 @@ func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session st
 	if err := e.markTurnEnd(ctx, a, ev, l, session); err != nil {
 		return err
 	}
+	return e.retitle(ctx, a, or(ev.Transcript, l.transcript), l, session)
+}
+
+// retitle names the pane's window from its agent's transcript while tmux
+// still names it, or replaces a stand-in title this pane's agent gave with
+// the agent's own. The caller holds the lock.
+func (e *Env) retitle(ctx context.Context, a Agent, transcript string, l live, session string) error {
 	t, ok := a.(Titler)
 	ours := l.named != "" && l.title == l.named && l.windowName == l.named
 	if !ok || (!l.autoRename && !ours) {
 		return nil
 	}
-	title, sure := t.Title(or(ev.Transcript, l.transcript))
+	title, sure := t.Title(transcript)
 	if title == "" || (!l.autoRename && (!sure || title == l.named)) {
 		return nil
 	}
@@ -525,7 +574,7 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
 		return err
 	}
-	opts := map[string]string{optNamed: "", attention.OptSubagents: "", attention.OptNested: "", optHeld: ""}
+	opts := map[string]string{optNamed: "", attention.OptSubagents: "", attention.OptNested: "", optHeld: "", attention.OptContext: ""}
 	if ev.End == EndExited {
 		for _, o := range sessionOpts {
 			opts[o] = ""
@@ -543,7 +592,7 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 
 // sessionOpts are the pane options that name the pane's session; they go
 // when the session ends for good.
-var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive, attention.OptSubagents, attention.OptNested, optHeld}
+var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive, attention.OptSubagents, attention.OptNested, optHeld, attention.OptContext}
 
 // releaseTitle gives the window of pane back to tmux when its name is
 // still the title the pane's agent set.

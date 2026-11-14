@@ -433,8 +433,8 @@ func TestPanelStyles(t *testing.T) {
 }
 
 // seenBySaves runs every tmux call of the sidebar, then lists the panes
-// as a save from another client would see them between two calls: the
-// panes without @revive_skip.
+// as a hook's process (a save, the border count) would see them between
+// two calls: the panes without @revive_skip or without @sidebar_client.
 type seenBySaves struct {
 	sidebar.Tmux
 	t     *testing.T
@@ -443,7 +443,7 @@ type seenBySaves struct {
 }
 
 func (o *seenBySaves) look() {
-	o.marks = append(o.marks, o.s.MustTmux(o.t, "list-panes", "-a", "-f", "#{?#{"+sidebar.OptReviveSkip+"},0,1}", "-F", "#{pane_id}"))
+	o.marks = append(o.marks, o.s.MustTmux(o.t, "list-panes", "-a", "-f", "#{?#{&&:#{"+sidebar.OptReviveSkip+"},#{"+sidebar.OptClient+"}},0,1}", "-F", "#{pane_id}"))
 }
 
 func (o *seenBySaves) Run(ctx context.Context, args ...string) (string, error) {
@@ -456,9 +456,11 @@ func (o *seenBySaves) Output(ctx context.Context, args ...string) (string, error
 	return o.Tmux.Output(ctx, args...)
 }
 
-// tmux-revive saves in the background after every split, so a save can
-// land between any two tmux calls the sidebar makes: the panel is never
-// there without @revive_skip, or a save keeps it as a pane of its window.
+// tmux-revive saves, and tmux-agent counts a window's panes for its border
+// line, in the background after every split, so either can land between
+// any two tmux calls the sidebar makes. The panel is never there unmarked:
+// without @revive_skip a save keeps it as a pane of its window, without
+// @sidebar_client the border line turns on.
 func TestPanelHiddenFromSaves(t *testing.T) {
 	e := newEnv(t)
 	seen := &seenBySaves{Tmux: e.side.Tmux, t: t, s: e.Server}
@@ -470,7 +472,7 @@ func TestPanelHiddenFromSaves(t *testing.T) {
 	}
 	for i, unmarked := range seen.marks {
 		if slices.Contains(strings.Fields(unmarked), p) {
-			t.Errorf("after tmux call %d of %d the panel %s has no @revive_skip", i+1, len(seen.marks), p)
+			t.Errorf("after tmux call %d of %d the panel %s lacks @revive_skip or @sidebar_client", i+1, len(seen.marks), p)
 		}
 	}
 }

@@ -37,9 +37,6 @@ const (
 	// OptCursorStyle, from tmux.conf, colours the panel's cursor row: its
 	// bg and fg, as #rrggbb. Without it, FZF_DEFAULT_OPTS's bg+ and fg+.
 	OptCursorStyle = "@sidebar_cursor_style"
-	// OptRefresh, from tmux.conf, is how often in seconds an open panel
-	// reads its rows again, so the ages move; 0 for never. Default 30.
-	OptRefresh = "@sidebar_refresh"
 	// OptListen is the unix socket a panel's fzf takes actions on: Reload's.
 	OptListen = "@sidebar_listen"
 	// OptReviveSkip keeps the panel out of tmux-revive's saves.
@@ -327,18 +324,19 @@ func (s *Sidebar) open(ctx context.Context, clientName, origin string) error {
 		return err
 	}
 	width := s.widthIn(w.width)
-	// The split marks the panel in the same command: tmux-revive's hooks
-	// save in the background, and a save between two calls would keep the
-	// panel as a pane of the window. Without -d the new pane is the target
-	// of the commands after the split.
+	// The split marks the panel in the same command: hooks run in the
+	// background after a split, and between two calls tmux-revive's save
+	// would keep the panel as a pane of the window, and tmux-agent's border
+	// count would take it for a split. Without -d the new pane is the
+	// target of the commands after the split.
 	pane, err := s.Tmux.Output(ctx, "split-window", "-h", "-b", "-f", "-l", strconv.Itoa(width),
 		"-t", first, "-P", "-F", "#{pane_id}", s.Command(clientName, origin), ";",
-		"set-option", "-p", OptReviveSkip, "1")
+		"set-option", "-p", OptReviveSkip, "1", ";",
+		"set-option", "-p", OptClient, clientName)
 	if err != nil {
 		return err
 	}
 	args := []string{
-		"set-option", "-p", "-t", pane, OptClient, clientName, ";",
 		"select-pane", "-t", pane, "-T", "panel", ";",
 		"set-option", "-w", "-t", w.id, OptMain, main.String(), ";",
 		"set-option", "-w", "-t", w.id, OptSize, size(w.width, w.height), ";",

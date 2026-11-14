@@ -22,7 +22,10 @@ func TestHeadOf(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git")
 	}
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir()) // git names its folders resolved
+	if err != nil {
+		t.Fatal(err)
+	}
 	repo := filepath.Join(root, "proj-a")
 	gitIn(t, root, "init", "-q", "-b", "main", repo)
 	gitIn(t, repo, "commit", "-q", "--allow-empty", "-m", "one")
@@ -33,8 +36,8 @@ func TestHeadOf(t *testing.T) {
 		dir  string
 		want Head
 	}{
-		{repo, Head{Branch: "main"}},
-		{wt, Head{Branch: "feat-a", Worktree: true}},
+		{repo, Head{Branch: "main", Dir: filepath.Join(repo, ".git")}},
+		{wt, Head{Branch: "feat-a", Worktree: true, Dir: filepath.Join(repo, ".git", "worktrees", "proj-a-wt")}},
 	} {
 		got, err := HeadOf(ctx, c.dir)
 		if err != nil || got != c.want {

@@ -58,6 +58,25 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 	// Ctrl-C and Ctrl-\ reach the agent from the terminal; the launcher
 	// catches them so it outlives them, and does not ignore them, which the
 	// agent would inherit. SIGTERM and SIGHUP are passed on: a kill.
+	// The run's watcher follows the agent until it exits; a one-turn run
+	// needs none. It takes the pane's watch socket before the agent starts,
+	// so the agent's first hook finds it.
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+		defer func() {
+			if r := recover(); r != nil {
+				e.logf("watch panic: %v", r)
+			}
+		}()
+		if oneShot {
+			return
+		}
+		if err := e.Watch(watchCtx, a, 0); err != nil {
+			e.logf("watch: %v", err)
+		}
+	}()
 	sigs := make(chan os.Signal, 8)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
 	proc, err := os.StartProcess(path, argv, &os.ProcAttr{
@@ -66,6 +85,8 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 	})
 	if err != nil {
 		signal.Stop(sigs)
+		stopWatch()
+		<-watching
 		fmt.Fprintf(stderr, "tmux-agent: %v\n", err)
 		e.finish(a, oneShot, false, 126, "exit 126")
 		return 126
@@ -84,6 +105,8 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 	}()
 
 	ws, err := waitAgent(pid)
+	stopWatch()
+	<-watching
 	_ = proc.Release()
 	signal.Stop(sigs)
 	close(sigs)
@@ -177,7 +200,7 @@ func (e *Env) register(a Agent, args []string, oneShot bool) {
 		optAgent: a.Name(), optRun: strconv.Itoa(os.Getpid()), optOneShot: shot, optResume: resume,
 		optStarted: strconv.FormatInt(e.now().Unix(), 10),
 		optSession: "", optTranscript: "", optCwd: "", optState: "", optReason: "", optWait: "", optWaitBy: "", OptRevive: "",
-		attention.OptSubagents: "", attention.OptNested: "", optHeld: "",
+		attention.OptSubagents: "", attention.OptNested: "", optHeld: "", attention.OptContext: "",
 	}
 	if err := e.paneOpts(ctx, opts); err != nil {
 		e.logf("register run: %v", err)
@@ -222,7 +245,7 @@ func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
 	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
 		e.logf("title end: %v", err)
 	}
-	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: "", attention.OptSubagents: "", attention.OptNested: "", optHeld: ""}
+	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: "", attention.OptSubagents: "", attention.OptNested: "", optHeld: "", attention.OptContext: ""}
 	end := EndKilled
 	if !killed {
 		end = EndExited

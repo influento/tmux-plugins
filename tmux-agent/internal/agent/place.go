@@ -20,6 +20,16 @@ func (e *Env) headOf(ctx context.Context, dir string) (git.Head, error) {
 	return git.HeadOf(ctx, dir)
 }
 
+// refresh keeps what the pane shows of its agent current, after the
+// event: the git label (place), then the context share (gauge). The caller
+// holds the lock.
+func (e *Env) refresh(ctx context.Context, a Agent, ev Event, l live, session string) error {
+	if err := e.place(ctx, a, ev, l, session); err != nil {
+		return err
+	}
+	return e.gauge(ctx, a, ev, l)
+}
+
 // place keeps the pane's folder and its git label current: at a session
 // start, at a turn end (the agent may have switched branches) and whenever
 // the folder changes. The caller holds the lock. A folder git cannot read

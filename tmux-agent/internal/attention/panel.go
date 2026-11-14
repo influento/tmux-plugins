@@ -78,6 +78,29 @@ func runsTag(r Row, p Panel) string {
 	return strings.Join(parts, " ")
 }
 
+// The context shares from which the panel warns: in the failed colour,
+// then in the needs-you colour.
+const (
+	contextWarn     = 80
+	contextCritical = 95
+)
+
+// gaugeOf is a row's context share as the panel shows it before the age,
+// and its colour: dim, then warning near the limit; "" for unknown.
+func gaugeOf(r Row, col Colours) (text, colour string) {
+	switch {
+	case r.Context <= 0:
+		return "", ""
+	case r.Context >= contextCritical:
+		colour = col.NeedsYou
+	case r.Context >= contextWarn:
+		colour = col.Failed
+	default:
+		colour = col.Dim
+	}
+	return strconv.Itoa(r.Context) + "%", colour
+}
+
 // PickRow is one item of the panel: a label (a session's name, a group's
 // title) the cursor steps over, a window, a pane of a split window, or a
 // session's fold.
@@ -253,13 +276,14 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 	var row PickRow
 	if agent {
 		lead := " " + glyphOf(r, p.Col) + " " + markOfWindow(w, p) + " "
-		row = line(lead, leadLen, r.Window, "", rightOf(r, ""), runsTag(windowAgent(w), p), p)
+		ra := windowAgent(w)
+		row = line(lead, leadLen, r.Window, "", rightOf(r, ""), runsTag(ra, p), ra, p)
 	} else {
 		right := ""
 		if r.Command != "" && r.Command != r.Window {
 			right = r.Command
 		}
-		row = line(strings.Repeat(" ", leadLen), leadLen, r.Window, dim, right, "", p)
+		row = line(strings.Repeat(" ", leadLen), leadLen, r.Window, dim, right, "", Row{}, p)
 	}
 	row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, w.target(), w.target()
 	if len(w.panes) < 2 {
@@ -286,7 +310,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		if pr.Rank < 4 {
 			right = rightOf(pr, "")
 		}
-		row := line(lead, paneLead, pr.Command, dim, right, runsTag(pr, p), p)
+		row := line(lead, paneLead, pr.Command, dim, right, runsTag(pr, p), pr, p)
 		row.Labels = shownLabels(pr)
 		target := w.target() + "." + strconv.Itoa(pn.index)
 		row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, target, target
@@ -332,7 +356,7 @@ func renderState(rows []Row, p Panel) []PickRow {
 				continue
 			}
 			lead := " " + glyphOf(r, p.Col) + " " + markOf(r, p) + " "
-			row := line(lead, leadLen, r.Window, "", rightOf(r, r.Session), runsTag(r, p), p)
+			row := line(lead, leadLen, r.Window, "", rightOf(r, r.Session), runsTag(r, p), r, p)
 			row.Session, row.Window, row.Target, row.Kill = r.Session, r.Window, "="+r.Target, "="+r.Target
 			row.Labels = shownLabels(r)
 			body = append(body, row)
@@ -440,14 +464,19 @@ func windowAgent(w *window) Row {
 const minName = 14
 
 // line lays out line one: the lead, the name (in colour nameFg, "" for
-// the default), the tag after it in the working colour (never cut), and
-// the right part dim at the row's right edge. The right part gives way
-// first, down to minName characters of the name; then the name.
-func line(lead string, leadLen int, name, nameFg, right, tag string, p Panel) PickRow {
+// the default), the tag after it in the working colour (never cut), and at
+// the row's right edge the context share of gauge's row in its colour
+// (never cut), then the right part dim. The right part gives way first,
+// down to minName characters of the name; then the name.
+func line(lead string, leadLen int, name, nameFg, right, tag string, gauge Row, p Panel) PickRow {
 	nameLen, rightLen := utf8.RuneCountInString(name), utf8.RuneCountInString(right)
 	room := p.Width - leadLen - 1 // after the lead and a space
 	if tag != "" {
 		room -= utf8.RuneCountInString(tag) + 1
+	}
+	share, shareFg := gaugeOf(gauge, p.Col)
+	if share != "" {
+		room -= utf8.RuneCountInString(share) + 1
 	}
 	if right != "" {
 		if maxRight := room - min(nameLen, minName) - 1; rightLen > maxRight {
@@ -468,8 +497,16 @@ func line(lead string, leadLen int, name, nameFg, right, tag string, p Panel) Pi
 	if tag != "" {
 		b.WriteString(" " + ansiFg(p.Col.Working) + tag + "\x1b[0m")
 	}
-	if right != "" {
+	if share != "" || right != "" {
 		b.WriteString(strings.Repeat(" ", max(room-shownLen, 0)+1))
+	}
+	if share != "" {
+		b.WriteString(ansiFg(shareFg) + share + "\x1b[0m")
+		if right != "" {
+			b.WriteString(" ")
+		}
+	}
+	if right != "" {
 		b.WriteString(ansiFg(p.Col.Dim) + right + "\x1b[0m")
 	}
 	return PickRow{Text: b.String(), indent: leadLen + 1, width: p.Width, dimText: ansiFg(p.Col.Dim)}
@@ -489,13 +526,21 @@ func truncEllipsis(s string, n int) string {
 // PickRows returns the panel's rows, skipped sessions left out. It sweeps
 // first. The colours and the marks come from the core.
 func (c *Core) PickRows(ctx context.Context, p Panel) ([]PickRow, error) {
-	rows, err := c.List(ctx)
+	rows, _, err := c.PickRowsNext(ctx, p)
+	return rows, err
+}
+
+// PickRowsNext is PickRows, and when what they show changes with no event
+// to tell (NextChange); 0 for never.
+func (c *Core) PickRowsNext(ctx context.Context, p Panel) ([]PickRow, int64, error) {
+	rows, now, err := c.list(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	next, _ := NextChange(rows, now)
 	out, err := c.Tmux.Output(ctx, "list-sessions", "-F", "#{session_id}"+sep+"#{session_name}")
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var sessions []Session
 	for _, l := range lines(out) {
@@ -503,5 +548,5 @@ func (c *Core) PickRows(ctx context.Context, p Panel) ([]PickRow, error) {
 		sessions = append(sessions, Session{ID: f[0], Name: f[1]})
 	}
 	p.Col, p.Marks = c.colours(ctx), c.Marks
-	return RenderPickRows(rows, sessions, p), nil
+	return RenderPickRows(rows, sessions, p), next, nil
 }

@@ -22,6 +22,11 @@ const OptLabels = "@labels"
 // it; the panel shows how many.
 const OptSubagents = "@agent_subagents"
 
+// OptContext is the pane option that holds how much of its context the
+// pane's agent used, in percent of its limit. The agent layer keeps it; the
+// panel shows it before the age.
+const OptContext = "@agent_context"
+
 // OptNested is the pane option that lists, by name and space-separated,
 // the agent processes that run below the pane's agent without being its
 // subagents: a script of claude -p runs it started, say. The agent layer

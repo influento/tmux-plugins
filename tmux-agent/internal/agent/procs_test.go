@@ -65,6 +65,7 @@ func TestIsAgentProc(t *testing.T) {
 		{"the launcher, named after the agent", proc{comm: "tmux-agent", argv: []string{"claude", "run", "claude"}}, false},
 		{"a shell", proc{comm: "bash", argv: []string{"bash", "-c", "claude"}}, false},
 		{"no arguments", proc{comm: "node"}, false},
+		{"a zombie", proc{comm: "claude", state: 'Z', argv: []string{""}}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := isAgentProc(c.p, names); got != c.want {

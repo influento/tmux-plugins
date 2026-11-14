@@ -59,9 +59,10 @@ const launcherName = "tmux-agent"
 
 // isAgentProc reports whether p is an agent's process: its name is one of
 // names, or, for a script run by an interpreter (an npm-installed claude
-// runs as node), the program in its first argument is.
+// runs as node), the program in its first argument is. A zombie, one that
+// exited and waits for its parent to read its end, is none.
 func isAgentProc(p proc, names []string) bool {
-	if p.comm == launcherName {
+	if p.comm == launcherName || p.state == 'Z' {
 		return false
 	}
 	if slices.Contains(names, p.comm) {
@@ -133,6 +134,16 @@ func agentName(p proc, names []string) string {
 // no other agent process between them and it count; what runs inside one
 // of them is its own.
 func nestedAgents(pid int, names []string, tree map[int][]proc) []string {
+	var runs []string
+	for _, p := range nestedProcs(pid, names, tree) {
+		runs = append(runs, agentName(p, names))
+	}
+	slices.Sort(runs)
+	return runs
+}
+
+// nestedProcs are the processes nestedAgents names, in no order.
+func nestedProcs(pid int, names []string, tree map[int][]proc) []proc {
 	top := 0
 	if p, err := readProc(pid); err == nil && isAgentProc(p, names) {
 		top = pid
@@ -149,18 +160,50 @@ func nestedAgents(pid int, names []string, tree map[int][]proc) []string {
 	if top == 0 {
 		return nil
 	}
-	var runs []string
+	var runs []proc
 	for queue := []int{top}; len(queue) > 0; queue = queue[1:] {
 		for _, c := range tree[queue[0]] {
 			if isAgentProc(c, names) {
-				runs = append(runs, agentName(c, names))
+				runs = append(runs, c)
 				continue
 			}
 			queue = append(queue, c.pid)
 		}
 	}
-	slices.Sort(runs)
 	return runs
+}
+
+// firstAgentBelow is the pid of the first agent process at or below pid,
+// breadth first; 0 for none.
+func firstAgentBelow(pid int, names []string, tree map[int][]proc) int {
+	if p, err := readProc(pid); err == nil && isAgentProc(p, names) {
+		return pid
+	}
+	for queue := []int{pid}; len(queue) > 0; queue = queue[1:] {
+		for _, c := range tree[queue[0]] {
+			if isAgentProc(c, names) {
+				return c.pid
+			}
+			queue = append(queue, c.pid)
+		}
+	}
+	return 0
+}
+
+// nearestAgentPid is the pid of the nearest agent process from pid up to
+// init; 0 for none.
+func nearestAgentPid(pid int, names []string) int {
+	for pid > 1 {
+		p, err := readProc(pid)
+		if err != nil {
+			return 0
+		}
+		if isAgentProc(p, names) {
+			return pid
+		}
+		pid = p.ppid
+	}
+	return 0
 }
 
 // processTree reads every process and maps each pid to its children; nil

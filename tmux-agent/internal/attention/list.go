@@ -65,12 +65,16 @@ type Row struct {
 	Failed  bool    `json:"failed,omitempty"` // a done flag for a run that failed
 	IsAgent bool    `json:"-"`                // the pane runs an agent
 	IdleAge string  `json:"-"`                // an idle agent's time since its last flag was set; "" for none
+	IdleAt  int64   `json:"-"`                // when that flag was set, unix seconds
 	Labels  []Label `json:"labels,omitempty"` // what sources report about the pane
 	// Subagents is how many subagents run beside the pane's agent.
 	Subagents int `json:"subagents,omitempty"`
 	// Nested are the agents that run below the pane's agent, by name,
 	// one entry each (OptNested).
 	Nested []string `json:"nested,omitempty"`
+	// Context is how much of its context the pane's agent used, in
+	// percent; 0 for unknown.
+	Context int `json:"context,omitempty"`
 }
 
 // Humanize renders an age in seconds as 5s, 3m, 2h or 4d.
@@ -86,6 +90,45 @@ func Humanize(s int64) string {
 	return strconv.FormatInt(s/86400, 10) + "d"
 }
 
+// AgeChange is how many seconds pass until Humanize shows another value
+// for age.
+func AgeChange(age int64) int64 {
+	switch {
+	case age < 60:
+		return 1
+	case age < 3600:
+		return 60 - age%60
+	case age < 86400:
+		return 3600 - age%3600
+	}
+	return 86400 - age%86400
+}
+
+// NextChange is when, in unix seconds, what the rows show changes with no
+// event to tell: an age moves on, or a label's time ends. ok is false when
+// nothing will. now is the time the rows were read at.
+func NextChange(rows []Row, now int64) (at int64, ok bool) {
+	take := func(t int64) {
+		if t > now && (!ok || t < at) {
+			at, ok = t, true
+		}
+	}
+	for _, r := range rows {
+		switch {
+		case State(r.State) != Idle && r.At != 0:
+			take(now + AgeChange(now-r.At))
+		case r.IdleAge != "":
+			take(now + AgeChange(now-r.IdleAt))
+		}
+		for _, l := range r.Labels {
+			if l.Until != 0 {
+				take(l.Until)
+			}
+		}
+	}
+	return at, ok
+}
+
 // isAgent reports whether a pane's command is an agent: one the core was
 // told about, or the one the pane's launcher runs.
 func (c *Core) isAgent(cmd, launched string) bool {
@@ -96,34 +139,40 @@ func (c *Core) isAgent(cmd, launched string) bool {
 // rank, oldest first; then idle agents and panes whose flag a sweep dropped;
 // then everything else. It sweeps first.
 func (c *Core) List(ctx context.Context) ([]Row, error) {
+	rows, _, err := c.list(ctx)
+	return rows, err
+}
+
+// list is List, and the time its ages count to, unix seconds.
+func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 	dropped, err := c.Sweep(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if dropped {
 		if err := c.Status(ctx); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	skip, err := c.skipper(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	format := strings.Join([]string{
 		"#{session_name}", "#{window_index}.#{pane_index}", "#{pane_id}", "#{window_name}",
 		"#{@attention}", "#{@attention_reason}", "#{@attention_at}", "#{pane_current_command}",
 		"#{@attention_gone}", "#{@agent}", "#{pane_title}", "#{@attention_failed}", "#{@attention_idle_at}",
 		"#{" + OptLabels + "}", "#{" + sidebar.OptClient + "}", "#{" + OptSubagents + "}",
-		"#{" + OptNested + "}",
+		"#{" + OptNested + "}", "#{" + OptContext + "}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 17)
+		f := split(l, 18)
 		if skip(f[0]) || f[14] != "" { // the panel is no row of its own
 			continue
 		}
@@ -135,15 +184,16 @@ func (c *Core) List(ctx context.Context) ([]Row, error) {
 			Nested: strings.Fields(f[16]),
 		}
 		r.At, _ = strconv.ParseInt(f[6], 10, 64) // unset or garbled: no age
+		r.Context, _ = strconv.Atoi(f[17])       // unset or garbled: unknown
 		r.IsAgent = c.isAgent(r.Command, r.Agent)
 		describe(&r, now, r.IsAgent)
 		if at, err := strconv.ParseInt(f[12], 10, 64); err == nil && r.IsAgent && r.State == "" && at > 0 {
-			r.IdleAge = Humanize(max(now-at, 0))
+			r.IdleAge, r.IdleAt = Humanize(max(now-at, 0)), at
 		}
 		rows = append(rows, r)
 	}
 	SortRows(rows)
-	return rows, nil
+	return rows, now, nil
 }
 
 // describe fills a row's rank, glyph, detail and age.

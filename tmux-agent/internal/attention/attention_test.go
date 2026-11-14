@@ -197,3 +197,39 @@ func TestMark(t *testing.T) {
 		}
 	}
 }
+
+// AgeChange lands on the first second Humanize shows another value.
+func TestAgeChange(t *testing.T) {
+	for _, age := range []int64{0, 1, 59, 60, 61, 119, 3599, 3600, 3601, 86399, 86400, 90000} {
+		d := AgeChange(age)
+		if d < 1 || Humanize(age+d) == Humanize(age) || Humanize(age+d-1) != Humanize(age) {
+			t.Errorf("AgeChange(%d) = %d: %s, then %s at %d", age, d, Humanize(age), Humanize(age+d), age+d)
+		}
+	}
+}
+
+// NextChange is the first age or label time ahead; rows that show no age
+// count for nothing.
+func TestNextChange(t *testing.T) {
+	const now = 10_000
+	for _, tc := range []struct {
+		name string
+		rows []Row
+		want int64
+	}{
+		{"nothing", []Row{{State: ""}, {State: "", Command: "zsh"}}, 0},
+		{"a flag seconds old", []Row{{State: "working", At: now - 5}}, now + 1},
+		{"minutes old", []Row{{State: "done", At: now - 130}}, now + 50},
+		{"an idle agent", []Row{{IdleAge: "2h", IdleAt: now - 7300}}, now + 3500},
+		{"the first of several", []Row{{State: "done", At: now - 130}, {State: "working", At: now - 4000}}, now + 50},
+		{"a label's time", []Row{{State: "done", At: now - 130, Labels: []Label{{Source: "s", Until: now + 7}}}}, now + 7},
+		{"a label for good", []Row{{Labels: []Label{{Source: "s"}}}}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := NextChange(tc.rows, now)
+			if got != tc.want || ok != (tc.want != 0) {
+				t.Errorf("NextChange = %d, %v; want %d", got, ok, tc.want)
+			}
+		})
+	}
+}

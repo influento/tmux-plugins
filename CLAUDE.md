@@ -164,12 +164,12 @@ Packages in `tmux-agent/internal/`:
 - `attention`: the core. Flags in the `@attention*` pane options, status
   counts, sweep, list, borders, jump, notifications. Knows no agent.
 - `agent`: the agent layer. Neutral events, the hook handler, the launcher,
-  the nested-agent rule, the title sweep, the git label. Knows no
-  particular agent.
+  the nested-agent rule, the title sweep, the git label, the context share, the watcher.
+  Knows no particular agent.
 - `agent/claude`: the Claude Code adapter: hook mapping, one-shot and resume
   arguments, the window title (Claude Code's own `ai-title` from the
   transcript, cut at a word to 24 characters; the first prompt until then),
-  the interrupt line of a turn cut short.
+  the interrupt line of a turn cut short, the context used.
 - `git`: the one place that runs git: a folder's branch and whether it is
   a linked worktree, in one `rev-parse` (a second for a detached HEAD).
 - `store`: one JSON record per session in
@@ -216,10 +216,22 @@ Rules:
   agent's signal.
 - A hook counts for a run only when its nearest agent process is the run's
   own; a launcher started inside an agent runs the agent in its place.
-- A turn cut short (No or Esc at a permission prompt) sends no hook. Seen,
-  status, sweep, list, jump and the picker read the transcript's last
-  message: Claude Code's interrupt line, written at or after the flag,
-  clears the flag.
+- A watcher keeps a pane live from what no hook tells, while
+  its agent runs: a turn cut short, a subagent stopped, the context share,
+  the title, the branch, the nested runs. It waits on inotify (the
+  transcript, the adapter's `WatchedFiles`, the git folder's HEAD), pidfds
+  (the runs, and the agent when it watches one the launcher did not
+  start) and a datagram socket the hooks wake it on; it never polls, and
+  gathers a burst into one look after 100 ms. Stop and SessionStart
+  `compact` fire before Claude Code writes what they mean, so only a
+  watcher sees it. One per pane (a lock beside the socket): the launcher
+  runs it beside its agent; a hook that finds none, and `tmux-init` for
+  agents started before, spawn `tmux-agent watch`, which ends the session
+  when its agent exits. Seen, status and sweep stay the fallback.
+- A turn cut short (No or Esc at a permission prompt) sends no hook. The
+  watcher, seen, status, sweep, list, jump and the picker read the
+  transcript's last message: Claude Code's interrupt line, written at or
+  after the flag, clears the flag.
 - Subagents run beside their agent, in its session and pane; Claude Code
   2.1.322 runs every one in the background. A turn that ends while one
   runs (Stop's `background_tasks`) leaves the pane working: its report, or
@@ -227,8 +239,9 @@ Rules:
   agent, the main one or a subagent (`@agent_wait_by`, the hooks'
   `agent_id`); only that agent's events end it.
 - Subagents (F6): the pane lists the running ones in `@agent_subagents`
-  (SubagentStart adds, SubagentStop removes, each Stop sets it, since a
-  subagent the user stops sends no SubagentStop); the panel shows the count
+  (SubagentStart adds, SubagentStop removes; a subagent the user stops
+  sends no SubagentStop: the watcher sees its meta file say so, and each
+  Stop sets the list); the panel shows the count
   after the name (`⑂2`), in the working colour. A SubagentStop with an
   empty type is a hidden helper: ignored. A subagent's record keeps its
   prompt and result text (Claude Code deletes old transcripts) and its
@@ -243,8 +256,7 @@ Rules:
   no agent between, by name, in `@agent_nested`; the panel shows each
   kind's mark and count after ⑂ (`✳6`). A turn that ends while they run
   stays working, held (`@agent_held`); the agent's next turn drops the
-  hold, and the sweep (also each panel reload) ends the held turn when the
-  last run ends.
+  hold, and the watcher ends the held turn when the last run ends.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
 - `popup` waits until the user closes the popup, with no timeout; `pick`
@@ -289,8 +301,10 @@ Rules:
   name keeps all its windows; `pick-key` gives Tab's and Enter's actions,
   and `place` the cursor after a reload.
   A change of a flag, reason or label reloads the open panels
-  (`Core.Changed`); each also reloads every `@sidebar_refresh` seconds, for
-  the ages. What fzf waits on (pick-rows, pick-key) sends no reload.
+  (`Core.Changed`). What changes with no event (an age's next value, a
+  label's end) `pick-rows` tells the panel's `pick` on its `.tick` socket,
+  which reloads at that second. What fzf waits on (pick-rows, pick-key)
+  sends no reload.
   The view and the open folds are fzf's header label, which shows
   nowhere. Labels (session names, group titles) the cursor steps over.
   The client and the panel follow the cursor (`sidebar go`); Enter stays
@@ -311,6 +325,18 @@ Rules:
   reads the branch and sets source `git`: `⎇ <branch>`, plus ` wt` in a
   linked worktree. It goes when the session ends (the hook, the launcher,
   the sweep); a folder outside git clears it.
+- The context share (step 4): the pane option `@agent_context`, a percent
+  the panel shows before the age: dim, in the failed colour from 80, the
+  needs-you colour from 95. Read by the watcher at each write of the
+  transcript, and by the hook at a session start, a compaction and the
+  main agent's turn end; written only when it changes. The tokens of the transcript's last main-agent model
+  call (input and cache; Claude Code's own `<synthetic>` lines skipped),
+  or what a compaction left, over the limit read again each time: Claude
+  Code's `autoCompactWindow` (managed, `$CLAUDE_PROJECT_DIR` local and
+  shared, user settings; the first that sets it; a watcher takes the
+  agent process's folder for the project), capped by the model's
+  window. The transcript does not name the window: 1M for a `[1m]` model
+  or a call past 200k, else 200k. It goes with the session.
 - tmux-agent draws the flags: every change sets `@attention_mark` on the
   pane and `@attention_win_mark` on its window (the window shows its
   best-ranked pane), a ready-to-print glyph in its `@attention_fg_*` colour,

@@ -117,7 +117,7 @@ func (e *Env) SweepAgents(ctx context.Context) error {
 		}
 		pid, err := strconv.Atoi(f[1])
 		if err != nil {
-			continue
+			pid = 0 // a dead pane kept (remain-on-exit): no process left
 		}
 		maybe = append(maybe, pane{id: f[0], pid: pid, agent: f[2], session: f[4]})
 	}
@@ -133,7 +133,7 @@ func (e *Env) SweepAgents(ctx context.Context) error {
 	}
 	names := e.Registry.ProcessNames()
 	for _, p := range maybe {
-		if hasAgentBelow(p.pid, names, tree) || e.wasKilled(p.agent, p.session) {
+		if p.pid > 0 && hasAgentBelow(p.pid, names, tree) || e.wasKilled(p.agent, p.session) {
 			continue
 		}
 		l, err := e.liveOf(ctx, p.id)
@@ -189,7 +189,7 @@ func (e *Env) SweepTurns(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	type pane struct{ id, agent, session, state, at string }
+	type pane struct{ id, agent, session, transcript string }
 	var cut []pane
 	for _, l := range strings.Split(out, "\n") {
 		f := strings.SplitN(l, "\x1f", 6)
@@ -208,7 +208,7 @@ func (e *Env) SweepTurns(ctx context.Context) error {
 			continue
 		}
 		if at, ok := ir.Interrupted(f[3]); ok && at.Unix() >= since {
-			cut = append(cut, pane{id: f[0], agent: f[1], session: f[2], state: f[4], at: f[5]})
+			cut = append(cut, pane{id: f[0], agent: f[1], session: f[2], transcript: f[3]})
 		}
 	}
 	if len(cut) == 0 {
@@ -216,24 +216,42 @@ func (e *Env) SweepTurns(ctx context.Context) error {
 	}
 	defer e.lock(ctx)()
 	for _, p := range cut {
-		// A hook may have moved the flag on while the lock was taken.
-		now, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", p.id, "#{@attention}\x1f#{@attention_at}")
-		if err != nil {
-			if isGone(err) {
-				continue
-			}
+		if err := e.cutShort(ctx, p.id, e.Registry.Get(p.agent), p.session, p.transcript); err != nil && !isGone(err) {
 			return err
 		}
-		if now != p.state+"\x1f"+p.at {
-			continue
-		}
-		if err := e.Core.Clear(ctx, p.id); err != nil && !isGone(err) {
-			return err
-		}
-		if err := e.optsOf(ctx, p.id, map[string]string{optState: "", optReason: "", optWait: "", optWaitBy: ""}); err != nil && !isGone(err) {
-			return err
-		}
-		e.remember(e.Registry.Get(p.agent), p.session, func(s *store.Session) { s.State, s.Reason = "", "" })
 	}
+	return nil
+}
+
+// cutShort clears the pane's working or needs-you flag when its agent's
+// transcript says the user cut the turn short after the flag was set. The
+// caller holds the lock, so no hook moves the flag meanwhile.
+func (e *Env) cutShort(ctx context.Context, pane string, a Agent, session, transcript string) error {
+	ir, ok := a.(Interrupter)
+	if !ok || transcript == "" {
+		return nil
+	}
+	now, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{@attention}\x1f#{@attention_at}")
+	if err != nil {
+		return err
+	}
+	state, at, _ := strings.Cut(now, "\x1f")
+	if st := attention.State(state); st != attention.Working && st != attention.NeedsYou {
+		return nil
+	}
+	since, err := strconv.ParseInt(at, 10, 64)
+	if err != nil {
+		return nil
+	}
+	if when, ok := ir.Interrupted(transcript); !ok || when.Unix() < since {
+		return nil
+	}
+	if err := e.Core.Clear(ctx, pane); err != nil {
+		return err
+	}
+	if err := e.optsOf(ctx, pane, map[string]string{optState: "", optReason: "", optWait: "", optWaitBy: ""}); err != nil {
+		return err
+	}
+	e.remember(a, session, func(s *store.Session) { s.State, s.Reason = "", "" })
 	return nil
 }

@@ -22,27 +22,7 @@ const interruptMark = "[Request interrupted by user"
 // Interrupted reports when the transcript's last turn was cut short by the
 // user: the last message, a subagent's left out, is the interrupt mark.
 func (Claude) Interrupted(transcript string) (time.Time, bool) {
-	if transcript == "" {
-		return time.Time{}, false
-	}
-	f, err := os.Open(transcript)
-	if err != nil {
-		return time.Time{}, false
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return time.Time{}, false
-	}
-	off := max(0, st.Size()-interruptTail)
-	buf := make([]byte, st.Size()-off)
-	if _, err := f.ReadAt(buf, off); err != nil && !errors.Is(err, io.EOF) {
-		return time.Time{}, false
-	}
-	if off > 0 { // the first line is cut
-		_, buf, _ = bytes.Cut(buf, []byte("\n"))
-	}
-	lines := bytes.Split(buf, []byte("\n"))
+	lines := tailLines(transcript, interruptTail)
 	for i := len(lines) - 1; i >= 0; i-- {
 		var e struct {
 			Type      string    `json:"type"`
@@ -62,6 +42,32 @@ func (Claude) Interrupted(transcript string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return time.Time{}, false
+}
+
+// tailLines are the whole lines in the last n bytes of a transcript; none
+// when it cannot be read.
+func tailLines(transcript string, n int64) [][]byte {
+	if transcript == "" {
+		return nil
+	}
+	f, err := os.Open(transcript)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	off := max(0, st.Size()-n)
+	buf := make([]byte, st.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && !errors.Is(err, io.EOF) {
+		return nil
+	}
+	if off > 0 { // the first line is cut
+		_, buf, _ = bytes.Cut(buf, []byte("\n"))
+	}
+	return bytes.Split(buf, []byte("\n"))
 }
 
 // firstText is a message's text: the content when it is a string, else its

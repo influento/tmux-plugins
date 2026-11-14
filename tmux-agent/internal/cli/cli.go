@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -74,6 +76,9 @@ const usage = `usage:
   tmux-agent subagents scan            fill the records of ended subagents from each
                                        agent's own files: those from before tmux-agent
                                        kept records, and any whose end no hook told
+  tmux-agent watch AGENT PANE PID     keep the pane's flags, title, labels and context
+                                       share live while process PID runs; the hooks
+                                       and tmux-init start it for agents without one
   tmux-agent subagents fill AGENT SESSION TRANSCRIPT ID...
                                        the same for a few subagents of one session,
                                        waiting for their files; the hooks run it
@@ -149,6 +154,8 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 		return a.env.Revive(a.reg.Get(rest[0]), rest[1], self, stderr)
 	case "subagents":
 		return a.subagents(rest)
+	case "watch":
+		return a.watch(rest)
 	case "--version", "version":
 		fmt.Fprintln(stdout, version)
 		return 0
@@ -200,6 +207,8 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 		Run:      agent.RunFromEnv(getenv),
 		LockPath: filepath.Join(store.RuntimeDir(getenv), "lock"),
 		Fill:     a.spawnFill,
+		Watcher:  a.spawnWatch,
+		Getenv:   getenv,
 	}
 	a.core.Changed = func(ctx context.Context) {
 		if err := a.reloadPanels(ctx); err != nil {
@@ -259,6 +268,42 @@ func (a *app) spawnScan() {
 		return
 	}
 	_ = cmd.Process.Release() // never waited for
+}
+
+// spawnWatch starts `watch` for an agent that runs without a watcher, in
+// its own session like the notifier: it lives as long as the agent.
+func (a *app) spawnWatch(ag agent.Agent, pane string, pid int) {
+	cmd := exec.Command(a.self, "watch", ag.Name(), pane, strconv.Itoa(pid))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		a.logf("watch: %v", err)
+		return
+	}
+	_ = cmd.Process.Release() // never waited for
+}
+
+// watch follows the agent in a pane until the agent exits (Env.Watch).
+func (a *app) watch(args []string) int {
+	if len(args) != 3 {
+		fmt.Fprint(a.stderr, usage)
+		return 2
+	}
+	ag, ok := a.reg.Lookup(args[0])
+	pid, err := strconv.Atoi(args[2])
+	if !ok || err != nil || pid <= 0 || !strings.HasPrefix(args[1], "%") {
+		fmt.Fprint(a.stderr, usage)
+		return 2
+	}
+	a.env.Log = a.logf
+	a.env.Pane = args[1]
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer stop()
+	if err := a.env.Watch(ctx, ag, pid); err != nil && !errors.Is(err, agent.ErrWatched) {
+		fmt.Fprintf(a.stderr, "tmux-agent watch: %v\n", err)
+		a.logf("watch %s: %v", args[1], err)
+		return 1
+	}
+	return 0
 }
 
 // fillWait is how long a fill waits for the files of a subagent that
@@ -634,18 +679,32 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 		p.Words = attention.QueryWords(strings.Join(args, " "))
 	}
 	a.core.Changed = nil // see pickKey
-	// Each reload counts the runs again: they start and end without a hook.
-	if err := a.env.SweepNested(ctx); err != nil {
-		a.logf("pick-rows: %v", err)
-	}
-	rows, err := a.core.PickRows(ctx, p)
+	rows, next, err := a.core.PickRowsNext(ctx, p)
 	if err != nil {
 		return err
 	}
 	for _, r := range rows {
 		fmt.Fprint(a.stdout, ui.PickLine(r)+end)
 	}
+	if end == "\x00" {
+		a.tellTick(next)
+	}
 	return nil
+}
+
+// tellTick tells the panel's pick, when this runs for its fzf, when the
+// rows it just read change next on their own (0: never).
+func (a *app) tellTick(next int64) {
+	path := a.panelSocket(a.getenv("TMUX_PANE"), ".tick")
+	if path == "" {
+		return
+	}
+	c, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: path, Net: "unixgram"})
+	if err != nil {
+		return // no panel: a picker in a popup, or a look from the shell
+	}
+	defer c.Close()
+	_, _ = c.Write([]byte(strconv.FormatInt(next, 10))) // a pick gone meanwhile: nothing to tell
 }
 
 // pickKey prints the fzf actions of a key in the panel. tab switches the
@@ -719,33 +778,45 @@ func clientArgs(client string) []string {
 	return []string{"-c", client}
 }
 
-// refreshEvery is how often an open panel reads its rows again
-// (sidebar.OptRefresh); a value that is no number of seconds keeps the
-// default, so a typo in tmux.conf does not keep the panel shut.
-func (a *app) refreshEvery(ctx context.Context) (time.Duration, error) {
-	const def = 30 * time.Second
-	v, ok, err := a.tmux.Option(ctx, "-g", "", sidebar.OptRefresh)
-	if err != nil || !ok {
-		return def, err
+// tickPanel has the panel's fzf, listening on socket, read its rows
+// again when what they show changes on its own: at next, unix seconds,
+// and then at each time its reads tell on tick. 0 is never.
+func (a *app) tickPanel(ctx context.Context, tick *net.UnixConn, socket, client string, next int64) {
+	times := make(chan int64, 1)
+	go func() {
+		buf := make([]byte, 32)
+		for {
+			n, err := tick.Read(buf)
+			if err != nil {
+				return // closed
+			}
+			if at, err := strconv.ParseInt(string(buf[:n]), 10, 64); err == nil {
+				select {
+				case <-times: // only the newest counts
+				default:
+				}
+				times <- at
+			}
+		}
+	}()
+	timer := time.NewTimer(0)
+	timer.Stop()
+	set := func(at int64) {
+		timer.Stop()
+		if at > 0 {
+			// A moment past the second, so the read counts it.
+			timer.Reset(time.Until(time.Unix(at, 0)) + 50*time.Millisecond)
+		}
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n < 0 {
-		a.logf("%s: not a number of seconds: %q", sidebar.OptRefresh, v)
-		return def, nil
-	}
-	return time.Duration(n) * time.Second, nil
-}
-
-// tickPanel has the panel's fzf, listening on socket, read its rows again
-// every so often until ctx ends, so the ages move with no other change.
-func (a *app) tickPanel(ctx context.Context, socket, client string, every time.Duration) {
-	t := time.NewTicker(every)
-	defer t.Stop()
+	set(next)
 	for {
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-t.C:
+		case at := <-times:
+			set(at)
+		case <-timer.C:
 			rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			if err := ui.Reload(rctx, socket, shell.Quote(a.self), client); err != nil {
 				a.logf("tick panel: %v", err)
@@ -755,19 +826,28 @@ func (a *app) tickPanel(ctx context.Context, socket, client string, every time.D
 	}
 }
 
-// listen names the socket the panel's fzf in pane takes reloads on, and
-// records it on the pane. The name is fixed per server and pane: a panel
-// that was killed leaves its socket for the next one to take.
-func (a *app) listen(ctx context.Context, pane string) (string, error) {
+// panelSocket is the path of the panel's socket of kind (".sock" for
+// fzf's, ".tick" for its times) in pane, fixed per server and pane: a
+// panel that was killed leaves its sockets for the next one to take. ""
+// outside tmux.
+func (a *app) panelSocket(pane, kind string) string {
 	server := strings.Split(a.getenv("TMUX"), ",")
-	if len(server) < 2 || server[1] == "" {
+	if len(server) < 2 || server[1] == "" || pane == "" {
+		return ""
+	}
+	return filepath.Join(store.RuntimeDir(a.getenv), "panel-"+server[1]+"-"+strings.TrimPrefix(pane, "%")+kind)
+}
+
+// listen names the socket the panel's fzf in pane takes reloads on, and
+// records it on the pane.
+func (a *app) listen(ctx context.Context, pane string) (string, error) {
+	socket := a.panelSocket(pane, ".sock")
+	if socket == "" {
 		return "", nil
 	}
-	dir := store.RuntimeDir(a.getenv)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return "", err
 	}
-	socket := filepath.Join(dir, "panel-"+server[1]+"-"+strings.TrimPrefix(pane, "%")+".sock")
 	if err := os.Remove(socket); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
@@ -775,6 +855,15 @@ func (a *app) listen(ctx context.Context, pane string) (string, error) {
 		return "", err
 	}
 	return socket, nil
+}
+
+// listenTick takes the socket the panel's reads tell their times on.
+func (a *app) listenTick(pane string) (*net.UnixConn, error) {
+	path := a.panelSocket(pane, ".tick")
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	return net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
 }
 
 // pick runs the panel's list. In the client's sidebar pane, Enter closes
@@ -786,7 +875,7 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	}
 	state := ui.PanelState{View: attention.TreeView}
 	width := ui.RowWidth(os.Stdin)
-	rows, err := a.core.PickRows(ctx, attention.Panel{View: state.View, Width: width})
+	rows, next, err := a.core.PickRowsNext(ctx, attention.Panel{View: state.View, Width: width})
 	if err != nil {
 		return err
 	}
@@ -819,14 +908,21 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	}
 	stopTick := func() {}
 	if listen != "" {
-		every, err := a.refreshEvery(ctx)
+		tick, err := a.listenTick(self)
 		if err != nil {
 			return err
 		}
-		if every > 0 {
-			var tick context.Context
-			tick, stopTick = context.WithCancel(context.WithoutCancel(ctx))
-			go a.tickPanel(tick, listen, client, every)
+		tctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		ticking := make(chan struct{})
+		go func() {
+			defer close(ticking)
+			a.tickPanel(tctx, tick, listen, client, next)
+		}()
+		stopTick = func() {
+			cancel()
+			tick.Close()
+			<-ticking
+			_ = os.Remove(tick.LocalAddr().String())
 		}
 	}
 	// The picker waits on the user; only the tmux calls are bounded.
@@ -1122,6 +1218,9 @@ func (a *app) tmuxInit(ctx context.Context) error {
 		return err
 	}
 	a.spawnScan() // subagents whose end no hook told, such as all from before
+	if err := a.env.WatchAll(ctx); err != nil {
+		return err
+	}
 	return a.core.Redraw(ctx)
 }
 

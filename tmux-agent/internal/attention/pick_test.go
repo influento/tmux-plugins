@@ -113,12 +113,18 @@ func TestRenderState(t *testing.T) {
 // name; then the name.
 func TestLineCutsTheRightFirst(t *testing.T) {
 	p := Panel{Width: 30}
-	for _, tt := range []struct{ name, right, want string }{
-		{"a-long-window-name", "a reason too long · 4m", " ? a-long-window… a reason to…"},
-		{"short", "permission · 4m", " ? short       permission · 4m"},
-		{"a-very-long-window-name-indeed", "", " ? a-very-long-window-name-in…"},
+	for _, tt := range []struct {
+		name, right string
+		context     int
+		want        string
+	}{
+		{"a-long-window-name", "a reason too long · 4m", 0, " ? a-long-window… a reason to…"},
+		{"short", "permission · 4m", 0, " ? short       permission · 4m"},
+		{"a-very-long-window-name-indeed", "", 0, " ? a-very-long-window-name-in…"},
+		{"short", "4m", 37, " ? short                37% 4m"},
+		{"a-very-long-window-name-indeed", "", 96, " ? a-very-long-window-nam… 96%"},
 	} {
-		got := escape.ReplaceAllString(line(" ?", 2, tt.name, "", tt.right, "", p).Text, "")
+		got := escape.ReplaceAllString(line(" ?", 2, tt.name, "", tt.right, "", Row{Context: tt.context}, p).Text, "")
 		if got != tt.want {
 			t.Errorf("line(%q, %q) = %q, want %q", tt.name, tt.right, got, tt.want)
 		}
@@ -128,7 +134,7 @@ func TestLineCutsTheRightFirst(t *testing.T) {
 // An agent's labels make a second line, under its name; with none the row
 // keeps one line.
 func TestLabelsLine(t *testing.T) {
-	r := line(" ? ✳ ", 5, "gamma", "", "", "", Panel{Width: 39})
+	r := line(" ? ✳ ", 5, "gamma", "", "", "", Row{}, Panel{Width: 39})
 	if strings.Contains(r.Display(), "\n") {
 		t.Errorf("a row without labels has two lines: %q", r.Display())
 	}
@@ -141,7 +147,7 @@ func TestLabelsLine(t *testing.T) {
 
 // The name underlines each match of each word; a session's name is bold.
 func TestDisplayHighlights(t *testing.T) {
-	r := line("   1", 4, "dot dotfiles", "", "", "", Panel{Width: 39, Words: []string{"DOT", "es"}})
+	r := line("   1", 4, "dot dotfiles", "", "", "", Row{}, Panel{Width: 39, Words: []string{"DOT", "es"}})
 	want := "   1 \x1b[4mdot\x1b[24m \x1b[4mdot\x1b[24mfil\x1b[4mes\x1b[24m"
 	if r.Text != want {
 		t.Errorf("Text = %q, want %q", r.Text, want)
@@ -238,8 +244,25 @@ func TestRenderSubagentCount(t *testing.T) {
 		"proj-a",
 		" ● ✳  python ⑂1 ✳2 ◆1                4m",
 	})
-	row := line(" ●", 2, "build-fix", "", "3m", "⑂2", p)
+	row := line(" ●", 2, "build-fix", "", "3m", "⑂2", Row{}, p)
 	if !strings.Contains(row.Text, "\x1b[38;2;137;180;250m⑂2") {
 		t.Errorf("count not in the working colour: %q", row.Text)
+	}
+}
+
+// The context share is dim, then in the failed colour from 80%, in the
+// needs-you colour from 95%; unknown shows nothing.
+func TestGaugeOf(t *testing.T) {
+	col := Colours{NeedsYou: "#f38ba8", Failed: "#fab387", Dim: "#6c7086"}
+	for _, tt := range []struct {
+		context      int
+		text, colour string
+	}{
+		{0, "", ""}, {1, "1%", col.Dim}, {79, "79%", col.Dim}, {80, "80%", col.Failed},
+		{94, "94%", col.Failed}, {95, "95%", col.NeedsYou}, {130, "130%", col.NeedsYou},
+	} {
+		if text, colour := gaugeOf(Row{Context: tt.context}, col); text != tt.text || colour != tt.colour {
+			t.Errorf("gaugeOf(%d) = %q %q, want %q %q", tt.context, text, colour, tt.text, tt.colour)
+		}
 	}
 }
