@@ -234,7 +234,8 @@ func panelCursor(t *testing.T, socket string) string {
 // changed): a reload put the cursor back on the row of the window the
 // client showed before the move, and the window and the row disagreed
 // until the next reload. A switch some other way moves the cursor. The
-// bound is a slow runner's: a move here takes 25-75 ms.
+// limits rule out a lost move, not a slow one: a move takes 25-75 ms on
+// a workstation, up to 600 ms on CI's runner with -race.
 func TestPanelMoveWhileReloading(t *testing.T) {
 	s, origin, panel := openPanel(t)
 	names := []string{"w-two", "w-three", "w-four", "w-five"}
@@ -301,7 +302,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		seen = append(seen, fmt.Sprintf("%6.1f ms send %s", float64(time.Since(t0).Microseconds())/1000, key))
 		s.MustTmux(t, "send-keys", "-t", panel, key)
 		to := ""
-		for time.Since(start) < 500*time.Millisecond && to == "" {
+		for time.Since(start) < 2*time.Second && to == "" {
 			c := panelCursor(t, socket)
 			note(c, client())
 			if c != from {
@@ -311,8 +312,9 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		if to == "" {
 			t.Fatalf("%s from %s: the cursor did not move", key, from)
 		}
+		// Until the client is there, and a moment after: the cursor stays.
 		var followed time.Duration
-		for time.Since(start) < 700*time.Millisecond {
+		for end := start.Add(2 * time.Second); time.Now().Before(end); {
 			c, w := panelCursor(t, socket), client()
 			note(c, w)
 			if c != to {
@@ -320,14 +322,13 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 			}
 			if followed == 0 && w == to {
 				followed = time.Since(start)
+				end = time.Now().Add(200 * time.Millisecond)
 			}
 		}
 		if followed == 0 {
 			t.Fatalf("client on %s %v after the cursor moved to %s", client(), time.Since(start), to)
 		}
-		if followed > 500*time.Millisecond {
-			t.Errorf("client took %v to follow the cursor to %s", followed, to)
-		}
+		t.Logf("%s to %s: client followed in %v", key, to, followed)
 	}
 
 	// A switch some other way (prefix n, a notification) takes the cursor
@@ -337,7 +338,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		s.MustTmux(t, "select-window", "-t", to)
 		for c := panelCursor(t, socket); c != to; c = panelCursor(t, socket) {
 			note(c, client())
-			if time.Since(start) > 500*time.Millisecond {
+			if time.Since(start) > 2*time.Second {
 				t.Fatalf("cursor on %s %v after a switch to %s", c, time.Since(start), to)
 			}
 		}
