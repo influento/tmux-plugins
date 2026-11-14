@@ -512,11 +512,19 @@ func (s *Sidebar) move(ctx context.Context, c client, p panel, target string, ta
 		w, h = to.width, to.height
 	}
 	width := s.widthIn(w)
+	// Without -d, join-pane gives the panel its focus and also makes the
+	// window its session's current one. With take the client goes there
+	// anyway. Without, a follow that read the client's window just before
+	// the client's next switch would take it back: select-pane gives the
+	// focus, and no window.
 	args := []string{"join-pane"}
-	if !p.active {
+	if !p.active || !take {
 		args = append(args, "-d")
 	}
 	args = append(args, "-h", "-b", "-f", "-l", strconv.Itoa(width), "-s", p.pane, "-t", first, ";")
+	if p.active && !take {
+		args = append(args, "select-pane", "-t", p.pane, ";")
+	}
 	if fromMain, ok := mainSaved(from, p.pane); ok {
 		args = append(args, forget(from.id)...)
 		args = append(args, "select-layout", "-t", from.id, fromMain.Scale(from.width, from.height).String(), ";")

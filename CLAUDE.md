@@ -302,6 +302,9 @@ Rules:
   panel's split shows for a moment. A panel left alone in its window moves
   elsewhere with its client; kill and kill-session move it out first. The panel is no
   row, counts for no border line, and carries `@revive_skip`.
+  `join-pane` without `-d` also makes the window its session's current
+  one: a follow joins with `-d` and gives the panel its focus back with
+  `select-pane`, or a switch just after the one it read is undone.
   `display-message -c CLIENT` does not read that client's pane (it takes
   the newest session's): read it through `list-clients`. Two views, Tab
   switches: the tree (opens first) lists each session's agent windows

@@ -288,6 +288,53 @@ func TestFollow(t *testing.T) {
 	e.wantFull(t, w1)
 }
 
+// switchFirst is a tmux on which the client switches to window to just
+// before the first join-pane: the user's next switch, between the
+// follow's read of the client and its move.
+type switchFirst struct {
+	sidebar.Tmux
+	t      *testing.T
+	s      *tmuxtest.Server
+	to     string
+	joined bool
+}
+
+func (f *switchFirst) Run(ctx context.Context, args ...string) (string, error) {
+	if !f.joined && len(args) > 0 && args[0] == "join-pane" {
+		f.joined = true
+		f.s.MustTmux(f.t, "select-window", "-t", f.to)
+	}
+	return f.Tmux.Run(ctx, args...)
+}
+
+// A follow that read the client's window just before the client's next
+// switch moves the panel to the window it read, and leaves the client
+// where it went: the panel has the focus, and its move does not take the
+// session's window along. The next follow brings the panel.
+func TestFollowLeavesTheNextSwitch(t *testing.T) {
+	e := newEnv(t)
+	w1 := e.MustTmux(t, "new-window", "-d", "-t", "=proj-a:1", "-P", "-F", "#{window_id}")
+	w2 := e.MustTmux(t, "new-window", "-d", "-t", "=proj-a:2", "-P", "-F", "#{window_id}")
+	must(t, e.side.Toggle(e.ctx(), e.client))
+	p := e.panel(t)
+	e.MustTmux(t, "select-window", "-t", w1)
+	plain := e.side.Tmux
+	e.side.Tmux = &switchFirst{Tmux: plain, t: t, s: e.Server, to: w2}
+	must(t, e.side.Follow(e.ctx()))
+	e.side.Tmux = plain
+	if got := e.where(t); got != w2 {
+		t.Fatalf("client on %s after the follow, want %s, where it went", got, w2)
+	}
+	if got := e.Display(t, w1, "#{pane_id}"); got != p {
+		t.Errorf("active pane in %s = %s, want the panel, which had the focus", w1, got)
+	}
+	must(t, e.side.Follow(e.ctx()))
+	e.wantPanel(t, w2)
+	if got := e.Display(t, w2, "#{pane_id}"); got != p {
+		t.Errorf("active pane in %s = %s, want the panel", w2, got)
+	}
+}
+
 // Before its window or session is killed, the panel moves out, with its
 // client: the window's last window, else another session.
 func TestEvacuate(t *testing.T) {
