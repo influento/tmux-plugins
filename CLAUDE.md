@@ -406,8 +406,10 @@ Rules:
 - The log, `$XDG_STATE_HOME/tmux-agent/log` (to `log.old` past 4 MiB),
   gets every error no caller can show: the hook's, the watcher's. With
   `TMUX_AGENT_DEBUG` in the agent's environment it also gets each hook
-  event, a dropped one too, and each change of the context share: where
-  to look when a flag or a share was wrong. A watcher's look that fails
+  event, a dropped one too, each change of the context share, and each
+  panel `sidebar go` with its `$FZF_ACTION`: where to look when a flag,
+  a share or a panel move was wrong. Panel tests set it and print the
+  log when they fail. A watcher's look that fails
   still follows the files; the next change is the next try.
 - tmux-agent draws the flags: every change sets `@attention_mark` on the
   pane and `@attention_win_mark` on its window (the window shows its

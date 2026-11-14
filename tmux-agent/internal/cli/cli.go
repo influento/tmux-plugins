@@ -1282,6 +1282,9 @@ func (a *app) sidebar(ctx context.Context, args []string) error {
 	action, rest := args[0], args[1:]
 	switch {
 	case action == "go" && len(rest) == 2:
+		// Which of fzf's events ran it: a go from a reload's or a place's
+		// move takes the client back.
+		a.debugf("sidebar go %s %s, FZF_ACTION %q", rest[0], rest[1], a.getenv("FZF_ACTION"))
 		if err := a.side.Go(ctx, rest[0], rest[1]); err != nil {
 			return err
 		}

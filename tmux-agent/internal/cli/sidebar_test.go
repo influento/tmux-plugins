@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -99,6 +101,15 @@ func openPanel(t *testing.T, before ...[]string) (s *tmuxtest.Server, origin, pa
 	tmuxtest.Require(t, "tmux", "fzf")
 	sb := tmuxtest.NewSandbox(t)
 	selftest.Install(t, sb)
+	// The log then has each go, with the fzf event that ran it: a failed
+	// test shows it.
+	sb.Setenv("TMUX_AGENT_DEBUG", "1")
+	t.Cleanup(func() {
+		if t.Failed() {
+			data, err := os.ReadFile(filepath.Join(sb.StateHome, "tmux-agent", "log"))
+			t.Logf("tmux-agent log (%v):\n%s", err, data)
+		}
+	})
 	s = tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
 	origin = s.Display(t, "=proj-a:0", "#{pane_id}")
 	s.MustTmux(t, "rename-window", "-t", "=proj-a:0", "w-one")
@@ -273,7 +284,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 	lastC, lastW := "", ""
 	defer func() {
 		if t.Failed() {
-			t.Logf("timeline:\n%s", strings.Join(seen, "\n"))
+			t.Logf("timeline from %s:\n%s", t0.Format("15:04:05.000"), strings.Join(seen, "\n"))
 		}
 	}()
 	note := func(c, w string) {
