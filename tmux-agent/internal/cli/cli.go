@@ -72,13 +72,12 @@ const usage = `usage:
                                        +|-|N (prefix n, p, 1-9), layout CLIENT NAME|next|
                                        previous (preset layouts), close CLIENT; for the
                                        hooks: follow, keep, reload
-  tmux-agent pick-rows [--fzf [--place CLIENT]] [QUERY]
+  tmux-agent pick-rows [--fzf] [QUERY]
                                        the rows pick lists in the tree: the windows whose
                                        session or window name holds every word of QUERY;
-                                       --fzf takes the query, view and width from fzf,
-                                       --place notes the row of CLIENT's window for place
-  tmux-agent pick-key KEY [ARG]        what tab, enter or a reload (place) does in the
-                                       panel, as fzf actions
+                                       --fzf takes the query, view and width from fzf
+  tmux-agent pick-key KEY [ARG]        what tab, enter or place CLIENT (the cursor to its
+                                       window) does in the panel, as fzf actions
   tmux-agent kill TARGET               kill a picker row's session, window or pane,
                                        unless it ends the last session
   tmux-agent rows                      one line per session, its windows' flags inline
@@ -828,13 +827,13 @@ func (a *app) panelOf() attention.Panel {
 // lines.
 func (a *app) pickRows(ctx context.Context, args []string) error {
 	p := attention.Panel{View: attention.TreeView, Width: ui.PanelWidth - 1}
-	end, client, place := "\n", "", false
+	end := "\n"
 	if len(args) > 0 && args[0] == "--fzf" {
+		if len(args) > 1 {
+			return errUsage
+		}
 		p = a.panelOf()
 		end = "\x00"
-		if len(args) == 3 && args[1] == "--place" {
-			client, place = args[2], true
-		}
 	} else {
 		p.Words = attention.QueryWords(strings.Join(args, " "))
 	}
@@ -848,30 +847,55 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 	}
 	if end == "\x00" {
 		a.tellTick(next)
-	}
-	if place {
-		a.notePlace(ctx, rows, client)
+		a.notePlace(rows)
 	}
 	return nil
 }
 
-// notePlace keeps, for pick-key place, the row of the client's window in
-// the rows fzf is about to show: rows read again later can differ, and a
-// cursor put on another row takes the client there.
-func (a *app) notePlace(ctx context.Context, rows []attention.PickRow, client string) {
+// placeRow is what pick-key place needs of a row fzf shows.
+type placeRow struct{ Target, Fold, Session string }
+
+// notePlace keeps the rows fzf is about to show, for pick-key place: rows
+// read again later can differ, and a cursor put on another row takes the
+// client there. The client's window place reads itself: one read now can
+// be from before a move's switch.
+func (a *app) notePlace(rows []attention.PickRow) {
 	path := a.panelSocket(a.getenv("TMUX_PANE"), ".place")
 	if path == "" {
 		return
 	}
-	_ = os.Remove(path) // none is better than an old one
-	_, here, err := a.where(ctx, client)
+	noted := make([]placeRow, len(rows))
+	for i, r := range rows {
+		noted[i] = placeRow{r.Target, r.Fold, r.Session}
+	}
+	data, err := json.Marshal(noted)
+	if err == nil {
+		err = writeFileAtomic(path, data)
+	}
 	if err != nil {
-		a.logf("pick-rows: %v", err)
-		return
-	}
-	if err := os.WriteFile(path, []byte(strconv.Itoa(startRow(rows, here))), 0o600); err != nil {
+		_ = os.Remove(path) // none is better than an old one
 		a.logf("pick-rows: %v", err)
 	}
+}
+
+// writeFileAtomic replaces path with data: a reader sees the old file or
+// the new one, never a part.
+func writeFileAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(f.Name())
+	}
+	return err
 }
 
 // tellTick tells the panel's pick, when this runs for its fzf, when the
@@ -912,19 +936,32 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		st = st.Next()
 		fmt.Fprintln(a.stdout, "change-header-label("+st.String()+")+change-header("+ui.Header(st.View, width)+")+"+list)
 	case "place":
-		// The row pick-rows noted in the rows fzf shows. Without one (a
-		// newer reload stopped that pick-rows) the cursor stays: rows read
-		// again can differ, and a cursor on another row takes the client
-		// there.
+		// The row of CLIENT's window in the rows pick-rows noted last,
+		// which fzf shows. Without them the cursor stays. The window is
+		// read now: fzf runs this after the go of every move before it,
+		// so that switch is done. The move to the row is no move of the
+		// user's: the client is there.
+		if len(args) != 2 {
+			return errUsage
+		}
 		path := a.panelSocket(a.getenv("TMUX_PANE"), ".place")
 		if path == "" {
 			return nil
 		}
 		data, err := os.ReadFile(path)
-		_ = os.Remove(path)
-		if n, err2 := strconv.Atoi(string(data)); err == nil && err2 == nil {
-			fmt.Fprintf(a.stdout, "pos(%d)\n", n)
+		var noted []placeRow
+		if err != nil || json.Unmarshal(data, &noted) != nil {
+			return nil
 		}
+		_, here, err := a.where(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		rows := make([]attention.PickRow, len(noted))
+		for i, r := range noted {
+			rows[i] = attention.PickRow{Target: r.Target, Fold: r.Fold, Session: r.Session}
+		}
+		fmt.Fprintf(a.stdout, "unbind(focus)+pos(%d)+rebind(focus)\n", startRow(rows, here))
 	case "enter":
 		fold := ""
 		if len(args) > 1 {
@@ -968,7 +1005,7 @@ func clientArgs(client string) []string {
 // tickPanel has the panel's fzf, listening on socket, read its rows
 // again when what they show changes on its own: at next, unix seconds,
 // and then at each time its reads tell on tick. 0 is never.
-func (a *app) tickPanel(ctx context.Context, tick *net.UnixConn, socket, client string, next int64) {
+func (a *app) tickPanel(ctx context.Context, tick *net.UnixConn, socket string, next int64) {
 	times := make(chan int64, 1)
 	go func() {
 		buf := make([]byte, 32)
@@ -1005,7 +1042,7 @@ func (a *app) tickPanel(ctx context.Context, tick *net.UnixConn, socket, client 
 			set(at)
 		case <-timer.C:
 			rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			if err := ui.Reload(rctx, socket, shell.Quote(a.self), client); err != nil {
+			if err := ui.Reload(rctx, socket, shell.Quote(a.self)); err != nil {
 				a.logf("tick panel: %v", err)
 			}
 			cancel()
@@ -1066,6 +1103,7 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	if err != nil {
 		return err
 	}
+	a.notePlace(rows) // not an older panel's in this pane
 	startPane, startWindow, err := a.where(ctx, client)
 	if err != nil {
 		return err
@@ -1103,7 +1141,7 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 		ticking := make(chan struct{})
 		go func() {
 			defer close(ticking)
-			a.tickPanel(tctx, tick, listen, client, next)
+			a.tickPanel(tctx, tick, listen, next)
 		}()
 		stopTick = func() {
 			cancel()
@@ -1239,7 +1277,10 @@ func (a *app) sidebar(ctx context.Context, args []string) error {
 	case action == "close" && len(rest) == 1:
 		return a.side.Close(ctx, rest[0])
 	case action == "follow" && len(rest) == 0:
-		return a.side.Follow(ctx)
+		if err := a.side.Follow(ctx); err != nil {
+			return err
+		}
+		return a.placePanels(ctx)
 	case action == "keep" && len(rest) == 0:
 		return a.side.Keep(ctx)
 	case action == "reload" && len(rest) == 0:
@@ -1248,10 +1289,17 @@ func (a *app) sidebar(ctx context.Context, args []string) error {
 	return errUsage
 }
 
+// placePanels puts the cursor of every open panel on its client's window.
+func (a *app) placePanels(ctx context.Context) error {
+	return a.side.Panels(ctx, func(ctx context.Context, client, socket string) error {
+		return ui.Place(ctx, socket, shell.Quote(a.self), client)
+	})
+}
+
 // reloadPanels tells every open panel to read its rows again.
 func (a *app) reloadPanels(ctx context.Context) error {
-	return a.side.Reload(ctx, func(ctx context.Context, client, socket string) error {
-		return ui.Reload(ctx, socket, shell.Quote(a.self), client)
+	return a.side.Panels(ctx, func(ctx context.Context, client, socket string) error {
+		return ui.Reload(ctx, socket, shell.Quote(a.self))
 	})
 }
 

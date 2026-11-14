@@ -104,13 +104,15 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 	skipDown := "down+transform:[ -n {1} ] && echo down || true"
 	skipUp := `up+transform:if [ -n {1} ]; then [ "$FZF_POS" = 1 ] && echo down || echo up; fi`
 	change := "reload-sync(" + list + ")"
+	place := opts.Self + " pick-key place " + shell.Quote(opts.Client)
 	args := []string{"--ansi", "--height=100%", "--layout=reverse", "--no-sort",
 		// Rows show the name and the detail. fzf only displays: pick-rows
 		// filters on each change of the query.
 		"--read0", "--delimiter=\t", "--with-nth=3", "--disabled", "--no-hscroll",
-		// A row is its target: after a reload the cursor on the same row
-		// is no new focus.
-		"--id-nth=2",
+		// A row is its target and its fold (a session's line and its fold
+		// share a target): after a reload the cursor on the same row is no
+		// new focus.
+		"--id-nth=2,5",
 		"--header=" + Header(opts.State.View, opts.Width), "--header-first", "--header-label=" + opts.State.String(),
 		// The views in the text's colour, not the theme's header colour. The
 		// text and the background are the pane's, not a theme's from
@@ -126,14 +128,16 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		"--bind=btab:transform:" + opts.Self + " pick-key tab",
 		"--bind=down:" + skipDown, "--bind=ctrl-j:" + skipDown, "--bind=ctrl-n:" + skipDown, "--bind=scroll-down:" + skipDown,
 		"--bind=up:" + skipUp, "--bind=ctrl-k:" + skipUp, "--bind=ctrl-p:" + skipUp, "--bind=scroll-up:" + skipUp,
-		// A new list: a search starts on its first window; otherwise the
-		// cursor leaves a session line it landed on.
-		`--bind=result:transform:if [ -n {q} ]; then echo 'pos(2)'; elif [ -n {1} ]; then echo down; fi`,
+		// A new list: a search starts on its first window; a cursor on a
+		// session line leaves it; otherwise the cursor goes to the
+		// client's window, as place reads it then: the cursor's row may be
+		// gone, or the client moved some other way.
+		`--bind=result:transform:if [ -n {q} ]; then echo 'pos(2)'; elif [ -n {1} ]; then echo down; else ` + place + `; fi`,
 		"--bind=enter:transform:[ -n {1} ] || " + opts.Self + " pick-key enter {5}",
-		// Only the user's moves take the client along. A reload's move (a
-		// row gone, the rows in another order, place) fires focus after
-		// the reload or the rebind that ends it, and a reload read before
-		// a window switch would take the client back.
+		// Only the user's moves take the client along. A move of a reload
+		// (rows gone or in another order) or of place fires focus with
+		// $FZF_ACTION rebind or reload: a go then, from rows read before a
+		// window switch, took the client back.
 		`--bind=focus:execute-silent(case "$FZF_ACTION" in rebind|reload|reload-sync) ;; *) [ -n {1} ] || ` + show + ` {2} ;; esac)`,
 		// The client stays where it is until the cursor is on its row: the
 		// first row fires a focus event before the cursor moves.
@@ -168,34 +172,50 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 	return f[1], nil
 }
 
-// reloadAction reads the rows again and puts the cursor on the row of the
-// client's window in them.
-func reloadAction(self, client string) string {
-	return fmt.Sprintf("unbind(focus)+reload-sync(%s pick-rows --fzf --place %s)+transform(%s pick-key place)+rebind(focus)",
-		self, shell.Quote(client), self)
+// placeAction puts the cursor on the row of client's window, without a
+// move of the client: the window is where the client is.
+func placeAction(self, client string) string {
+	return fmt.Sprintf("transform(%s pick-key place %s)", self, shell.Quote(client))
 }
 
-// Reload tells the panel's fzf listening on socket that windows came, went
-// or were renamed. self and client are Pick's.
-func Reload(ctx context.Context, socket, self, client string) error {
+// Reload tells the panel's fzf listening on socket to read its rows again:
+// windows came, went or were renamed, a flag or an age changed. The
+// result event then puts the cursor on the client's window. self is
+// Pick's.
+func Reload(ctx context.Context, socket, self string) error {
+	// rebind(focus) changes nothing but $FZF_ACTION: the focus event of
+	// a cursor the new rows moved is no move of the user's. No tracking
+	// of the cursor's row: fzf would undo a key pressed during the reload.
+	return send(ctx, socket, "rebind(focus)+reload-sync("+self+" pick-rows --fzf)")
+}
+
+// Place tells the panel's fzf listening on socket that its client moved
+// some other way than the panel: the cursor goes to the client's window.
+// self and client are Pick's.
+func Place(ctx context.Context, socket, self, client string) error {
+	return send(ctx, socket, placeAction(self, client))
+}
+
+// send posts actions to the fzf listening on socket.
+func send(ctx context.Context, socket, actions string) error {
 	hc := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", socket)
 		},
 	}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://fzf/", strings.NewReader(reloadAction(self, client)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://fzf/", strings.NewReader(actions))
 	if err != nil {
 		return err
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("ui: reload the panel: %w", err)
+		return fmt.Errorf("ui: send to the panel: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("ui: reload the panel: %s: %s", resp.Status, bytes.TrimSpace(body))
+		return fmt.Errorf("ui: send to the panel: %s: %s", resp.Status, bytes.TrimSpace(body))
 	}
 	return nil
 }

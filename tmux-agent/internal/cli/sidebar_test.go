@@ -1,8 +1,14 @@
 package cli_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -191,5 +197,140 @@ func TestPanelReloadLeavesClient(t *testing.T) {
 	}
 	if got, want := s.MustTmux(t, "list-clients", "-F", "#{pane_id}"), origin; got != want {
 		t.Errorf("client on %s after reloads, want %s", got, want)
+	}
+}
+
+// panelCursor is the target of the row under the panel's cursor, as its
+// fzf tells on its socket.
+func panelCursor(t *testing.T, socket string) string {
+	t.Helper()
+	hc := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+	}}
+	resp, err := hc.Get("http://fzf/?limit=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var st struct{ Current *struct{ Text string } }
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Current == nil {
+		return ""
+	}
+	f := strings.Split(st.Current.Text, "\t")
+	if len(f) < 2 {
+		return ""
+	}
+	return f[1]
+}
+
+// The window follows the panel's cursor at once, and the cursor stays on
+// the row it was moved to, while the panel reloads (its ticks, a flag
+// changed): a reload put the cursor back on the row of the window the
+// client showed before the move, and the window and the row disagreed
+// until the next reload. A switch some other way moves the cursor.
+func TestPanelMoveWhileReloading(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	names := []string{"w-two", "w-three", "w-four", "w-five"}
+	for _, n := range names {
+		p := s.MustTmux(t, "new-window", "-d", "-n", n, "-P", "-F", "#{pane_id}")
+		// Working: a visit leaves the flag, so the rows stay.
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+	}
+	s.WaitForContent(t, panel, "w-five")
+	socket := s.Display(t, panel, "#{"+sidebar.OptListen+"}")
+	client := func() string {
+		return s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}")
+	}
+
+	reload := s.Command(t, origin, "tmux-agent", "sidebar", "reload")
+	ctx, stop := context.WithCancel(t.Context())
+	var reloads sync.WaitGroup
+	reloads.Go(func() {
+		for ctx.Err() == nil {
+			cmd := exec.CommandContext(ctx, reload.Path, reload.Args[1:]...)
+			cmd.Env = reload.Env
+			_ = cmd.Run() // the panel reloads or it does not; the moves tell
+			time.Sleep(30 * time.Millisecond)
+		}
+	})
+	defer reloads.Wait()
+	defer stop()
+
+	t0 := time.Now()
+	var seen []string
+	lastC, lastW := "", ""
+	defer func() {
+		if t.Failed() {
+			t.Logf("timeline:\n%s", strings.Join(seen, "\n"))
+		}
+	}()
+	note := func(c, w string) {
+		if c != lastC || w != lastW {
+			seen = append(seen, fmt.Sprintf("%6.1f ms cursor %s client %s", float64(time.Since(t0).Microseconds())/1000, c, w))
+			lastC, lastW = c, w
+		}
+	}
+	note(panelCursor(t, socket), client())
+	key := "Up" // the cursor starts on the fold below the windows
+	for range 12 {
+		from := panelCursor(t, socket)
+		switch from {
+		case "=proj-a:1":
+			key = "Down"
+		case "=proj-a:4", "=proj-a:":
+			key = "Up"
+		}
+		start := time.Now()
+		seen = append(seen, fmt.Sprintf("%6.1f ms send %s", float64(time.Since(t0).Microseconds())/1000, key))
+		s.MustTmux(t, "send-keys", "-t", panel, key)
+		to := ""
+		for time.Since(start) < 300*time.Millisecond && to == "" {
+			c := panelCursor(t, socket)
+			note(c, client())
+			if c != from {
+				to = c
+			}
+		}
+		if to == "" {
+			t.Fatalf("%s from %s: the cursor did not move", key, from)
+		}
+		var followed time.Duration
+		for time.Since(start) < 500*time.Millisecond {
+			c, w := panelCursor(t, socket), client()
+			note(c, w)
+			if c != to {
+				t.Fatalf("cursor moved from %s to %s, then to %s (client on %s)", from, to, c, w)
+			}
+			if followed == 0 && w == to {
+				followed = time.Since(start)
+			}
+		}
+		if followed == 0 {
+			t.Fatalf("client on %s %v after the cursor moved to %s", client(), time.Since(start), to)
+		}
+		if followed > 300*time.Millisecond {
+			t.Errorf("client took %v to follow the cursor to %s", followed, to)
+		}
+	}
+
+	// A switch some other way (prefix n, a notification) takes the cursor
+	// along.
+	for _, to := range []string{"=proj-a:2", "=proj-a:4"} {
+		start := time.Now()
+		s.MustTmux(t, "select-window", "-t", to)
+		for c := panelCursor(t, socket); c != to; c = panelCursor(t, socket) {
+			note(c, client())
+			if time.Since(start) > 300*time.Millisecond {
+				t.Fatalf("cursor on %s %v after a switch to %s", c, time.Since(start), to)
+			}
+		}
 	}
 }

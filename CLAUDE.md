@@ -267,7 +267,9 @@ Rules:
   leaves it out of the agent's environment; the hook of the session's
   start signals it, the launcher itself for an agent with no hooks, and
   the run's end or a missing program too, so start never waits out its
-  timeout for an agent that is gone. A name in use is exit 3. `close`
+  timeout for an agent that is gone. A name in use is exit 3. The
+  window's PATH is the caller's (tmux takes it from a client with no
+  session); its other variables come from tmux's environment. `close`
   matches window names in every session and closes the caller's own
   window last, through the panel's kill.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
@@ -311,13 +313,16 @@ Rules:
   is its pane's labels (see below), dim, cut to the width. fzf only
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
   have two lines) and filters by session and window name, so a session's
-  name keeps all its windows; `pick-key` gives Tab's and Enter's actions,
-  and `place` the cursor after a reload: the row `pick-rows --place` noted
-  in the same rows, since rows read again can differ. The focus event runs
-  `sidebar go` only for the user's moves: fzf fires focus after a reload
-  too (it counts the row as new unless `--id-nth` gives rows an identity),
-  with `$FZF_ACTION` `rebind`, `reload` or `reload-sync`, and such a go,
-  read before a window switch, took the client back.
+  name keeps all its windows; `pick-key` gives Tab's and Enter's actions.
+  After a reload, fzf's result event, and the follow hook for a client
+  moved some other way, run `pick-key place`: the cursor goes to the
+  client's window, read at that moment, in the rows `pick-rows` noted.
+  fzf runs it after the go of every move before it; a window read inside
+  the reload's `pick-rows` could be from before a move's switch, and put
+  the cursor back on the old row. No `--track` or `track-current`: fzf
+  undoes a key pressed during a reload that tracks. The focus event runs
+  `sidebar go` only for the user's moves: a reload's or a place's move
+  fires focus with `$FZF_ACTION` `rebind`, `reload` or `reload-sync`.
   A change of a flag, reason or label reloads the open panels
   (`Core.Changed`). What changes with no event (an age's next value, a
   label's end) `pick-rows` tells the panel's `pick` on its `.tick` socket,

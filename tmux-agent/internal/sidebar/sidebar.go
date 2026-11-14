@@ -468,7 +468,7 @@ func (s *Sidebar) Go(ctx context.Context, clientName, target string) error {
 	c, ok := cs[clientName]
 	for _, p := range ps {
 		if ok && p.client == clientName {
-			return s.move(ctx, c, p, target)
+			return s.move(ctx, c, p, target, true)
 		}
 	}
 	args := []string{"switch-client"}
@@ -479,16 +479,19 @@ func (s *Sidebar) Go(ctx context.Context, clientName, target string) error {
 	return err
 }
 
-// move joins the panel into target's window and switches the client
-// there. The window it leaves is laid out from its main area; the window
-// it joins, for the client's size, which the window takes as the client
-// switches to it.
-func (s *Sidebar) move(ctx context.Context, c client, p panel, target string) error {
+// move joins the panel into target's window and, with take, switches the
+// client there. The window it leaves is laid out from its main area; the
+// window it joins, for the client's size, which the window takes as the
+// client switches to it.
+func (s *Sidebar) move(ctx context.Context, c client, p panel, target string, take bool) error {
 	to, err := s.window(ctx, target)
 	if err != nil {
 		return err
 	}
 	if to.id == p.window {
+		if !take {
+			return nil
+		}
 		_, err := s.Tmux.Run(ctx, "switch-client", "-c", c.name, "-t", to.id)
 		return err
 	}
@@ -518,8 +521,10 @@ func (s *Sidebar) move(ctx context.Context, c client, p panel, target string) er
 		args = append(args, forget(from.id)...)
 		args = append(args, "select-layout", "-t", from.id, fromMain.Scale(from.width, from.height).String(), ";")
 	}
+	if take {
+		args = append(args, "switch-client", "-c", c.name, "-t", to.id, ";")
+	}
 	args = append(args,
-		"switch-client", "-c", c.name, "-t", to.id, ";",
 		"set-option", "-w", "-t", to.id, OptMain, toMain.String(), ";",
 		"set-option", "-w", "-t", to.id, OptSize, size(w, h), ";",
 		"set-option", "-w", "-t", to.id, OptLast, to.active, ";",
@@ -673,7 +678,9 @@ func (s *Sidebar) Follow(ctx context.Context) error {
 			errs = append(errs, s.close(ctx, p, left == 1, ""))
 			left--
 		case c.window != p.window:
-			errs = append(errs, s.move(ctx, c, p, c.window))
+			// The client is there: a switch to a window read before
+			// its next switch would take it back.
+			errs = append(errs, s.move(ctx, c, p, c.window, false))
 		}
 	}
 	return errors.Join(errs...)
@@ -863,7 +870,7 @@ func (s *Sidebar) alone(ctx context.Context, p panel, open int) error {
 	if to == "" {
 		return s.close(ctx, p, open == 1, "")
 	}
-	return s.move(ctx, c, p, to)
+	return s.move(ctx, c, p, to, true)
 }
 
 // elsewhere is the window a panel goes to when its window goes: the last
@@ -957,15 +964,15 @@ func (s *Sidebar) Evacuate(ctx context.Context, target string) error {
 			left--
 			continue
 		}
-		errs = append(errs, s.move(ctx, c, p, to))
+		errs = append(errs, s.move(ctx, c, p, to, true))
 	}
 	return errors.Join(errs...)
 }
 
-// Reload tells every panel that windows came, went or were renamed: send
-// reaches the fzf of client's panel on its socket. A panel not listening
-// yet reads the windows when it starts.
-func (s *Sidebar) Reload(ctx context.Context, send func(ctx context.Context, client, socket string) error) error {
+// Panels runs send for every open panel: send reaches the fzf of client's
+// panel on its socket. A panel not listening yet reads the windows, and
+// places its cursor, when it starts.
+func (s *Sidebar) Panels(ctx context.Context, send func(ctx context.Context, client, socket string) error) error {
 	out, err := s.Tmux.Output(ctx, "list-panes", "-a", "-F", "#{"+OptClient+"}"+sep+"#{"+OptListen+"}")
 	if err != nil {
 		return err
