@@ -398,3 +398,56 @@ func TestWatchFollowsAfterAFailedLook(t *testing.T) {
 	state(80_000)
 	tmuxtest.WaitFor(t, 5*time.Second, "the share of the next call", func() bool { return show() == "40" })
 }
+
+// A session's transcript comes with its first prompt, after the session
+// started: the watch reports it when it comes, and its writes from then
+// on; another session's file beside it stays quiet.
+func TestFollowANewTranscript(t *testing.T) {
+	dir := t.TempDir()
+	transcript := filepath.Join(dir, sessionA+".jsonl")
+	files, err := newFileWatch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.close()
+	w := &watchState{a: fileAgent{}, files: files}
+	w.follow(&Env{}, context.Background(), transcript, "")
+
+	change := func(what string) {
+		t.Helper()
+		select {
+		case p := <-files.changes:
+			if p != dir && p != transcript {
+				t.Fatalf("%s: change of %q", what, p)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: no change", what)
+		}
+		for { // a write fires more than one event
+			select {
+			case <-files.changes:
+			case <-time.After(50 * time.Millisecond):
+				return
+			}
+		}
+	}
+	quiet := func(what string) {
+		t.Helper()
+		select {
+		case p := <-files.changes:
+			t.Fatalf("%s: change of %q, want none", what, p)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	write(t, filepath.Join(dir, "other.jsonl"), "{}")
+	quiet("another session's file")
+	write(t, transcript, "{}")
+	change("the transcript's start")
+	write(t, transcript, "{}")
+	change("a write before the next look")
+	w.follow(&Env{}, context.Background(), transcript, "")
+	write(t, transcript, "{}")
+	change("a write after it")
+	write(t, filepath.Join(dir, "other.jsonl"), "{}")
+	quiet("another session's file, the transcript there")
+}

@@ -182,7 +182,9 @@ func (e *Env) look(ctx context.Context, w *watchState, scan, git bool) error {
 }
 
 // follow points the file watch at the session's transcript and the
-// agent's other files for it, and at the git folder of cwd.
+// agent's other files for it, and at the git folder of cwd. A transcript
+// not there yet (an agent can write it first at the first prompt) is
+// watched through its folder, for its name alone, until a look finds it.
 func (w *watchState) follow(e *Env, ctx context.Context, transcript, cwd string) {
 	if cwd != w.cwd {
 		w.cwd, w.gitDir = cwd, ""
@@ -196,6 +198,10 @@ func (w *watchState) follow(e *Env, ctx context.Context, transcript, cwd string)
 	paths := map[string]func(string) bool{}
 	if transcript != "" {
 		paths[transcript] = nil
+		if _, err := os.Lstat(transcript); err != nil {
+			name := filepath.Base(transcript)
+			paths[filepath.Dir(transcript)] = func(n string) bool { return n == name }
+		}
 		if fw, ok := w.a.(FileWatcher); ok {
 			for _, p := range fw.WatchedFiles(transcript) {
 				paths[p] = nil

@@ -221,7 +221,8 @@ Rules:
 - A watcher keeps a pane live from what no hook tells, while
   its agent runs: a turn cut short, a subagent stopped, the context share,
   the title, the branch, the nested runs. It waits on inotify (the
-  transcript, the adapter's `WatchedFiles`, the git folder's HEAD), pidfds
+  transcript, or its folder until Claude Code writes it at the first
+  prompt; the adapter's `WatchedFiles`; the git folder's HEAD), pidfds
   (the runs, and the agent when it watches one the launcher did not
   start) and a datagram socket the hooks wake it on; it never polls, and
   gathers a burst into one look after 100 ms. Stop and SessionStart
