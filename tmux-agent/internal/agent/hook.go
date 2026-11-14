@@ -52,6 +52,12 @@ type Env struct {
 	// Watcher starts, in the background, a watcher (Watch) for the agent
 	// in pane, process pid, which runs without one; none when nil.
 	Watcher func(a Agent, pane string, pid int)
+	// NotesDir holds a note per agent process: its session (see
+	// lineage.go); none when empty.
+	NotesDir string
+	// Lineage names the agent process of the calling hook and the agent
+	// process above that one; procLineage when nil.
+	Lineage func(names []string) (self, parent string)
 }
 
 func (e *Env) now() time.Time {
@@ -229,8 +235,12 @@ func (e *Env) Hook(ctx context.Context, a Agent, payload []byte) error {
 	if nested == nil {
 		nested = NestedHook
 	}
-	if nested(e.Registry.ProcessNames(), e.Run) {
+	names := e.Registry.ProcessNames()
+	self, parent := e.lineage(names)
+	e.noteSession(a, ev.SessionID, self)
+	if nested(names, e.Run) {
 		// A run the agent started: its watcher counts the runs again.
+		e.noteParent(ctx, a, ev.SessionID, parent)
 		e.wake(e.Pane, wakeScan)
 		return nil
 	}

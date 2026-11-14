@@ -96,15 +96,17 @@ func cutAtWord(s string, n int) string {
 }
 
 // promptText returns the text of a transcript line that holds a prompt the
-// user typed.
+// user typed. Text Claude Code adds as the user's (a skill's body) is
+// marked isMeta.
 func promptText(line []byte) (string, bool) {
 	var entry struct {
 		Type    string `json:"type"`
+		Meta    bool   `json:"isMeta"`
 		Message struct {
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
-	if json.Unmarshal(line, &entry) != nil || entry.Type != "user" {
+	if json.Unmarshal(line, &entry) != nil || entry.Type != "user" || entry.Meta {
 		return "", false
 	}
 	var text string

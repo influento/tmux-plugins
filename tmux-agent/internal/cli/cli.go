@@ -16,11 +16,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/internal/shell"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/agent"
@@ -28,6 +30,7 @@ import (
 	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/sidebar"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/store"
+	"github.com/influento/tmux-plugins/tmux-agent/internal/tally"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/ui"
 )
 
@@ -78,6 +81,17 @@ const usage = `usage:
   tmux-agent subagents scan            fill the records of ended subagents from each
                                        agent's own files: those from before tmux-agent
                                        kept records, and any whose end no hook told
+  tmux-agent tokens [--since 7d|Nh|YYYY-MM-DD|all] [--by day|session|path|model|type|agent]
+                  [--sort total|fresh|cache|output] [--path FOLDER] [--top N] [--flat] [--json]
+                                       the tokens agents spent: fresh in (input and cache
+                                       writes), cache reads and output. By session or
+                                       path, a session lists under it the runs it
+                                       started (claude -p), by title or folder, and its
+                                       total with them; --flat gives each its own row.
+                                       Days in order, other rows the most first. --path
+                                       keeps what counts for FOLDER or below. It first
+                                       reads what the transcripts gained
+  tmux-agent tokens scan               only that read; tmux-init runs it
   tmux-agent watch AGENT PANE PID     keep the pane's flags, title, labels and context
                                        share live while process PID runs; the hooks
                                        and tmux-init start it for agents without one
@@ -156,6 +170,8 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 		return a.env.Revive(a.reg.Get(rest[0]), rest[1], self, stderr)
 	case "subagents":
 		return a.subagents(rest)
+	case "tokens":
+		return a.tokenReport(rest, time.Now())
 	case "watch":
 		return a.watch(rest)
 	case "--version", "version":
@@ -211,6 +227,7 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 		Fill:     a.spawnFill,
 		Watcher:  a.spawnWatch,
 		Getenv:   getenv,
+		NotesDir: filepath.Join(store.RuntimeDir(getenv), "agents"),
 	}
 	a.core.Changed = func(ctx context.Context) {
 		if err := a.reloadPanels(ctx); err != nil {
@@ -267,6 +284,17 @@ func (a *app) spawnScan() {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		a.logf("subagents scan: %v", err)
+		return
+	}
+	_ = cmd.Process.Release() // never waited for
+}
+
+// spawnTokenScan starts `tokens scan` in its own session.
+func (a *app) spawnTokenScan() {
+	cmd := exec.Command(a.self, "tokens", "scan")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		a.logf("tokens scan: %v", err)
 		return
 	}
 	_ = cmd.Process.Release() // never waited for
@@ -353,6 +381,118 @@ func (a *app) subagents(args []string) int {
 	}
 	fmt.Fprint(a.stderr, usage)
 	return 2
+}
+
+// tokenReport brings the token tallies up to date and, unless it runs as
+// `tokens scan`, prints what agents spent since a time, by a grouping.
+func (a *app) tokenReport(args []string, now time.Time) int {
+	fs := flag.NewFlagSet("tokens", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	sinceArg := fs.String("since", "7d", "")
+	by := fs.String("by", "day", "")
+	top := fs.Int("top", 20, "")
+	sortBy := fs.String("sort", "total", "")
+	flat := fs.Bool("flat", false, "")
+	path := fs.String("path", "", "")
+	asJSON := fs.Bool("json", false, "")
+	if len(args) == 1 && args[0] == "scan" {
+		_ = syscall.Setpriority(syscall.PRIO_PROCESS, 0, 10) // best effort
+		return a.scanTokens(false)
+	}
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 || *top < 0 || !slices.Contains(tally.Bys, *by) || tally.Sorts[*sortBy] == nil {
+		fmt.Fprint(a.stderr, usage)
+		return 2
+	}
+	since, err := tally.Since(*sinceArg, now, time.Local)
+	if err != nil {
+		fmt.Fprintf(a.stderr, "tmux-agent tokens: %v\n", err)
+		return 2
+	}
+	code := a.scanTokens(true) // a failed read leaves the tallies as they were
+	var names []string
+	for _, ag := range a.reg.Agents() {
+		names = append(names, ag.Name())
+	}
+	entries, err := tally.Entries(a.env.Store, names, tally.Attribution{Owner: a.runOwner, Home: a.getenv("HOME")})
+	if err == nil {
+		var r tally.Report
+		o := tally.Options{Since: since, By: *by, Sort: *sortBy, Loc: time.Local, Flat: *flat, Path: *path}
+		if o.Path != "" {
+			if o.Path, err = filepath.Abs(expandHome(o.Path, a.getenv("HOME"))); err != nil {
+				fmt.Fprintf(a.stderr, "tmux-agent tokens: %v\n", err)
+				return 2
+			}
+		}
+		if r, err = tally.Group(entries, o); err == nil {
+			if *asJSON {
+				err = r.WriteJSON(a.stdout)
+			} else {
+				err = r.WriteTable(a.stdout, *top)
+			}
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(a.stderr, "tmux-agent tokens: %v\n", err)
+		return 1
+	}
+	return code
+}
+
+// expandHome reads a leading ~ as the home folder.
+func expandHome(p, home string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		return home + p[1:]
+	}
+	return p
+}
+
+// runOwner names the session whose folder holds a run's, for the agents
+// that tell.
+func (a *app) runOwner(name, cwd string) string {
+	if ro, ok := a.reg.Get(name).(agent.RunOwner); ok {
+		return ro.RunOwner(cwd)
+	}
+	return ""
+}
+
+// scanTokens brings every agent's token tallies up to date. One pass runs
+// at a time: a first one reads every transcript, and each tmux-init starts
+// one. With wait, a pass waits for the one that runs, then reads what is
+// left; without, it leaves the work to that one.
+func (a *app) scanTokens(wait bool) int {
+	a.env.Log = a.logf
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+	lock := filepath.Join(store.RuntimeDir(a.getenv), "tokens.lock")
+	var unlock func()
+	var err error
+	if wait {
+		unlock, err = lockfile.Lock(ctx, lock)
+	} else {
+		var ok bool
+		if unlock, ok, err = lockfile.TryLock(lock); err == nil && !ok {
+			a.logf("tokens scan: another pass runs")
+			return 0
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(a.stderr, "tmux-agent tokens scan: %v\n", err)
+		return 1
+	}
+	defer unlock()
+	code := 0
+	if err := agent.PruneNotes(a.env.NotesDir); err != nil {
+		a.logf("prune notes: %v", err)
+	}
+	for _, ag := range a.reg.Agents() {
+		n, err := a.env.ScanUsage(ctx, ag, a.getenv)
+		if err != nil {
+			fmt.Fprintf(a.stderr, "tmux-agent tokens scan %s: %v\n", ag.Name(), err)
+			code = 1
+		}
+		a.logf("tokens scan %s: %d read", ag.Name(), n)
+	}
+	return code
 }
 
 // hook handles one hook event. It never writes stdout, which Claude Code
@@ -1250,6 +1390,7 @@ func (a *app) tmuxInit(ctx context.Context) error {
 		return err
 	}
 	a.spawnScan() // subagents whose end no hook told, such as all from before
+	a.spawnTokenScan()
 	if err := a.env.WatchAll(ctx); err != nil {
 		return err
 	}

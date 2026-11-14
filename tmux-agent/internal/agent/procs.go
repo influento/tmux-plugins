@@ -16,6 +16,7 @@ type proc struct {
 	state     byte // R, S, T (stopped) and so on
 	comm      string
 	argv      []string
+	start     string // when it started, in clock ticks after boot
 }
 
 // procRoot is where process information lives; tests point it elsewhere.
@@ -41,6 +42,9 @@ func readProc(pid int) (proc, error) {
 		return proc{}, fmt.Errorf("process %d: parent: %w", pid, err)
 	}
 	p := proc{pid: pid, ppid: ppid, state: rest[0][0], comm: string(stat[open+1 : end])}
+	if len(rest) > 19 {
+		p.start = rest[19]
+	}
 	if cmdline, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cmdline")); err == nil {
 		p.argv = strings.Split(strings.TrimSuffix(string(cmdline), "\x00"), "\x00")
 	}

@@ -174,8 +174,9 @@ Packages in `tmux-agent/internal/`:
   a linked worktree, in one `rev-parse` (a second for a detached HEAD).
 - `store`: one JSON record per session in
   `$XDG_STATE_HOME/tmux-agent/sessions/<agent>/<id>.json` (mode 0600, never
-  deleted), one per subagent in `<id>/subagents/<subagent id>.json`, and
-  the lock.
+  deleted), one per subagent in `<id>/subagents/<subagent id>.json`, the
+  session's token tally in `<id>/usage.json`, and the lock.
+- `tally`: adds the tallies and subagent records up into `tokens`' rows.
 - `sidebar`: the panel as a pane that follows its client (see below).
 - `ui`: fzf, notify-send, swaymsg. `cli`: the subcommands, wiring the rest.
 - `selftest`: lets a test binary stand in for tmux-agent.
@@ -342,6 +343,30 @@ Rules:
   agent process's folder for the project), capped by the model's
   window. The transcript does not name the window: 1M for a `[1m]` model
   or a call past 200k, else 200k. It goes with the session.
+- Token analytics (step 4b): `tokens` reads every transcript in the
+  agent's files (not only the sessions tmux-agent ran) from where the
+  session's tally stopped, then reports. Each model call counts once, by
+  its message id: Claude Code writes one line per block of an answer, with
+  the same usage, and a tool's result can come between them, so a tally
+  keeps the last ids across reads. The kinds stay apart (cache reads are
+  ~95% of all tokens); no prices. A subagent counts at its start, from its
+  record. Compactions and Claude Code's side calls are in no transcript.
+  Most sessions are `claude -p` runs other sessions start. A run's
+  parent is, first, what its hook read from the process tree: every hook
+  notes its agent process (pid and start time) → session in
+  `$XDG_RUNTIME_DIR/tmux-agent/agents/`, and a nested hook records the
+  note of the agent above its own as `parent` in the run's tally
+  (`agent/lineage.go`; `tokens scan` prunes notes of gone processes).
+  Else, for history, the path: a run in a session's scratchpad (the
+  adapter's `RunOwner`) counts for that session. A session's folder is
+  where it started, a `.worktrees/` folder as its repo, a folder below
+  one where an interactive session started as that one, never the home
+  folder (`tally/attribute.go`). By session or path a parent's row is its
+  own work; its runs are child rows (by title, by folder) and a total
+  with them; `--flat` gives each session its own row.
+  The read runs without the lock; the write, under it, drops a read when
+  another pass moved the tally. `tmux-init` spawns `tokens scan`; one
+  pass reads at a time (`tokens.lock`), and a report waits for it.
 - tmux-agent draws the flags: every change sets `@attention_mark` on the
   pane and `@attention_win_mark` on its window (the window shows its
   best-ranked pane), a ready-to-print glyph in its `@attention_fg_*` colour,

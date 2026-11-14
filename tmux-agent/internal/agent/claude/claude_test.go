@@ -208,6 +208,10 @@ func TestTitle(t *testing.T) {
 			`{"type":"user","message":{"content":[{"type":"text","text":"update the"},{"type":"text","text":"readme now"}]}}`,
 		}, "update the read", false},
 		{"no prompt", []string{user("/clear")}, "", false},
+		{"skips what Claude Code adds", []string{
+			`{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill: /x"}]}}`,
+			user("fix the build"),
+		}, "fix the build", false},
 		{"ai-title wins", []string{user("Write a 300-word story about a lighthouse"), ai("Lighthouse short story")}, "Lighthouse short story", true},
 		{"ai-title cut at a word", []string{user("go"), ai("Poteto-vs-workshop card review S9")}, "Poteto-vs-workshop card", true},
 		{"ai-title one long word", []string{ai("Supercalifragilisticexpialidocious")}, "Supercalifragilisticexpi", true},
