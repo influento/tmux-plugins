@@ -18,15 +18,24 @@ const (
 	windowLong    int64 = 1_000_000
 )
 
+// Claude Code compacts below the window: it keeps room for the answer
+// (the model's output limit, at most 20,000 tokens; every model's limit is
+// higher) and a buffer of 13,000 more. Its "% until auto-compact" counts
+// down to that point.
+const (
+	outputReserve int64 = 20_000
+	compactBuffer int64 = 13_000
+)
+
 // managedSettings is the settings file an administrator sets; it wins over
 // every other.
 var managedSettings = "/etc/claude-code/managed-settings.json"
 
 // Context reads the tokens of the main agent's last model call (input,
 // cache written and cache read: what the next call sends again) or, after
-// a compaction, the tokens it left. The limit is Claude Code's
-// autoCompactWindow setting, where it compacts, capped by the model's
-// window; without the setting, the window. The transcript does not say
+// a compaction, the tokens it left. The limit is where Claude Code
+// compacts: its autoCompactWindow setting, capped by the model's window,
+// less the output reserve and the buffer. The transcript does not say
 // which window a model has: a model named with [1m] has the long one, and
 // so has one whose call held more than the short one.
 func (Claude) Context(transcript, cwd, start string, getenv func(string) string) (used, limit int64, ok bool) {
@@ -118,9 +127,9 @@ func contextLimit(project string, getenv func(string) string, used int64) int64 
 		window = windowLong
 	}
 	if compactAt > 0 && compactAt < window {
-		return compactAt
+		window = compactAt
 	}
-	return window
+	return window - outputReserve - compactBuffer
 }
 
 // settingsFiles are Claude Code's settings files, the strongest first. A

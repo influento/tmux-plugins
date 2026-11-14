@@ -359,7 +359,8 @@ Rules:
   Code's `autoCompactWindow` (managed, `$CLAUDE_PROJECT_DIR` local and
   shared, user settings; the first that sets it; a watcher takes the
   agent process's folder for the project), capped by the model's
-  window. The transcript does not name the window: 1M for a `[1m]` model
+  window, less the 33k Claude Code keeps free (20k for the answer, a 13k
+  buffer): its `% until auto-compact` counts to that point. The transcript does not name the window: 1M for a `[1m]` model
   or a call past 200k, else 200k. It goes with the session.
 - Token analytics (step 4b): `tokens` reads every transcript in the
   agent's files (not only the sessions tmux-agent ran) from where the

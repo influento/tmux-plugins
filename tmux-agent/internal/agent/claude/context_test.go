@@ -59,15 +59,37 @@ func TestContextUsed(t *testing.T) {
 			if used != tc.want || ok != tc.ok {
 				t.Errorf("got %d, %v; want %d, %v", used, ok, tc.want, tc.ok)
 			}
-			if ok && limit != windowDefault {
-				t.Errorf("limit %d, want %d", limit, windowDefault)
+			if ok && limit != 167_000 {
+				t.Errorf("limit %d, want 167000", limit)
 			}
 		})
 	}
 }
 
-// The limit is where Claude Code compacts (autoCompactWindow), capped by
-// the model's window, read from the strongest settings file that sets it.
+// The share is what Claude Code's own indicator shows: a pane whose last
+// call held 354,938 tokens, with autoCompactWindow 400000, showed "3% until
+// auto-compact", so the panel shows 97.
+func TestContextShareMatchesClaudeCode(t *testing.T) {
+	saved := managedSettings
+	t.Cleanup(func() { managedSettings = saved })
+	home := t.TempDir()
+	managedSettings = filepath.Join(home, "managed.json")
+	writeFile(t, filepath.Join(home, ".claude/settings.json"), `{"autoCompactWindow":400000}`)
+	transcript := filepath.Join(home, "s.jsonl")
+	writeFile(t, transcript, `{"type":"assistant","isSidechain":false,"message":{"model":"claude-x","usage":{"input_tokens":1,"cache_creation_input_tokens":938,"cache_read_input_tokens":353999,"output_tokens":90}}}`+"\n")
+	env := map[string]string{"HOME": home}
+	used, limit, ok := Claude{}.Context(transcript, filepath.Join(home, "src/proj-a"), "", func(k string) string { return env[k] })
+	if !ok {
+		t.Fatal("no context read")
+	}
+	if share := (used*100 + limit/2) / limit; share != 97 {
+		t.Errorf("share %d%% (%d of %d), want 97%%: Claude Code shows 3%% until auto-compact", share, used, limit)
+	}
+}
+
+// The limit is where Claude Code compacts: the autoCompactWindow of the
+// strongest settings file that sets it, capped by the model's window, less
+// 33,000 tokens it keeps free.
 // The project is the folder Claude Code started in, not the hook's cwd.
 func TestContextLimit(t *testing.T) {
 	saved := managedSettings
@@ -80,35 +102,35 @@ func TestContextLimit(t *testing.T) {
 		used  int64
 		want  int64
 	}{
-		{"nothing set", nil, nil, "src/proj-a", 1000, 200_000},
-		{"long model", map[string]string{".claude/settings.json": `{"model":"opus[1m]"}`}, nil, "src/proj-a", 1000, 1_000_000},
-		{"compacts early", map[string]string{".claude/settings.json": `{"model":"opus[1m]","autoCompactWindow":400000}`}, nil, "src/proj-a", 1000, 400_000},
-		{"capped by the window", map[string]string{".claude/settings.json": `{"autoCompactWindow":400000}`}, nil, "src/proj-a", 1000, 200_000},
-		{"a call past the short window", map[string]string{".claude/settings.json": `{"autoCompactWindow":400000}`}, nil, "src/proj-a", 300_000, 400_000},
-		{"a call past the short window, no setting", nil, nil, "src/proj-a", 300_000, 1_000_000},
+		{"nothing set", nil, nil, "src/proj-a", 1000, 167_000},
+		{"long model", map[string]string{".claude/settings.json": `{"model":"opus[1m]"}`}, nil, "src/proj-a", 1000, 967_000},
+		{"compacts early", map[string]string{".claude/settings.json": `{"model":"opus[1m]","autoCompactWindow":400000}`}, nil, "src/proj-a", 1000, 367_000},
+		{"capped by the window", map[string]string{".claude/settings.json": `{"autoCompactWindow":400000}`}, nil, "src/proj-a", 1000, 167_000},
+		{"a call past the short window", map[string]string{".claude/settings.json": `{"autoCompactWindow":400000}`}, nil, "src/proj-a", 300_000, 367_000},
+		{"a call past the short window, no setting", nil, nil, "src/proj-a", 300_000, 967_000},
 		{"project wins", map[string]string{
 			".claude/settings.json":            `{"model":"opus[1m]","autoCompactWindow":400000}`,
 			"src/proj-a/.claude/settings.json": `{"autoCompactWindow":300000}`,
-		}, nil, "src/proj-a", 1000, 300_000},
+		}, nil, "src/proj-a", 1000, 267_000},
 		{"local wins over shared", map[string]string{
 			".claude/settings.json":                  `{"model":"opus[1m]"}`,
 			"src/proj-a/.claude/settings.json":       `{"autoCompactWindow":300000}`,
 			"src/proj-a/.claude/settings.local.json": `{"autoCompactWindow":500000}`,
-		}, nil, "src/proj-a", 1000, 500_000},
+		}, nil, "src/proj-a", 1000, 467_000},
 		{"the project folder, not the cwd", map[string]string{
 			".claude/settings.json":                    `{"model":"opus[1m]"}`,
 			"src/proj-a/.claude/settings.json":         `{"autoCompactWindow":300000}`,
 			"src/proj-a/repos/b/.claude/settings.json": `{"autoCompactWindow":700000}`,
-		}, map[string]string{"CLAUDE_PROJECT_DIR": "src/proj-a"}, "src/proj-a/repos/b", 1000, 300_000},
+		}, map[string]string{"CLAUDE_PROJECT_DIR": "src/proj-a"}, "src/proj-a/repos/b", 1000, 267_000},
 		{"managed wins", map[string]string{
 			".claude/settings.json": `{"model":"opus[1m]","autoCompactWindow":400000}`,
 			"managed.json":          `{"autoCompactWindow":600000}`,
-		}, nil, "src/proj-a", 1000, 600_000},
+		}, nil, "src/proj-a", 1000, 567_000},
 		{"model from the environment", map[string]string{".claude/settings.json": `{"model":"opus[1m]"}`},
-			map[string]string{"ANTHROPIC_MODEL": "sonnet"}, "src/proj-a", 1000, 200_000},
+			map[string]string{"ANTHROPIC_MODEL": "sonnet"}, "src/proj-a", 1000, 167_000},
 		{"config folder", map[string]string{"cfg/settings.json": `{"model":"opus[1m]"}`},
-			map[string]string{"CLAUDE_CONFIG_DIR": "cfg"}, "src/proj-a", 1000, 1_000_000},
-		{"unreadable file", map[string]string{".claude/settings.json": `{"model":`}, nil, "src/proj-a", 1000, 200_000},
+			map[string]string{"CLAUDE_CONFIG_DIR": "cfg"}, "src/proj-a", 1000, 967_000},
+		{"unreadable file", map[string]string{".claude/settings.json": `{"model":`}, nil, "src/proj-a", 1000, 167_000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
