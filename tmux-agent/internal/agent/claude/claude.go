@@ -144,8 +144,10 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 	if err := json.Unmarshal(payload, &f); err != nil {
 		return agent.Event{}, false, err
 	}
-	ev := agent.Event{SessionID: f.str("session_id"), Transcript: f.str("transcript_path"), Cwd: f.str("cwd"), By: f.str("agent_id")}
-	switch f.str("hook_event_name") {
+	name := f.str("hook_event_name")
+	ev := agent.Event{Name: eventName(name, f), SessionID: f.str("session_id"), Transcript: f.str("transcript_path"), Cwd: f.str("cwd"), By: f.str("agent_id")}
+	dropped := agent.Event{Name: ev.Name}
+	switch name {
 	case "SessionStart":
 		source := f.str("source")
 		if source == "compact" {
@@ -181,13 +183,13 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 		case "elicitation_dialog", "agent_needs_input":
 			ev.Kind, ev.Reason = agent.NeedsInput, truncRunes(or(f.str("message"), "needs input"), 64)
 		default:
-			return agent.Event{}, false, nil
+			return dropped, false, nil
 		}
 	case "Stop":
 		ev.Kind, ev.Subagents = agent.TurnEnd, f.runningSubagents()
 	case "SubagentStart", "SubagentStop":
 		if f.str("agent_type") == "" || ev.By == "" {
-			return agent.Event{}, false, nil
+			return dropped, false, nil
 		}
 		ev.Kind = agent.SubagentStart
 		ev.Subagent = &agent.Subagent{ID: ev.By, Type: f.str("agent_type")}
@@ -195,9 +197,32 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 			ev.Kind, ev.Subagent.Transcript = agent.SubagentEnd, f.str("agent_transcript_path")
 		}
 	default:
-		return agent.Event{}, false, nil
+		return dropped, false, nil
 	}
 	return ev, true, nil
+}
+
+// eventName is a hook's event name for the log, with what tells its kind
+// of that event apart: SessionStart's source, SessionEnd's reason,
+// Notification's type, a tool's name.
+func eventName(name string, f fields) string {
+	detail := ""
+	switch name {
+	case "SessionStart":
+		detail = f.str("source")
+	case "SessionEnd":
+		detail = f.str("reason")
+	case "Notification":
+		detail = f.str("notification_type")
+	case "PreToolUse", "PostToolUse", "PermissionRequest":
+		detail = f.str("tool_name")
+	case "SubagentStart", "SubagentStop":
+		detail = f.str("agent_type")
+	}
+	if detail == "" {
+		return or(name, "?")
+	}
+	return name + ":" + detail
 }
 
 // runningSubagents are the ids of the subagents a Stop's background_tasks

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -315,4 +317,84 @@ func TestWatchAll(t *testing.T) {
 	if strings.Join(started, ",") != strings.Join(want, ",") {
 		t.Errorf("watchers started %q, want %q (one-shot pane %s)", started, want, oneShot)
 	}
+}
+
+// failShare is a tmux that refuses the first write of the context share.
+type failShare struct {
+	attention.Tmux
+	failed bool
+}
+
+func (f *failShare) Run(ctx context.Context, args ...string) (string, error) {
+	if !f.failed && slices.Contains(args, attention.OptContext) {
+		f.failed = true
+		return "", errors.New("refused")
+	}
+	return f.Tmux.Run(ctx, args...)
+}
+
+// A look that fails still follows the transcript: the next model call
+// shows, with no hook to wake the watcher.
+func TestWatchFollowsAfterAFailedLook(t *testing.T) {
+	s := tmuxtest.Start(t, tmuxtest.Options{Session: "proj-a"})
+	ctx := context.Background()
+	pane := s.MustTmux(t, "new-window", "-d", "-P", "-F", "#{pane_id}")
+	transcript := filepath.Join(s.Dir, sessionA+".jsonl")
+	state := func(used int64) {
+		t.Helper()
+		data, err := json.Marshal(fileState{Used: used, Limit: 200_000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, transcript, string(data))
+	}
+	state(20_000)
+	getenv := func(k string) string {
+		return map[string]string{"TMUX": s.Socket + "," + s.Display(t, pane, "#{pid}") + ",0", "XDG_RUNTIME_DIR": s.RuntimeDir}[k]
+	}
+	a := fileAgent{}
+	e := &Env{
+		Tmux: s.Client, Core: &attention.Core{Tmux: s.Client}, Registry: NewRegistry(a), Pane: pane,
+		Getenv: getenv,
+		Git:    func(context.Context, string) (git.Head, error) { return git.Head{}, git.ErrNotARepo },
+	}
+	if err := e.Apply(ctx, a, Event{Kind: SessionStart, SessionID: sessionA, Transcript: transcript, Cwd: s.Dir}); err != nil {
+		t.Fatal(err)
+	}
+	show := func() string { return s.Display(t, pane, "#{"+attention.OptContext+"}") }
+	if got := show(); got != "10" {
+		t.Fatalf("share at the start %q, want 10", got)
+	}
+
+	// A model call before the watcher starts: its first look reads it, and
+	// fails to write it.
+	state(50_000)
+	e.Tmux = &failShare{Tmux: s.Client}
+	failed := make(chan string, 1)
+	e.Log = func(format string, args ...any) {
+		select {
+		case failed <- fmt.Sprintf(format, args...):
+		default:
+		}
+	}
+	watchCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- e.Watch(watchCtx, a, 0) }()
+	defer func() {
+		stop()
+		if err := <-done; err != nil {
+			t.Errorf("watch: %v", err)
+		}
+	}()
+	select {
+	case msg := <-failed:
+		if !strings.Contains(msg, "refused") {
+			t.Fatalf("logged %q, want the refused write", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first look did not fail")
+	}
+
+	state(80_000)
+	tmuxtest.WaitFor(t, 5*time.Second, "the share of the next call", func() bool { return show() == "40" })
 }

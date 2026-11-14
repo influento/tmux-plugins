@@ -45,6 +45,9 @@ type Env struct {
 	Getenv func(string) string
 	// Log receives errors that must not reach the agent; none when nil.
 	Log func(format string, args ...any)
+	// Debug receives what helps explain a flag or a share after the fact:
+	// each hook event, each change of the share; none when nil.
+	Debug func(format string, args ...any)
 	// Fill starts, in the background, the read of the agent's files for
 	// the subagents of the session that ended (ScanSubagents); none when
 	// nil. The files can be large, so the hook never reads them itself.
@@ -80,6 +83,12 @@ func (e *Env) revive(a Agent, session string) string {
 func (e *Env) logf(format string, args ...any) {
 	if e.Log != nil {
 		e.Log(format, args...)
+	}
+}
+
+func (e *Env) debugf(format string, args ...any) {
+	if e.Debug != nil {
+		e.Debug(format, args...)
 	}
 }
 
@@ -230,8 +239,12 @@ func (e *Env) Hook(ctx context.Context, a Agent, payload []byte) error {
 		return nil
 	}
 	ev, ok, err := hr.ReadHook(payload)
-	if err != nil || !ok {
+	if err != nil {
 		return err
+	}
+	if !ok {
+		e.debugf("hook %s %s %s: dropped", e.Pane, a.Name(), ev.Name)
+		return nil
 	}
 	nested := e.Nested
 	if nested == nil {
@@ -242,10 +255,12 @@ func (e *Env) Hook(ctx context.Context, a Agent, payload []byte) error {
 	e.noteSession(a, ev.SessionID, self)
 	if nested(names, e.Run) {
 		// A run the agent started: its watcher counts the runs again.
+		e.debugf("hook %s %s %s: %s session %s, nested", e.Pane, a.Name(), ev.Name, ev.Kind, ev.SessionID)
 		e.noteParent(ctx, a, ev.SessionID, parent)
 		e.wake(e.Pane, wakeScan)
 		return nil
 	}
+	e.debugf("hook %s %s %s: %s session %s%s", e.Pane, a.Name(), ev.Name, ev.Kind, ev.SessionID, by(ev.By))
 	err = e.applyLocked(ctx, a, ev)
 	e.keepWatched(a, ev)
 	return err
@@ -673,4 +688,12 @@ func runEnv(pid int) []string {
 		}
 	}
 	return append(out, fmt.Sprintf("TMUX_AGENT_RUN=%d", pid))
+}
+
+// by names the subagent that sent an event, for the log.
+func by(id string) string {
+	if id == "" {
+		return ""
+	}
+	return " by " + id
 }

@@ -14,6 +14,7 @@ tmux-plugins/
   internal/shell/      # quoting words for a POSIX shell or zsh
   internal/lockfile/   # flock locks: Lock waits until ctx ends, TryLock does not
   internal/layout/     # tmux 3.8 JSON layouts: remove panes, scale, number
+  internal/applog/     # a log file that moves to .old past a size
   tmux-warp/           # search-and-jump; tmux-warp.sh stays at this path
   tmux-agent/          # agent flags, pickers, hooks, launcher (P0 step 2)
     internal/          # its packages; the compiler keeps them from tmux-revive
@@ -395,6 +396,12 @@ Rules:
   The read runs without the lock; the write, under it, drops a read when
   another pass moved the tally. `tmux-init` spawns `tokens scan`; one
   pass reads at a time (`tokens.lock`), and a report waits for it.
+- The log, `$XDG_STATE_HOME/tmux-agent/log` (to `log.old` past 4 MiB),
+  gets every error no caller can show: the hook's, the watcher's. With
+  `TMUX_AGENT_DEBUG` in the agent's environment it also gets each hook
+  event, a dropped one too, and each change of the context share: where
+  to look when a flag or a share was wrong. A watcher's look that fails
+  still follows the files; the next change is the next try.
 - tmux-agent draws the flags: every change sets `@attention_mark` on the
   pane and `@attention_win_mark` on its window (the window shows its
   best-ranked pane), a ready-to-print glyph in its `@attention_fg_*` colour,

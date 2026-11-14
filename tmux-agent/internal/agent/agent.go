@@ -8,6 +8,7 @@ package agent
 import (
 	"path/filepath"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/influento/tmux-plugins/tmux-agent/internal/store"
@@ -219,6 +220,16 @@ const (
 	Compacted          // the agent compacted its context
 )
 
+var kindNames = [...]string{"none", "session-start", "working", "needs-input", "turn-end",
+	"session-end", "subagent-start", "subagent-end", "compacted"}
+
+func (k Kind) String() string {
+	if int(k) < 0 || int(k) >= len(kindNames) {
+		return "kind-" + strconv.Itoa(int(k))
+	}
+	return kindNames[k]
+}
+
 // End is how a session ended.
 type End string
 
@@ -231,7 +242,10 @@ const (
 
 // Event is one neutral event, the same for every agent.
 type Event struct {
-	Kind       Kind
+	Kind Kind
+	// Name is the agent's own name for the event, for the log: set also
+	// on an event the adapter drops.
+	Name       string
 	SessionID  string // empty when the agent did not say
 	Transcript string
 	Cwd        string

@@ -11,8 +11,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/influento/tmux-plugins/internal/applog"
 )
 
 // DefaultKeep is how many snapshots a Store keeps when Keep is zero.
@@ -241,19 +242,7 @@ func (s *Store) referenced() (map[string]bool, error) {
 // could not be typed. It is where to look when something did not come
 // back. Logging is best effort: a failure here never fails the caller.
 func (s *Store) Logf(now time.Time, format string, args ...any) {
-	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
-		return
-	}
-	path := filepath.Join(s.Dir, "log")
-	if fi, err := os.Lstat(path); err == nil && fi.Size() > logLimit {
-		_ = os.Rename(path, path+".old") // best effort, as above
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	fmt.Fprintf(f, "%s %s\n", now.Format(time.RFC3339), fmt.Sprintf(format, args...))
+	applog.Append(filepath.Join(s.Dir, "log"), logLimit, now.Format(time.RFC3339)+" "+fmt.Sprintf(format, args...))
 }
 
 func exists(path string) bool {

@@ -81,6 +81,11 @@ func TestReadHook(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ev, ok, err := Claude{}.ReadHook(payload(t, c.in))
+			// Every event, a dropped one too, names its hook for the log.
+			if hook := c.in["hook_event_name"].(string); !strings.HasPrefix(ev.Name, hook) {
+				t.Errorf("name %q, want it to start with %q", ev.Name, hook)
+			}
+			ev.Name = ""
 			if err != nil || ok != c.ok || !reflect.DeepEqual(ev, c.want) {
 				t.Errorf("ReadHook = %+v, %v, %v; want %+v, %v", ev, ok, err, c.want, c.ok)
 			}
@@ -277,5 +282,24 @@ func TestInterrupted(t *testing.T) {
 	}
 	if _, ok := (Claude{}).Interrupted(filepath.Join(t.TempDir(), "missing")); ok {
 		t.Error("a missing transcript reads as interrupted")
+	}
+}
+
+// The log names a hook with what tells its kind apart.
+func TestEventName(t *testing.T) {
+	for _, c := range []struct {
+		in   map[string]any
+		want string
+	}{
+		{map[string]any{"hook_event_name": "SessionStart", "source": "clear"}, "SessionStart:clear"},
+		{map[string]any{"hook_event_name": "PreToolUse", "tool_name": "Bash"}, "PreToolUse:Bash"},
+		{map[string]any{"hook_event_name": "Notification", "notification_type": "idle_prompt"}, "Notification:idle_prompt"},
+		{map[string]any{"hook_event_name": "Stop"}, "Stop"},
+		{map[string]any{}, "?"},
+	} {
+		ev, _, _ := Claude{}.ReadHook(payload(t, c.in))
+		if ev.Name != c.want {
+			t.Errorf("%v: name %q, want %q", c.in, ev.Name, c.want)
+		}
 	}
 }

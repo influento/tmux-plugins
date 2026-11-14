@@ -44,6 +44,7 @@ func (e *Env) setShare(ctx context.Context, a Agent, transcript, cwd, start, was
 	if err := e.paneOpts(ctx, map[string]string{attention.OptContext: share}); err != nil {
 		return err
 	}
+	e.debugf("share %s: %s -> %s, %s", e.Pane, or(was, "none"), or(share, "none"), transcript)
 	e.changed(ctx)
 	return nil
 }

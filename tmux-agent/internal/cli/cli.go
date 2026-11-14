@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/influento/tmux-plugins/internal/applog"
 	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/internal/shell"
 	"github.com/influento/tmux-plugins/internal/tmux"
@@ -134,7 +135,8 @@ type app struct {
 	env     *agent.Env
 	side    *sidebar.Sidebar
 	self    string // the tmux-agent executable
-	debug   io.Writer
+	logPath string // the log; none when empty
+	debug   bool   // TMUX_AGENT_DEBUG: hook events and share changes go to the log
 }
 
 // Registry is every agent tmux-agent knows: one line per adapter.
@@ -176,7 +178,7 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 			fmt.Fprint(stderr, usage)
 			return 2
 		}
-		a.env.Log = a.logf // the terminal belongs to the agent
+		a.env.Log, a.env.Debug = a.logf, a.debugf // the terminal belongs to the agent
 		return a.env.Launch(a.reg.Get(rest[0]), rest[1:], self, stderr)
 	case "start":
 		return a.start(rest)
@@ -185,7 +187,7 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 			fmt.Fprint(stderr, usage)
 			return 2
 		}
-		a.env.Log = a.logf
+		a.env.Log, a.env.Debug = a.logf, a.debugf
 		return a.env.Revive(a.reg.Get(rest[0]), rest[1], self, stderr)
 	case "subagents":
 		return a.subagents(rest)
@@ -226,15 +228,8 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 	if a.self == "" {
 		a.self = "tmux-agent"
 	}
-	if getenv("TMUX_AGENT_DEBUG") != "" {
-		dir := store.RuntimeDir(getenv)
-		if err := os.MkdirAll(dir, 0o700); err == nil {
-			f, err := os.OpenFile(filepath.Join(dir, "debug.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
-			if err == nil {
-				a.debug = f
-			}
-		}
-	}
+	a.logPath = filepath.Join(store.StateDir(getenv), "log")
+	a.debug = getenv("TMUX_AGENT_DEBUG") != ""
 	a.tmux = &tmux.Client{Timeout: 2 * time.Second}
 	a.core = &attention.Core{Tmux: a.tmux, Agents: a.reg.CommandNames(), Marks: marks(a.reg), Notify: a.spawnNotify}
 	a.env = &agent.Env{
@@ -263,10 +258,25 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 	return a
 }
 
-// logf writes to the debug log, when TMUX_AGENT_DEBUG is set.
+// logLimit is the size at which the log moves to log.old: a day or more
+// of hook events with TMUX_AGENT_DEBUG set.
+const logLimit = 4 << 20
+
+// logf writes a line to the log: errors no caller can show, since the
+// terminal or the hook's output belongs to the agent.
 func (a *app) logf(format string, args ...any) {
-	if a.debug != nil {
-		fmt.Fprintf(a.debug, "%s %d %s\n", time.Now().Format(time.RFC3339), os.Getpid(), fmt.Sprintf(format, args...))
+	if a.logPath == "" {
+		return
+	}
+	line := fmt.Sprintf("%s %d %s", time.Now().Format("2006-01-02T15:04:05.000Z07:00"), os.Getpid(), fmt.Sprintf(format, args...))
+	applog.Append(a.logPath, logLimit, line)
+}
+
+// debugf writes a line to the log when TMUX_AGENT_DEBUG is set: each hook
+// event and each change of the context share.
+func (a *app) debugf(format string, args ...any) {
+	if a.debug {
+		a.logf(format, args...)
 	}
 }
 
@@ -343,7 +353,7 @@ func (a *app) watch(args []string) int {
 		fmt.Fprint(a.stderr, usage)
 		return 2
 	}
-	a.env.Log = a.logf
+	a.env.Log, a.env.Debug = a.logf, a.debugf
 	a.env.Pane = args[1]
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
@@ -367,7 +377,7 @@ const scanTimeout = 30 * time.Minute
 // low priority: it reads much and nothing waits on it.
 func (a *app) subagents(args []string) int {
 	_ = syscall.Setpriority(syscall.PRIO_PROCESS, 0, 10) // best effort
-	a.env.Log = a.logf
+	a.env.Log, a.env.Debug = a.logf, a.debugf
 	switch {
 	case len(args) == 1 && args[0] == "scan":
 		ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
@@ -481,7 +491,7 @@ func (a *app) runOwner(name, cwd string) string {
 // one. With wait, a pass waits for the one that runs, then reads what is
 // left; without, it leaves the work to that one.
 func (a *app) scanTokens(wait bool) int {
-	a.env.Log = a.logf
+	a.env.Log, a.env.Debug = a.logf, a.debugf
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 	lock := filepath.Join(store.RuntimeDir(a.getenv), "tokens.lock")
@@ -545,7 +555,7 @@ func (a *app) hook(args []string, stdin io.Reader) (code int) {
 	if !ok {
 		return 0
 	}
-	a.env.Log = a.logf
+	a.env.Log, a.env.Debug = a.logf, a.debugf
 	if err := a.env.Hook(ctx, ag, payload); err != nil {
 		fmt.Fprintf(a.stderr, "tmux-agent hook %s: %v\n", args[0], err)
 		a.logf("hook %s: %v", args[0], err)
