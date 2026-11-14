@@ -139,25 +139,25 @@ func (w *watchState) pids(runs []int) []int {
 
 // look brings the pane up to date with its agent's files: a turn cut
 // short, the context share, the title, and subagents that ended; with
-// scan, the runs below the agent; with git, the branch. It then follows
-// the files and runs of what it found, also when a step failed: the next
-// change of a file is the next try. A pane it cannot read keeps what it
+// scan, the runs below the agent; with git, the branch. It follows the
+// files of the session it finds before it reads them, so a write during
+// the read wakes the next look, and also when a step then fails: the
+// next change is the next try. A pane it cannot read keeps what it
 // followed.
 func (e *Env) look(ctx context.Context, w *watchState, scan, git bool) error {
-	transcript, cwd := w.transcript, w.cwd
-	defer func() { w.follow(e, ctx, transcript, cwd) }()
 	unlock := e.lock(ctx)
 	l, err := e.readLive(ctx)
 	if err != nil {
 		unlock()
+		w.follow(e, ctx, w.transcript, w.cwd) // a file put in place of one is watched again
 		return err
 	}
 	if l.agent != w.a.Name() || l.transcript == "" {
 		unlock()
-		transcript, cwd = "", ""
+		w.follow(e, ctx, "", "")
 		return nil // no session of this agent yet, or no more
 	}
-	transcript, cwd = l.transcript, l.cwd
+	w.follow(e, ctx, l.transcript, l.cwd)
 	err = errors.Join(
 		e.cutShort(ctx, e.Pane, w.a, l.session, l.transcript),
 		e.setShare(ctx, w.a, l.transcript, l.cwd, w.start, l.context),
