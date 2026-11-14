@@ -152,3 +152,44 @@ func TestPanelTicks(t *testing.T) {
 		return !strings.Contains(s.MustTmux(t, "capture-pane", "-p", "-t", panel), "tick-label")
 	})
 }
+
+// A reload of the panel does nothing to its client: a flag on the pane
+// the client shows stays, as it does with the panel closed. A reload that
+// sent the client to its row again marked the pane seen, and one read
+// before the user changed windows took the client back.
+func TestPanelReloadLeavesClient(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+			t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+		}
+	}
+	other := s.MustTmux(t, "new-window", "-d", "-n", "w-two", "-P", "-F", "#{pane_id}")
+	run("flag", "needs-you", "--pane", other) // a row to show labels on
+	s.WaitForContent(t, panel, "w-two")
+	// The focus in the main area, as after a switch. Its hook marks the
+	// pane seen in the background: once that cleared a flag, it is done.
+	run("flag", "done", "--pane", origin)
+	s.MustTmux(t, "select-pane", "-t", origin)
+	// No fail here: a reload that moves the client keeps it from coming;
+	// the checks below tell.
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if s.Display(t, origin, "#{@attention}") == "" {
+			break
+		}
+	}
+	run("flag", "done", "--pane", origin)
+	// Each report reloads the panel; once the last shows, the reloads
+	// before it are done, with all they ran.
+	for _, text := range []string{"label-one", "label-two", "label-three"} {
+		run("report", "--source", "probe", "--text", text, "--pane", other)
+		s.WaitForContent(t, panel, text)
+	}
+	if got := s.Display(t, origin, "#{@attention}"); got != "done" {
+		t.Errorf("flag on the client's pane = %q after reloads, want done", got)
+	}
+	if got, want := s.MustTmux(t, "list-clients", "-F", "#{pane_id}"), origin; got != want {
+		t.Errorf("client on %s after reloads, want %s", got, want)
+	}
+}

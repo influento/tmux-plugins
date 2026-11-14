@@ -299,7 +299,12 @@ Rules:
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
   have two lines) and filters by session and window name, so a session's
   name keeps all its windows; `pick-key` gives Tab's and Enter's actions,
-  and `place` the cursor after a reload.
+  and `place` the cursor after a reload: the row `pick-rows --place` noted
+  in the same rows, since rows read again can differ. The focus event runs
+  `sidebar go` only for the user's moves: fzf fires focus after a reload
+  too (it counts the row as new unless `--id-nth` gives rows an identity),
+  with `$FZF_ACTION` `rebind`, `reload` or `reload-sync`, and such a go,
+  read before a window switch, took the client back.
   A change of a flag, reason or label reloads the open panels
   (`Core.Changed`). What changes with no event (an age's next value, a
   label's end) `pick-rows` tells the panel's `pick` on its `.tick` socket,

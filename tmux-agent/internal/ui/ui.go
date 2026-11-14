@@ -108,6 +108,9 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		// Rows show the name and the detail. fzf only displays: pick-rows
 		// filters on each change of the query.
 		"--read0", "--delimiter=\t", "--with-nth=3", "--disabled", "--no-hscroll",
+		// A row is its target: after a reload the cursor on the same row
+		// is no new focus.
+		"--id-nth=2",
 		"--header=" + Header(opts.State.View, opts.Width), "--header-first", "--header-label=" + opts.State.String(),
 		// The views in the text's colour, not the theme's header colour. The
 		// text and the background are the pane's, not a theme's from
@@ -127,7 +130,11 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		// cursor leaves a session line it landed on.
 		`--bind=result:transform:if [ -n {q} ]; then echo 'pos(2)'; elif [ -n {1} ]; then echo down; fi`,
 		"--bind=enter:transform:[ -n {1} ] || " + opts.Self + " pick-key enter {5}",
-		"--bind=focus:execute-silent([ -n {1} ] || " + show + " {2})",
+		// Only the user's moves take the client along. A reload's move (a
+		// row gone, the rows in another order, place) fires focus after
+		// the reload or the rebind that ends it, and a reload read before
+		// a window switch would take the client back.
+		`--bind=focus:execute-silent(case "$FZF_ACTION" in rebind|reload|reload-sync) ;; *) [ -n {1} ] || ` + show + ` {2} ;; esac)`,
 		// The client stays where it is until the cursor is on its row: the
 		// first row fires a focus event before the cursor moves.
 		"--bind=start:unbind(focus)",
@@ -161,11 +168,11 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 	return f[1], nil
 }
 
-// reloadAction reads the rows again and puts the cursor on the client's
-// window, with no focus event on the way.
+// reloadAction reads the rows again and puts the cursor on the row of the
+// client's window in them.
 func reloadAction(self, client string) string {
-	return fmt.Sprintf("unbind(focus)+reload-sync(%s pick-rows --fzf)+transform(%s pick-key place %s)+rebind(focus)",
-		self, self, shell.Quote(client))
+	return fmt.Sprintf("unbind(focus)+reload-sync(%s pick-rows --fzf --place %s)+transform(%s pick-key place)+rebind(focus)",
+		self, shell.Quote(client), self)
 }
 
 // Reload tells the panel's fzf listening on socket that windows came, went

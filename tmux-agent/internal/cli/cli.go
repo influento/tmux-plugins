@@ -58,11 +58,13 @@ const usage = `usage:
                                        +|-|N (prefix n, p, 1-9), layout CLIENT NAME|next|
                                        previous (preset layouts), close CLIENT; for the
                                        hooks: follow, keep, reload
-  tmux-agent pick-rows [--fzf] [QUERY] the rows pick lists in the tree: the windows whose
+  tmux-agent pick-rows [--fzf [--place CLIENT]] [QUERY]
+                                       the rows pick lists in the tree: the windows whose
                                        session or window name holds every word of QUERY;
-                                       --fzf takes the query, view and width from fzf
-  tmux-agent pick-key KEY [ARG]        what tab, enter or a reload (place CLIENT) does
-                                       in the panel, as fzf actions
+                                       --fzf takes the query, view and width from fzf,
+                                       --place notes the row of CLIENT's window for place
+  tmux-agent pick-key KEY [ARG]        what tab, enter or a reload (place) does in the
+                                       panel, as fzf actions
   tmux-agent kill TARGET               kill a picker row's session, window or pane,
                                        unless it ends the last session
   tmux-agent rows                      one line per session, its windows' flags inline
@@ -671,10 +673,13 @@ func (a *app) panelOf() attention.Panel {
 // lines.
 func (a *app) pickRows(ctx context.Context, args []string) error {
 	p := attention.Panel{View: attention.TreeView, Width: ui.PanelWidth - 1}
-	end := "\n"
+	end, client, place := "\n", "", false
 	if len(args) > 0 && args[0] == "--fzf" {
 		p = a.panelOf()
 		end = "\x00"
+		if len(args) == 3 && args[1] == "--place" {
+			client, place = args[2], true
+		}
 	} else {
 		p.Words = attention.QueryWords(strings.Join(args, " "))
 	}
@@ -689,7 +694,29 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 	if end == "\x00" {
 		a.tellTick(next)
 	}
+	if place {
+		a.notePlace(ctx, rows, client)
+	}
 	return nil
+}
+
+// notePlace keeps, for pick-key place, the row of the client's window in
+// the rows fzf is about to show: rows read again later can differ, and a
+// cursor put on another row takes the client there.
+func (a *app) notePlace(ctx context.Context, rows []attention.PickRow, client string) {
+	path := a.panelSocket(a.getenv("TMUX_PANE"), ".place")
+	if path == "" {
+		return
+	}
+	_ = os.Remove(path) // none is better than an old one
+	_, here, err := a.where(ctx, client)
+	if err != nil {
+		a.logf("pick-rows: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, []byte(strconv.Itoa(startRow(rows, here))), 0o600); err != nil {
+		a.logf("pick-rows: %v", err)
+	}
 }
 
 // tellTick tells the panel's pick, when this runs for its fzf, when the
@@ -709,8 +736,9 @@ func (a *app) tellTick(next int64) {
 
 // pickKey prints the fzf actions of a key in the panel. tab switches the
 // view; enter on a fold (its session id in FOLD) opens it, and on any
-// other row accepts it; place CLIENT puts the cursor on the client's
-// window after a reload. The state is the header's label (see ui.Pick).
+// other row accepts it; place puts the cursor on the row pick-rows
+// --place noted, after a reload. The state is the header's label (see
+// ui.Pick).
 func (a *app) pickKey(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errUsage
@@ -729,15 +757,19 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		st = st.Next()
 		fmt.Fprintln(a.stdout, "change-header-label("+st.String()+")+change-header("+ui.Header(st.View, width)+")+"+list)
 	case "place":
-		rows, err := a.core.PickRows(ctx, a.panelOf())
-		if err != nil {
-			return err
+		// The row pick-rows noted in the rows fzf shows. Without one (a
+		// newer reload stopped that pick-rows) the cursor stays: rows read
+		// again can differ, and a cursor on another row takes the client
+		// there.
+		path := a.panelSocket(a.getenv("TMUX_PANE"), ".place")
+		if path == "" {
+			return nil
 		}
-		_, here, err := a.where(ctx, first(args[1:]))
-		if err != nil {
-			return err
+		data, err := os.ReadFile(path)
+		_ = os.Remove(path)
+		if n, err2 := strconv.Atoi(string(data)); err == nil && err2 == nil {
+			fmt.Fprintf(a.stdout, "pos(%d)\n", n)
 		}
-		fmt.Fprintf(a.stdout, "pos(%d)\n", startRow(rows, here))
 	case "enter":
 		fold := ""
 		if len(args) > 1 {
