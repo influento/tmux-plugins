@@ -60,6 +60,26 @@ func (fileAgent) WatchedFiles(transcript string) []string {
 	return []string{filepath.Join(filepath.Dir(transcript), "subagents")}
 }
 
+// fileStatus is fileAgent's file for its process: when it went idle in
+// which session.
+type fileStatus struct {
+	Session string
+	Idle    time.Time
+}
+
+func (fileAgent) StatusFile(pid int, getenv func(string) string) string {
+	return filepath.Join(getenv("XDG_RUNTIME_DIR"), "status-"+strconv.Itoa(pid)+".json")
+}
+
+func (f fileAgent) IdleSince(pid int, session string, getenv func(string) string) (time.Time, bool) {
+	var s fileStatus
+	data, err := os.ReadFile(f.StatusFile(pid, getenv))
+	if err != nil || json.Unmarshal(data, &s) != nil || s.Session != session || s.Idle.IsZero() {
+		return time.Time{}, false
+	}
+	return s.Idle, true
+}
+
 func (fileAgent) SubagentEnded(transcript, id string) Outcome {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(transcript), "subagents", id)); err == nil {
 		return OutcomeStopped
@@ -194,6 +214,38 @@ func TestWatch(t *testing.T) {
 	shows("the cut turn's flag gone", "#{@attention}", "")
 	st.Cut = time.Time{}
 	state(st)
+
+	// Esc before the first token: only the file the agent keeps for its
+	// process tells, and only of its own session, after the flag.
+	status := func(st fileStatus) {
+		t.Helper()
+		data, err := json.Marshal(st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := a.StatusFile(agentPid, getenv)
+		write(t, path+".tmp", string(data))
+		if err := os.Rename(path+".tmp", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.Apply(ctx, a, Event{Kind: Working, SessionID: sessionA}); err != nil {
+		t.Fatal(err)
+	}
+	for i, idle := range []fileStatus{
+		{Session: "another-session", Idle: time.Now().Add(time.Second)},
+		{Session: sessionA, Idle: time.Now().Add(-time.Hour)},
+	} {
+		status(idle)
+		st.Title = "barrier-" + strconv.Itoa(i) // a look after the status
+		state(st)
+		shows("the title after the status", "#{window_name}", st.Title)
+		if got := show("#{@attention}"); got != "working" {
+			t.Fatalf("flag %q after %+v, want working", got, idle)
+		}
+	}
+	status(fileStatus{Session: sessionA, Idle: time.Now().Add(time.Second)})
+	shows("the idle turn's flag gone", "#{@attention}", "")
 
 	if err := e.Apply(ctx, a, Event{Kind: SubagentStart, SessionID: sessionA, By: "sub-a", Subagent: &Subagent{ID: "sub-a"}}); err != nil {
 		t.Fatal(err)

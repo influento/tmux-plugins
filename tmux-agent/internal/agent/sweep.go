@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/store"
@@ -231,19 +232,28 @@ func (e *Env) cutShort(ctx context.Context, pane string, a Agent, session, trans
 	if !ok || transcript == "" {
 		return nil
 	}
+	return e.endTurnAt(ctx, pane, a, session, func() (time.Time, bool) { return ir.Interrupted(transcript) },
+		attention.Working, attention.NeedsYou)
+}
+
+// endTurnAt clears the pane's flag, when it is one of states, if the turn
+// ended (when) at or after the flag was set. Flag times are whole seconds,
+// so an end and a new prompt within one second can clear the new turn's
+// flag; its next hook sets it again. The caller holds the lock.
+func (e *Env) endTurnAt(ctx context.Context, pane string, a Agent, session string, when func() (time.Time, bool), states ...attention.State) error {
 	now, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{@attention}\x1f#{@attention_at}")
 	if err != nil {
 		return err
 	}
 	state, at, _ := strings.Cut(now, "\x1f")
-	if st := attention.State(state); st != attention.Working && st != attention.NeedsYou {
+	if !slices.Contains(states, attention.State(state)) {
 		return nil
 	}
 	since, err := strconv.ParseInt(at, 10, 64)
 	if err != nil {
 		return nil
 	}
-	if when, ok := ir.Interrupted(transcript); !ok || when.Unix() < since {
+	if ended, ok := when(); !ok || ended.Unix() < since {
 		return nil
 	}
 	if err := e.Core.Clear(ctx, pane); err != nil {

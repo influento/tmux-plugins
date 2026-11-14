@@ -16,8 +16,9 @@ import (
 // A watcher keeps what a pane shows of its agent live while the agent
 // runs, from what the agent sends no hook for: a turn the user cuts short,
 // a subagent the user stops, the context used by each model call, the
-// title, a branch switched from elsewhere, and the runs the agent starts
-// outside its subagents. It follows the agent's files with inotify, the
+// title, a branch switched from elsewhere, the runs the agent starts
+// outside its subagents, and a turn that ended with no word in the
+// transcript, from the file the agent keeps for its process (Idler). It follows the agent's files with inotify, the
 // runs with pidfds, and hooks wake it through a socket; it never polls.
 // The launcher runs one beside its agent; an agent started without the
 // launcher gets one of its own (tmux-agent watch).
@@ -31,6 +32,12 @@ const watchDelay = 100 * time.Millisecond
 // without a word. It returns ErrWatched, at once, when the pane has a live
 // watcher already.
 func (e *Env) Watch(ctx context.Context, a Agent, agentPid int) error {
+	return e.watch(ctx, a, agentPid, nil)
+}
+
+// watch is Watch for a launcher, which starts its watcher before its
+// agent: started gives the agent's pid once it runs.
+func (e *Env) watch(ctx context.Context, a Agent, agentPid int, started <-chan int) error {
 	path := watchSocket(e.getenv, e.Pane)
 	if path == "" {
 		return errors.New("watch: no tmux server or pane")
@@ -62,7 +69,7 @@ func (e *Env) Watch(ctx context.Context, a Agent, agentPid int) error {
 	exits := newExitWatch()
 	defer exits.close()
 
-	w := &watchState{a: a, agentPid: agentPid, files: files, exits: exits, start: startFolder(agentPid)}
+	w := &watchState{a: a, agentPid: agentPid, process: agentPid, files: files, exits: exits, start: startFolder(agentPid)}
 	exits.set(w.pids(nil))
 	if err := e.look(ctx, w, true, false); err != nil {
 		if isGone(err) || ctx.Err() != nil {
@@ -77,6 +84,9 @@ func (e *Env) Watch(ctx context.Context, a Agent, agentPid int) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case pid := <-started:
+			started = nil
+			w.process = pid
 		case word := <-wakes:
 			if word == wakePing {
 				continue
@@ -118,6 +128,7 @@ func (e *Env) Watch(ctx context.Context, a Agent, agentPid int) error {
 type watchState struct {
 	a          Agent
 	agentPid   int
+	process    int // the agent's process, once known: its status file
 	files      *fileWatch
 	exits      *exitWatch
 	transcript string // the session's transcript the files follow
@@ -160,6 +171,7 @@ func (e *Env) look(ctx context.Context, w *watchState, scan, git bool) error {
 	w.follow(e, ctx, l.transcript, l.cwd)
 	err = errors.Join(
 		e.cutShort(ctx, e.Pane, w.a, l.session, l.transcript),
+		e.wentIdle(ctx, w, l),
 		e.setShare(ctx, w.a, l.transcript, l.cwd, w.start, l.context),
 		e.retitle(ctx, w.a, l.transcript, l, l.session),
 		e.endedSubagents(ctx, w.a, l),
@@ -207,11 +219,29 @@ func (w *watchState) follow(e *Env, ctx context.Context, transcript, cwd string)
 				paths[p] = nil
 			}
 		}
+		if id, ok := w.a.(Idler); ok && w.process > 0 {
+			paths[id.StatusFile(w.process, e.getenv)] = nil
+		}
 	}
 	if w.gitDir != "" {
 		paths[w.gitDir] = func(name string) bool { return name == "HEAD" }
 	}
 	w.files.set(paths)
+}
+
+// wentIdle ends the pane's working turn when the agent's process went idle
+// after the flag was set, with no word in the transcript: Esc before the
+// first token. A turn held by nested runs stays, and so does one while
+// subagents run: the process is idle while they work, after its own turn
+// ended. The caller holds the lock.
+func (e *Env) wentIdle(ctx context.Context, w *watchState, l live) error {
+	id, ok := w.a.(Idler)
+	if !ok || w.process <= 0 || l.flag != attention.Working || l.held || len(l.subagents) > 0 {
+		return nil
+	}
+	return e.endTurnAt(ctx, e.Pane, w.a, l.session, func() (time.Time, bool) {
+		return id.IdleSince(w.process, l.session, e.getenv)
+	}, attention.Working)
 }
 
 // gitLabelOf is the git label of folder dir: empty outside a checkout.

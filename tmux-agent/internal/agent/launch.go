@@ -64,6 +64,7 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 	// so the agent's first hook finds it.
 	watchCtx, stopWatch := context.WithCancel(context.Background())
 	watching := make(chan struct{})
+	started := make(chan int, 1)
 	go func() {
 		defer close(watching)
 		defer func() {
@@ -74,7 +75,7 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 		if oneShot {
 			return
 		}
-		if err := e.Watch(watchCtx, a, 0); err != nil {
+		if err := e.watch(watchCtx, a, 0, started); err != nil {
 			e.logf("watch: %v", err)
 		}
 	}()
@@ -93,6 +94,7 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 		return 126
 	}
 	pid := proc.Pid
+	started <- pid
 	var killed atomic.Bool
 	done := make(chan struct{})
 	go func() {

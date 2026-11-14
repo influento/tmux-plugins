@@ -31,6 +31,8 @@
 //
 // A turn the user cuts short (Esc, a declined permission) sends no hook;
 // Interrupted reads it from the transcript for the agent layer's sweep.
+// Esc before the first token writes no transcript line either: IdleSince
+// reads it from the file Claude Code keeps for its process.
 package claude
 
 import (
@@ -57,6 +59,7 @@ var (
 	_ agent.ContextGauge  = Claude{}
 	_ agent.FileWatcher   = Claude{}
 	_ agent.SubagentEnder = Claude{}
+	_ agent.Idler         = Claude{}
 )
 
 // Name is the registry name.

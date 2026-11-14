@@ -65,6 +65,17 @@ type Interrupter interface {
 	Interrupted(transcript string) (at time.Time, ok bool)
 }
 
+// Idler reads, from a file the agent keeps for its running process, when
+// that process went idle in a session: the end of a turn that sends no
+// hook and writes nothing to the transcript (Esc before the first token).
+// ok is false while the process works or waits on the user, or when its
+// file says nothing of that session. StatusFile is the file the watcher
+// follows for it.
+type Idler interface {
+	IdleSince(pid int, session string, getenv func(string) string) (at time.Time, ok bool)
+	StatusFile(pid int, getenv func(string) string) string
+}
+
 // ContextGauge reads how full the agent's context is: the tokens its last
 // model call held, and the limit they count against. Both are read again
 // each time, so a changed setting shows at the next turn end. ok is false
