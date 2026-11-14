@@ -20,7 +20,7 @@ permissions:
 env:
   # The dotfiles commit whose bash scripts the characterization tests run.
   # It stays valid after the cutover deletes the scripts from dotfiles.
-  DOTFILES_REF: e4fa368842a1330d174f8270b29cb380719ef4db
+  DOTFILES_REF: 29b4a641d27a966972dc8be006e2b849068d4764
 
 jobs:
   test-and-release:
