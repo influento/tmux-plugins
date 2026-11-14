@@ -233,7 +233,8 @@ func panelCursor(t *testing.T, socket string) string {
 // the row it was moved to, while the panel reloads (its ticks, a flag
 // changed): a reload put the cursor back on the row of the window the
 // client showed before the move, and the window and the row disagreed
-// until the next reload. A switch some other way moves the cursor.
+// until the next reload. A switch some other way moves the cursor. The
+// bound is a slow runner's: a move here takes 25-75 ms.
 func TestPanelMoveWhileReloading(t *testing.T) {
 	s, origin, panel := openPanel(t)
 	names := []string{"w-two", "w-three", "w-four", "w-five"}
@@ -250,19 +251,21 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		return s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}")
 	}
 
+	// One reload per move, at a point of its race: just before the key,
+	// with it, during the move's switch. A steady stream of reloads
+	// outran fzf on a slow runner, and every move waited behind them.
 	reload := s.Command(t, origin, "tmux-agent", "sidebar", "reload")
-	ctx, stop := context.WithCancel(t.Context())
 	var reloads sync.WaitGroup
-	reloads.Go(func() {
-		for ctx.Err() == nil {
-			cmd := exec.CommandContext(ctx, reload.Path, reload.Args[1:]...)
+	defer reloads.Wait()
+	reloadIn := func(d time.Duration) {
+		reloads.Go(func() {
+			time.Sleep(d)
+			cmd := exec.CommandContext(t.Context(), reload.Path, reload.Args[1:]...)
 			cmd.Env = reload.Env
 			_ = cmd.Run() // the panel reloads or it does not; the moves tell
-			time.Sleep(30 * time.Millisecond)
-		}
-	})
-	defer reloads.Wait()
-	defer stop()
+		})
+	}
+	offsets := []time.Duration{-10 * time.Millisecond, 0, 5 * time.Millisecond, 15 * time.Millisecond, 30 * time.Millisecond}
 
 	t0 := time.Now()
 	var seen []string
@@ -280,7 +283,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 	}
 	note(panelCursor(t, socket), client())
 	key := "Up" // the cursor starts on the fold below the windows
-	for range 12 {
+	for i := range 15 {
 		from := panelCursor(t, socket)
 		switch from {
 		case "=proj-a:1":
@@ -288,11 +291,17 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		case "=proj-a:4", "=proj-a:":
 			key = "Up"
 		}
+		if d := offsets[i%len(offsets)]; d < 0 {
+			reloadIn(0)
+			time.Sleep(-d)
+		} else {
+			reloadIn(d)
+		}
 		start := time.Now()
 		seen = append(seen, fmt.Sprintf("%6.1f ms send %s", float64(time.Since(t0).Microseconds())/1000, key))
 		s.MustTmux(t, "send-keys", "-t", panel, key)
 		to := ""
-		for time.Since(start) < 300*time.Millisecond && to == "" {
+		for time.Since(start) < 500*time.Millisecond && to == "" {
 			c := panelCursor(t, socket)
 			note(c, client())
 			if c != from {
@@ -303,7 +312,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 			t.Fatalf("%s from %s: the cursor did not move", key, from)
 		}
 		var followed time.Duration
-		for time.Since(start) < 500*time.Millisecond {
+		for time.Since(start) < 700*time.Millisecond {
 			c, w := panelCursor(t, socket), client()
 			note(c, w)
 			if c != to {
@@ -316,7 +325,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		if followed == 0 {
 			t.Fatalf("client on %s %v after the cursor moved to %s", client(), time.Since(start), to)
 		}
-		if followed > 300*time.Millisecond {
+		if followed > 500*time.Millisecond {
 			t.Errorf("client took %v to follow the cursor to %s", followed, to)
 		}
 	}
@@ -328,7 +337,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		s.MustTmux(t, "select-window", "-t", to)
 		for c := panelCursor(t, socket); c != to; c = panelCursor(t, socket) {
 			note(c, client())
-			if time.Since(start) > 300*time.Millisecond {
+			if time.Since(start) > 500*time.Millisecond {
 				t.Fatalf("cursor on %s %v after a switch to %s", c, time.Since(start), to)
 			}
 		}
