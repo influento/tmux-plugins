@@ -3,6 +3,7 @@ package claude
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"io"
 	"os"
@@ -18,7 +19,9 @@ import (
 // A transcript holds each model call of the main agent as one or more
 // assistant lines with the call's message id and the same usage: one line
 // per block of its answer, and a tool's result can come between them.
-// Lines Claude Code writes itself carry the model <synthetic>. Subagents'
+// Lines Claude Code writes itself carry the model <synthetic>. Each line
+// names the effort its call ran at (since Claude Code 2.1.296): effort,
+// the session's, and perTurnEffort, the turn's, which wins. Subagents'
 // calls are in their own files.
 
 var _ agent.UsageReader = Claude{}
@@ -51,10 +54,12 @@ func configDir(getenv func(string) string) string {
 
 // usageLine is the part of a transcript line a tally reads.
 type usageLine struct {
-	Type      string `json:"type"`
-	Sidechain bool   `json:"isSidechain"`
-	Timestamp string `json:"timestamp"`
-	Message   struct {
+	Type       string `json:"type"`
+	Sidechain  bool   `json:"isSidechain"`
+	Timestamp  string `json:"timestamp"`
+	Effort     loose  `json:"effort"`
+	TurnEffort loose  `json:"perTurnEffort"`
+	Message    struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage *struct {
@@ -67,6 +72,19 @@ type usageLine struct {
 }
 
 var cwdMark = []byte(`"cwd":"`)
+
+// loose is a string field that a value of another type leaves empty
+// instead of failing the line: a line's tokens count whatever its other
+// fields hold.
+type loose string
+
+func (l *loose) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*l = loose(s)
+	}
+	return nil
+}
 
 // ReadUsage reads the main agent's model calls from byte offset from up to
 // the transcript's last whole line; a line still being written waits for
@@ -120,7 +138,7 @@ func (Claude) ReadUsage(transcript string, from int64, recent []string) (agent.U
 		if err != nil {
 			return
 		}
-		read.Calls = append(read.Calls, agent.Call{At: at, Model: l.Message.Model, Tokens: agent.Tokens{
+		read.Calls = append(read.Calls, agent.Call{At: at, Model: l.Message.Model, Effort: string(cmp.Or(l.TurnEffort, l.Effort)), Tokens: agent.Tokens{
 			Input: u.Input, CacheWrite: u.CacheWrite, CacheRead: u.CacheRead, Output: u.Output,
 		}})
 	})

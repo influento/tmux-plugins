@@ -34,7 +34,7 @@ func userLine(at, content string) map[string]any {
 }
 
 func assistantLine(at, id string, usage map[string]any, blocks ...map[string]any) map[string]any {
-	return map[string]any{"type": "assistant", "timestamp": at, "isSidechain": true,
+	return map[string]any{"type": "assistant", "timestamp": at, "isSidechain": true, "effort": "medium", "perTurnEffort": "medium",
 		"message": map[string]any{"id": id, "model": "model-a", "role": "assistant", "content": blocks, "usage": usage}}
 }
 
@@ -63,8 +63,8 @@ func TestReadHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.prompt != "Check the build in proj-a." || h.result != "The build passes." || h.model != "model-a" {
-		t.Errorf("prompt %q, result %q, model %q", h.prompt, h.result, h.model)
+	if h.prompt != "Check the build in proj-a." || h.result != "The build passes." || h.model != "model-a" || h.effort != "medium" {
+		t.Errorf("prompt %q, result %q, model %q, effort %q", h.prompt, h.result, h.model, h.effort)
 	}
 	if want := (agent.Tokens{Input: 3, CacheWrite: 150, CacheRead: 3000, Output: 30}); h.tokens != want {
 		t.Errorf("tokens = %+v, want %+v (each message once)", h.tokens, want)

@@ -205,3 +205,55 @@ func TestScanSubagents(t *testing.T) {
 		t.Errorf("complete records were read again: %v", a.reads)
 	}
 }
+
+// A complete record an older version filled is filled again once, for
+// what that version did not keep (the effort).
+func TestScanSubagentsOlderVersion(t *testing.T) {
+	e, a, _, _ := subEnv(t)
+	ctx := context.Background()
+	if err := e.Store.UpdateSubagent("fakeagent", sessionA, "a1", func(r *store.Subagent) {
+		r.Type, r.Model, r.Outcome, r.Complete = "Explore", "model-a", "done", true
+		r.Tokens = &store.Tokens{Output: 30}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.set("a1", Subagent{ID: "a1", Type: "Explore", Model: "model-a", Effort: "high", Outcome: OutcomeDone, Tokens: &Tokens{Output: 30}})
+	getenv := func(string) string { return "" }
+	if n, err := e.ScanAllSubagents(ctx, a, getenv); err != nil || n != 1 {
+		t.Fatalf("scan filled %d (%v), want 1", n, err)
+	}
+	r, _, _ := e.Store.LoadSubagent("fakeagent", sessionA, "a1")
+	if r.Effort != "high" || r.Version != SubagentVersion || !r.Complete || r.Tokens.Output != 30 {
+		t.Errorf("a1 filled again = %+v", r)
+	}
+	if n, err := e.ScanAllSubagents(ctx, a, getenv); err != nil || n != 0 {
+		t.Errorf("second scan filled %d (%v), want 0", n, err)
+	}
+}
+
+// An older version's complete record that its files cannot fill again
+// stays as it was, and is tried once, not on each pass.
+func TestScanSubagentsOlderVersionOnce(t *testing.T) {
+	e, a, _, _ := subEnv(t)
+	ctx := context.Background()
+	if err := e.Store.UpdateSubagent("fakeagent", sessionA, "a1", func(r *store.Subagent) {
+		r.Type, r.Outcome, r.Complete, r.Result = "Explore", "done", true, "Found it."
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.set("a1", Subagent{ID: "a1", Type: "Explore"}) // its files no longer say how it ended
+	getenv := func(string) string { return "" }
+	if n, _ := e.ScanAllSubagents(ctx, a, getenv); n != 0 {
+		t.Errorf("first scan filled %d, want 0", n)
+	}
+	r, _, _ := e.Store.LoadSubagent("fakeagent", sessionA, "a1")
+	if !r.Complete || r.Result != "Found it." || r.Version != SubagentVersion {
+		t.Errorf("a1 = %+v", r)
+	}
+	a.mu.Lock()
+	a.reads = nil
+	a.mu.Unlock()
+	if _, err := e.ScanAllSubagents(ctx, a, getenv); err != nil || len(a.reads) != 0 {
+		t.Errorf("second scan read %v (%v), want nothing", a.reads, err)
+	}
+}

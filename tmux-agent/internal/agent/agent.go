@@ -111,11 +111,11 @@ type SessionFiles struct {
 
 // Subagent is what an event or the agent's files tell about one subagent.
 type Subagent struct {
-	ID, Type, Description, Prompt, Result, Model, Transcript string
-	Depth                                                    int
-	Started, Ended                                           time.Time
-	Outcome                                                  Outcome
-	Tokens                                                   *Tokens
+	ID, Type, Description, Prompt, Result, Model, Effort, Transcript string
+	Depth                                                            int
+	Started, Ended                                                   time.Time
+	Outcome                                                          Outcome
+	Tokens                                                           *Tokens
 }
 
 // Tokens are the tokens a subagent's model calls used, by kind.

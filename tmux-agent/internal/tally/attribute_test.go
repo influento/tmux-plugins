@@ -54,7 +54,7 @@ func attributionEntries(t *testing.T) []Entry {
 		{Session: orphan, Cwd: "/pad/" + gone + "/y", OneShot: true},
 	} {
 		u.Agent = "fakeagent"
-		u.Add(at, "model-a", store.Tokens{Output: int64(1) << i})
+		u.Add(at, "model-a", "", store.Tokens{Output: int64(1) << i})
 		if err := st.SaveUsage(u); err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestParentFromProcessTree(t *testing.T) {
 		{Session: run3, Cwd: "/srv/eval/c2", OneShot: true, Parent: parent, ParentAgent: "otheragent"},
 	} {
 		u.Agent = "fakeagent"
-		u.Add(at, "model-a", store.Tokens{Output: 1})
+		u.Add(at, "model-a", "", store.Tokens{Output: 1})
 		if err := st.SaveUsage(u); err != nil {
 			t.Fatal(err)
 		}

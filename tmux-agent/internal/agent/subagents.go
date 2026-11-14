@@ -127,6 +127,7 @@ func fillFrom(r *store.Subagent, f Subagent) {
 	setStr(&r.Prompt, f.Prompt)
 	setStr(&r.Result, f.Result)
 	setStr(&r.Model, f.Model)
+	setStr(&r.Effort, f.Effort)
 	setStr(&r.Transcript, f.Transcript)
 	if f.Depth != 0 {
 		r.Depth = f.Depth
@@ -143,7 +144,13 @@ func fillFrom(r *store.Subagent, f Subagent) {
 	}
 	r.Outcome = string(f.Outcome)
 	r.Complete = f.Outcome != ""
+	r.Version = SubagentVersion
 }
+
+// SubagentVersion is the version of what a fill keeps. A complete record
+// an older version filled is filled again while its files last: version 1
+// keeps the effort.
+const SubagentVersion = 1
 
 // ScanSubagents fills the records of a session's subagents from the
 // agent's files: each whose record is not complete and whose files say it
@@ -174,10 +181,21 @@ func (e *Env) ScanSubagents(ctx context.Context, a Agent, sf SessionFiles, ids [
 			errs = append(errs, err)
 			continue
 		}
-		if ok && rec.Complete {
-			continue // the same subagent is never read twice
+		if ok && rec.Complete && rec.Version == SubagentVersion {
+			continue // read once, and again only by a newer version
 		}
 		f, err := readEnded(ctx, sr, sf.Transcript, id, deadline, e.now)
+		if ok && rec.Complete && (err != nil || f.Outcome == "") {
+			// An older version's record that its files cannot fill again
+			// stays as it is: one try, not one each pass.
+			unlock := e.lock(ctx)
+			err = errors.Join(err, e.Store.UpdateSubagent(a.Name(), sf.Session, id, func(r *store.Subagent) { r.Version = SubagentVersion }))
+			unlock()
+			if err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
 		if err != nil {
 			errs = append(errs, err)
 			continue

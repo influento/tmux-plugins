@@ -41,12 +41,18 @@ type RunOwner interface {
 	RunOwner(cwd string) string
 }
 
-// Call is one model call.
+// Call is one model call, and the effort it ran at ("" when the agent
+// does not say).
 type Call struct {
-	At     time.Time
-	Model  string
-	Tokens Tokens
+	At            time.Time
+	Model, Effort string
+	Tokens        Tokens
 }
+
+// UsageVersion is the version of what a read of a transcript keeps. A
+// tally an older version read is read again from its start: version 1
+// keeps each call's effort.
+const UsageVersion = 1
 
 // ScanUsage brings the tally of every session in the agent's files up to
 // date. It returns how many tallies changed.
@@ -95,12 +101,12 @@ func (e *Env) scanUsageOf(ctx context.Context, a Agent, ur UsageReader, sf Sessi
 	if err != nil {
 		return false, err
 	}
-	if fi.Size() == u.Offset {
+	if fi.Size() == u.Offset && u.Version == UsageVersion {
 		return false, nil
 	}
 	from := u.Offset
-	if fi.Size() < from {
-		from = 0 // a transcript written anew is read anew
+	if fi.Size() < from || u.Version != UsageVersion {
+		from = 0 // a transcript written anew, or read by an older version, is read anew
 	}
 	recent := u.Recent
 	if from == 0 {
@@ -125,15 +131,16 @@ func (e *Env) scanUsageOf(ctx context.Context, a Agent, ur UsageReader, sf Sessi
 	if err != nil {
 		return false, err
 	}
-	if now.Offset != u.Offset {
+	if now.Offset != u.Offset || now.Version != u.Version {
 		return false, nil // another pass moved it: its read stands
 	}
 	if from == 0 {
 		now.Hours = nil
 	}
 	for _, c := range read.Calls {
-		now.Add(c.At, c.Model, c.Tokens)
+		now.Add(c.At, c.Model, c.Effort, c.Tokens)
 	}
+	now.Version = UsageVersion
 	now.Transcript, now.Offset, now.Recent = sf.Transcript, read.To, read.Recent
 	now.Title, now.TitleSure = title, sure
 	if now.Cwd == "" || from == 0 {

@@ -3,6 +3,7 @@ package claude
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"io"
@@ -151,22 +152,24 @@ func (c Claude) ReadSubagent(transcript, id string) (agent.Subagent, error) {
 	if err != nil {
 		return sub, err
 	}
-	sub.Prompt, sub.Result, sub.Model, sub.Tokens = h.prompt, h.result, h.model, &h.tokens
+	sub.Prompt, sub.Result, sub.Model, sub.Effort, sub.Tokens = h.prompt, h.result, h.model, h.effort, &h.tokens
 	sub.Started, sub.Ended = h.first, h.last
 	return sub, nil
 }
 
 // history is what a subagent's history tells.
 type history struct {
-	prompt, result, model string
-	first, last           time.Time
-	tokens                agent.Tokens
+	prompt, result, model, effort string
+	first, last                   time.Time
+	tokens                        agent.Tokens
 }
 
 // historyLine is the part of a history line a record keeps.
 type historyLine struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type       string `json:"type"`
+	Effort     loose  `json:"effort"`
+	TurnEffort loose  `json:"perTurnEffort"`
+	Message    struct {
 		ID      string          `json:"id"`
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
@@ -197,7 +200,8 @@ var (
 
 // readHistory reads a subagent's history: its prompt (the first user
 // message), its result (the message of its SubagentHandback call, else
-// its last text), its model, its first and last times, and its tokens.
+// its last text), its model and the effort it ran at, its first and last
+// times, and its tokens.
 // Claude Code writes one model call as several lines with one message id
 // and the same usage, so each id counts once.
 func readHistory(r io.Reader) (history, error) {
@@ -227,6 +231,9 @@ func readHistory(r io.Reader) (history, error) {
 		case "assistant":
 			if l.Message.Model != "" && !strings.HasPrefix(l.Message.Model, "<") {
 				h.model = l.Message.Model
+				if e := cmp.Or(l.TurnEffort, l.Effort); e != "" {
+					h.effort = string(e)
+				}
 			}
 			if u := l.Message.Usage; u != nil && !seen[l.Message.ID] {
 				seen[l.Message.ID] = l.Message.ID != ""

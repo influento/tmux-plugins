@@ -22,7 +22,8 @@ type Subagent struct {
 	Prompt      string `json:"prompt,omitempty"`
 	Result      string `json:"result,omitempty"` // its final report
 	Model       string `json:"model,omitempty"`
-	Depth       int    `json:"depth,omitempty"` // 1 for one the session's agent started
+	Effort      string `json:"effort,omitempty"` // the effort it ran at
+	Depth       int    `json:"depth,omitempty"`  // 1 for one the session's agent started
 	Transcript  string `json:"transcript,omitempty"`
 	Started     int64  `json:"started,omitempty"`
 	Ended       int64  `json:"ended,omitempty"`
@@ -32,8 +33,11 @@ type Subagent struct {
 	Tokens  *Tokens `json:"tokens,omitempty"`
 	// Complete marks a record filled from the agent's files after the
 	// subagent ended: a pass over the files reads it no more.
-	Complete bool  `json:"complete,omitempty"`
-	Updated  int64 `json:"updated,omitempty"`
+	Complete bool `json:"complete,omitempty"`
+	// Version is the reader's version that filled the record; a pass
+	// fills a complete record of an older one again.
+	Version int   `json:"version,omitempty"`
+	Updated int64 `json:"updated,omitempty"`
 }
 
 // Tokens are the tokens a subagent's model calls used, by kind.

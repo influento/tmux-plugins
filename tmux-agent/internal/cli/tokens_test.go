@@ -26,8 +26,8 @@ func tokensApp(t *testing.T) (*app, *bytes.Buffer, *bytes.Buffer) {
 	}
 	lines := []string{
 		`{"type":"user","cwd":"/work/proj-a","message":{"content":"fix the build"}}`,
-		`{"type":"assistant","timestamp":"2026-01-05T10:00:00Z","message":{"id":"m1","model":"model-a","usage":{"input_tokens":3,"cache_creation_input_tokens":1000,"cache_read_input_tokens":20000,"output_tokens":400}}}`,
-		`{"type":"assistant","timestamp":"2026-01-05T10:01:00Z","message":{"id":"m2","model":"model-a","usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":21000,"output_tokens":100}}}`,
+		`{"type":"assistant","timestamp":"2026-01-05T10:00:00Z","effort":"high","perTurnEffort":"high","message":{"id":"m1","model":"model-a","usage":{"input_tokens":3,"cache_creation_input_tokens":1000,"cache_read_input_tokens":20000,"output_tokens":400}}}`,
+		`{"type":"assistant","timestamp":"2026-01-05T10:01:00Z","effort":"high","perTurnEffort":"high","message":{"id":"m2","model":"model-a","usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":21000,"output_tokens":100}}}`,
 	}
 	if err := os.WriteFile(filepath.Join(dir, tokensSession+".jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -44,9 +44,9 @@ func TestTokens(t *testing.T) {
 	if code := a.tokenReport([]string{"--by", "path", "--since", "7d"}, tokensNow); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
-	want := "path           fresh in  cache read    output  subagents   runs\n" +
-		"/work/proj-a       1.0k       41.0k       500          –      –\n" +
-		"total              1.0k       41.0k       500          –      –\n"
+	want := "path          model          fresh in  cache read     hit    output  subagents   runs\n" +
+		"/work/proj-a  model-a high       1.0k       41.0k   97.6%       500          –      –\n" +
+		"total         model-a high       1.0k       41.0k   97.6%       500          –      –\n"
 	if stdout.String() != want {
 		t.Errorf("table:\n%s\nwant:\n%s", stdout, want)
 	}
@@ -55,11 +55,11 @@ func TestTokens(t *testing.T) {
 func TestTokensPath(t *testing.T) {
 	for path, want := range map[string]string{"/work/proj-a": "500", "/work/proj-b": "0"} {
 		a, stdout, stderr := tokensApp(t)
-		if code := a.tokenReport([]string{"--by", "agent", "--since", "all", "--path", path}, tokensNow); code != 0 {
+		if code := a.tokenReport([]string{"--by", "model", "--since", "all", "--path", path}, tokensNow); code != 0 {
 			t.Fatalf("exit %d: %s", code, stderr)
 		}
 		lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-		if f := strings.Fields(lines[len(lines)-1]); f[3] != want {
+		if f := strings.Fields(lines[len(lines)-1]); f[4] != want {
 			t.Errorf("--path %s: total line %q, want output %s", path, lines[len(lines)-1], want)
 		}
 	}
@@ -84,13 +84,35 @@ func TestTokensJSON(t *testing.T) {
 	}
 }
 
+// --model and --effort keep what they name.
+func TestTokensModelAndEffort(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--model", "model-a"}, "500"},
+		{[]string{"--model", "model-b"}, "0"},
+		{[]string{"--effort", "high"}, "500"},
+		{[]string{"--effort", "?"}, "0"},
+	} {
+		a, stdout, stderr := tokensApp(t)
+		if code := a.tokenReport(append([]string{"--by", "model", "--since", "all"}, c.args...), tokensNow); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr)
+		}
+		lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+		if f := strings.Fields(lines[len(lines)-1]); f[4] != c.want {
+			t.Errorf("%q: total line %q, want output %s", c.args, lines[len(lines)-1], c.want)
+		}
+	}
+}
+
 func TestTokensScanPrintsNothing(t *testing.T) {
 	a, stdout, stderr := tokensApp(t)
 	if code := a.tokenReport([]string{"scan"}, tokensNow); code != 0 || stdout.Len() != 0 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	u, ok, err := a.env.Store.LoadUsage("claude", tokensSession)
-	if err != nil || !ok || u.Hours["2026-01-05T10"]["model-a"].Output != 500 {
+	if err != nil || !ok || u.Hours["2026-01-05T10"]["model-a"]["high"].Output != 500 {
 		t.Errorf("tally = %+v, %v, %v", u, ok, err)
 	}
 }

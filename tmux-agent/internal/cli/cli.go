@@ -92,15 +92,22 @@ const usage = `usage:
                                        agent's own files: those from before tmux-agent
                                        kept records, and any whose end no hook told
   tmux-agent tokens [--since 7d|Nh|YYYY-MM-DD|all] [--by day|session|path|model|type|agent]
-                  [--sort total|fresh|cache|output] [--path FOLDER] [--top N] [--flat] [--json]
+                  [--sort total|fresh|cache|output] [--path FOLDER] [--model NAME]
+                  [--effort LEVEL|?] [--top N] [--flat] [--json]
                                        the tokens agents spent: fresh in (input and cache
-                                       writes), cache reads and output. By session or
-                                       path, a session lists under it the runs it
-                                       started (claude -p), by title or folder, and its
-                                       total with them; --flat gives each its own row.
-                                       Days in order, other rows the most first. --path
-                                       keeps what counts for FOLDER or below. It first
-                                       reads what the transcripts gained
+                                       writes), cache reads, the hit rate (cache reads of
+                                       all input) and output, and the model and effort
+                                       with the most tokens (+ when there are others);
+                                       --json has each row's models and efforts. By
+                                       model, a row is one model at one effort. By
+                                       session or path, a session lists under it the
+                                       runs it started (claude -p), by title or folder,
+                                       and its total with them; --flat gives each its
+                                       own row. Days in order, other rows the most
+                                       first. --path keeps what counts for FOLDER or
+                                       below, --model the models whose name holds NAME,
+                                       --effort what ran at LEVEL (? for unknown). It
+                                       first reads what the transcripts gained
   tmux-agent tokens scan               only that read; tmux-init runs it
   tmux-agent watch AGENT PANE PID     keep the pane's flags, title, labels and context
                                        share live while process PID runs; the hooks
@@ -406,6 +413,8 @@ func (a *app) tokenReport(args []string, now time.Time) int {
 	sortBy := fs.String("sort", "total", "")
 	flat := fs.Bool("flat", false, "")
 	path := fs.String("path", "", "")
+	model := fs.String("model", "", "")
+	effort := fs.String("effort", "", "")
 	asJSON := fs.Bool("json", false, "")
 	if len(args) == 1 && args[0] == "scan" {
 		_ = syscall.Setpriority(syscall.PRIO_PROCESS, 0, 10) // best effort
@@ -428,7 +437,7 @@ func (a *app) tokenReport(args []string, now time.Time) int {
 	entries, err := tally.Entries(a.env.Store, names, tally.Attribution{Owner: a.runOwner, Home: a.getenv("HOME")})
 	if err == nil {
 		var r tally.Report
-		o := tally.Options{Since: since, By: *by, Sort: *sortBy, Loc: time.Local, Flat: *flat, Path: *path}
+		o := tally.Options{Since: since, By: *by, Sort: *sortBy, Loc: time.Local, Flat: *flat, Path: *path, Model: *model, Effort: *effort}
 		if o.Path != "" {
 			if o.Path, err = filepath.Abs(expandHome(o.Path, a.getenv("HOME"))); err != nil {
 				fmt.Fprintf(a.stderr, "tmux-agent tokens: %v\n", err)

@@ -183,3 +183,26 @@ func TestReadUsageLeavesRecent(t *testing.T) {
 		t.Errorf("handed ids now %q, read's %q", got, read.Recent)
 	}
 }
+
+// A call's effort is its turn's, else its session's; an effort that is no
+// string leaves it unknown and the call still counts.
+func TestReadUsageEffort(t *testing.T) {
+	p := writeTranscript(t,
+		call("m1", 1, 1, `"effort":"high","perTurnEffort":"high",`),
+		call("m2", 2, 1, `"effort":"medium","perTurnEffort":"xhigh",`),
+		call("m3", 3, 1, `"effort":"low",`),
+		call("m4", 4, 1, `"effort":{"level":"odd"},`),
+		call("m5", 5, 1, ""),
+	)
+	read, err := (Claude{}).ReadUsage(p, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range read.Calls {
+		got = append(got, c.Effort)
+	}
+	if want := []string{"high", "xhigh", "low", "", ""}; !slices.Equal(got, want) {
+		t.Errorf("efforts = %q, want %q", got, want)
+	}
+}

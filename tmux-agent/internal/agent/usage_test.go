@@ -16,7 +16,7 @@ import (
 )
 
 // usageAgent stands in for an adapter whose transcripts hold one call per
-// line: "<RFC 3339 time> <model> <output tokens>".
+// line: "<RFC 3339 time> <model> <output tokens> [<effort>]".
 type usageAgent struct {
 	dir    string
 	reads  int
@@ -57,7 +57,11 @@ func (u *usageAgent) ReadUsage(transcript string, from int64, recent []string) (
 		fields := strings.Fields(line)
 		at, _ := time.Parse(time.RFC3339, fields[0])
 		n, _ := strconv.ParseInt(fields[2], 10, 64)
-		read.Calls = append(read.Calls, Call{At: at, Model: fields[1], Tokens: Tokens{Output: n}})
+		c := Call{At: at, Model: fields[1], Tokens: Tokens{Output: n}}
+		if len(fields) > 3 {
+			c.Effort = fields[3]
+		}
+		read.Calls = append(read.Calls, c)
 	}
 }
 
@@ -103,8 +107,10 @@ func output(t *testing.T, e *Env) map[string]int64 {
 	}
 	out := map[string]int64{}
 	for h, models := range u.Hours {
-		for m, tok := range models {
-			out[h+" "+m] += tok.Output
+		for m, efforts := range models {
+			for _, tok := range efforts {
+				out[h+" "+m] += tok.Output
+			}
 		}
 	}
 	return out
@@ -200,5 +206,56 @@ func TestScanUsageDamagedTally(t *testing.T) {
 	scan(t, e, a)
 	if got := output(t, e); got["2026-01-05T10 model-a"] != 5 {
 		t.Errorf("tally = %v", got)
+	}
+}
+
+// A tally keeps each call's effort beside its model.
+func TestScanUsageEffort(t *testing.T) {
+	e, a, path := usageEnv(t)
+	writeLines(t, path, false, "2026-01-05T10:01:00Z model-a 5 high", "2026-01-05T10:02:00Z model-a 7 low",
+		"2026-01-05T10:03:00Z model-a 1 high", "2026-01-05T10:04:00Z model-a 2")
+	scan(t, e, a)
+	u, _, _ := e.Store.LoadUsage("fakeagent", sessionA)
+	got := u.Hours["2026-01-05T10"]["model-a"]
+	if got["high"].Output != 6 || got["low"].Output != 7 || got[""].Output != 2 || len(got) != 3 || u.Version != UsageVersion {
+		t.Errorf("tally = %+v, version %d", got, u.Version)
+	}
+}
+
+// A tally an older version read is read again from its start, once; one
+// whose transcript is gone stays as it was.
+func TestScanUsageOlderVersion(t *testing.T) {
+	e, a, path := usageEnv(t)
+	writeLines(t, path, false, "2026-01-05T10:01:00Z model-a 5 high")
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := store.Usage{Agent: "fakeagent", Session: sessionA, Offset: fi.Size(), Transcript: path}
+	old.Add(time.Date(2026, 1, 5, 10, 1, 0, 0, time.UTC), "model-a", "", store.Tokens{Output: 5})
+	if err := e.Store.SaveUsage(old); err != nil {
+		t.Fatal(err)
+	}
+	if n := scan(t, e, a); n != 1 {
+		t.Fatalf("changed %d tallies, want the old one read again", n)
+	}
+	u, _, _ := e.Store.LoadUsage("fakeagent", sessionA)
+	if got := u.Hours["2026-01-05T10"]["model-a"]; got["high"].Output != 5 || len(got) != 1 || u.Version != UsageVersion {
+		t.Errorf("tally = %+v", u)
+	}
+	reads := a.reads
+	if n := scan(t, e, a); n != 0 || a.reads != reads {
+		t.Errorf("second pass changed %d, read %d times", n, a.reads-reads)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.SaveUsage(old); err != nil {
+		t.Fatal(err)
+	}
+	scan(t, e, a)
+	if u, _, _ := e.Store.LoadUsage("fakeagent", sessionA); u.Hours["2026-01-05T10"]["model-a"][""].Output != 5 || u.Version != 0 {
+		t.Errorf("tally without its transcript = %+v", u)
 	}
 }

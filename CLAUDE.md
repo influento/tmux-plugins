@@ -250,7 +250,8 @@ Rules:
   2 GB): it spawns `subagents fill`, which waits for the meta file to say
   finished or stopped, then reads the history; `tmux-init` spawns
   `subagents scan`, the pass over every session's files. A complete record
-  is never read again. A subagent's own events never move the git label.
+  is read again only by a newer reader (see token analytics), and only
+  once. A subagent's own events never move the git label.
 - Nested runs: agents an agent starts outside its subagents (a script of
   `claude -p` runs in a background shell) send hooks tmux-agent drops, so
   the process tree tells: the agent processes below the pane's agent with
@@ -366,8 +367,17 @@ Rules:
   its message id: Claude Code writes one line per block of an answer, with
   the same usage, and a tool's result can come between them, so a tally
   keeps the last ids across reads. The kinds stay apart (cache reads are
-  ~95% of all tokens); no prices. A subagent counts at its start, from its
-  record. Compactions and Claude Code's side calls are in no transcript.
+  ~95% of all tokens); no prices. The hit rate is cache reads over all
+  input, from each row's sums. A call's effort (Claude Code's
+  `perTurnEffort`, else `effort`, since 2.1.296) is kept beside its model.
+  A tally or complete subagent record that an older reader made
+  (`UsageVersion`, `SubagentVersion`) is read again once while its files
+  last; one whose files are gone stays, its effort unknown. A tally also
+  keeps its tokens without efforts in the old `hours` shape: a tmux-agent
+  from before efforts (a release beside a dev build) drops the rest when
+  it writes a tally back, and the tally then loads as version 0. A subagent
+  counts at its start, from its record. Compactions and Claude Code's
+  side calls are in no transcript.
   Most sessions are `claude -p` runs other sessions start. A run's
   parent is, first, what its hook read from the process tree: every hook
   notes its agent process (pid and start time) → session in
