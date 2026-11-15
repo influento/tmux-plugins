@@ -199,3 +199,27 @@ func TestStartRow(t *testing.T) {
 		}
 	}
 }
+
+// The cursor never starts on a label, and an item's row holds all its
+// windows.
+func TestStartRowSkipsLabels(t *testing.T) {
+	rows := []attention.PickRow{
+		{Label: "NEEDS YOU"},
+		{Label: "repo-x", Target: "=proj-a:"},
+		{Session: "proj-a", Target: "=proj-a:4.0", Also: []string{"=proj-a:3"}},
+		{Label: "repo-y", Target: "=proj-a:"},
+		{Session: "proj-a", Target: "=proj-a:2.0"},
+	}
+	for _, c := range []struct {
+		window string
+		want   int
+	}{
+		{"=proj-a:3", 3},
+		{"=proj-a:2", 5},
+		{"=proj-a:9", 3},
+	} {
+		if got := startRow(rows, c.window); got != c.want {
+			t.Errorf("startRow(%s) = %d, want %d", c.window, got, c.want)
+		}
+	}
+}

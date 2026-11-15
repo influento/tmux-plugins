@@ -31,6 +31,10 @@ tmux-agent, not tmux: `tmux-agent start --name NAME --cwd DIR -- claude
 ARGS` opens the window in the background and returns once the agent's
 session started (exit 3 when a window NAME is open), and `tmux-agent close
 NAME` closes it. Their `--json` output carries a `version` field.
+A tool that runs several agents for one unit of work binds them to a task:
+`start --task ID --source S --title T` (each window), `task end ID --source
+S [--close]`, `task list [--json]`. The panel shows a task's windows as one
+row, with the role that matters now; agents group by repository.
 
 The panel is a tmux pane at the left edge, full height, 40 columns, that
 follows its client to every window and session; the same key closes it.

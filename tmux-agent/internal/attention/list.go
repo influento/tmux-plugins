@@ -75,6 +75,46 @@ type Row struct {
 	// Context is how much of its context the pane's agent used, in
 	// percent; 0 for unknown.
 	Context int `json:"context,omitempty"`
+	// Role is the role the pane's agent runs as (OptRole).
+	Role string `json:"role,omitempty"`
+	// Runs are the nested runs that run as a role (OptNestedRoles).
+	Runs []RoleRun `json:"runs,omitempty"`
+	// Task is the task the pane is bound to (OptTask), and TaskTitle its
+	// title.
+	Task      string `json:"task,omitempty"`
+	TaskTitle string `json:"task_title,omitempty"`
+}
+
+// RoleRun is a nested run that runs as a role, and when it started.
+type RoleRun struct {
+	Role  string `json:"role"`
+	Start int64  `json:"start,omitempty"` // unix seconds; 0 for unknown
+	Age   string `json:"-"`               // how long it runs; "" for unknown
+}
+
+// parseRuns reads OptNestedRoles, with each run's age at now.
+func parseRuns(v string, now int64) []RoleRun {
+	var out []RoleRun
+	for _, f := range strings.Fields(v) {
+		role, at, _ := strings.Cut(f, "@")
+		r := RoleRun{Role: role}
+		if start, err := strconv.ParseInt(at, 10, 64); err == nil && start > 0 {
+			r.Start, r.Age = start, Humanize(max(now-start, 0))
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// Repo is the repository of the pane's folder, from a label's token
+// "repo" (the git label's); "" for none.
+func (r Row) Repo() string {
+	for _, l := range r.Labels {
+		if v := l.Tokens["repo"]; v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // Humanize renders an age in seconds as 5s, 3m, 2h or 4d.
@@ -125,6 +165,11 @@ func NextChange(rows []Row, now int64) (at int64, ok bool) {
 				take(l.Until)
 			}
 		}
+		for _, run := range r.Runs {
+			if run.Start != 0 {
+				take(now + AgeChange(now-run.Start))
+			}
+		}
 	}
 	return at, ok
 }
@@ -164,6 +209,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 		"#{@attention_gone}", "#{@agent}", "#{pane_title}", "#{@attention_failed}", "#{@attention_idle_at}",
 		"#{" + OptLabels + "}", "#{" + sidebar.OptClient + "}", "#{" + OptSubagents + "}",
 		"#{" + OptNested + "}", "#{" + OptContext + "}",
+		"#{" + OptRole + "}", "#{" + OptNestedRoles + "}", "#{" + OptTask + "}", "#{" + OptTaskTitle + "}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -172,7 +218,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 18)
+		f := split(l, 22)
 		if skip(f[0]) || f[14] != "" { // the panel is no row of its own
 			continue
 		}
@@ -182,6 +228,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 			Failed: f[4] == string(Done) && f[11] == "1",
 			Labels: ParseLabels(f[13], now), Subagents: len(strings.Fields(f[15])),
 			Nested: strings.Fields(f[16]),
+			Role:   f[18], Runs: parseRuns(f[19], now), Task: f[20], TaskTitle: f[21],
 		}
 		r.At, _ = strconv.ParseInt(f[6], 10, 64) // unset or garbled: no age
 		r.Context, _ = strconv.Atoi(f[17])       // unset or garbled: unknown

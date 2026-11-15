@@ -111,6 +111,7 @@ type PickRow struct {
 	Target  string   // what switch-client takes: "=name:", "=name:index" or "=name:index.pane"
 	Kill    string   // what ctrl-x kills; "" for nothing
 	Fold    string   // on a fold row, the id of the session it opens
+	Also    []string // on an item's row, its other windows ("=name:index")
 	Text    string   // line one, with colour escapes
 	Labels  []string // line two: the pane's labels; none, no line
 	indent  int      // the column line two starts at
@@ -131,10 +132,15 @@ func (r PickRow) Display() string {
 	return r.Text + "\n" + strings.Repeat(" ", r.indent) + r.dimText + text + "\x1b[0m"
 }
 
-// shownLabels are a row's labels as line two shows them.
+// shownLabels are a row's labels as line two shows them: the branch (a
+// label with the token "branch") first, then the others.
 func shownLabels(r Row) []string {
 	var out []string
-	for _, l := range r.Labels {
+	labels := slices.Clone(r.Labels)
+	slices.SortStableFunc(labels, func(a, b Label) int {
+		return cmp.Compare(boolInt(a.Tokens["branch"] == ""), boolInt(b.Tokens["branch"] == ""))
+	})
+	for _, l := range labels {
 		if s := l.Shown(); s != "" {
 			out = append(out, s)
 		}
@@ -174,6 +180,26 @@ func (w *window) busyPanes() []paneOf {
 	return out
 }
 
+// task is the task a pane of the window is bound to, and its title.
+func (w *window) task() (key, title string) {
+	for _, p := range w.panes {
+		if p.row.Task != "" {
+			return p.row.Task, cmp.Or(p.row.TaskTitle, p.row.Task)
+		}
+	}
+	return "", ""
+}
+
+// repo is the repository of the window's best pane that has one.
+func (w *window) repo() string {
+	for _, p := range w.panes {
+		if r := p.row.Repo(); r != "" {
+			return r
+		}
+	}
+	return ""
+}
+
 // target is the window's switch-client target.
 func (w *window) target() string { return "=" + w.session + ":" + strconv.Itoa(w.index) }
 
@@ -186,11 +212,22 @@ func RenderPickRows(rows []Row, sessions []Session, p Panel) []PickRow {
 	return renderTree(rows, sessions, p)
 }
 
+// entry is one place of the tree: a window, or a task's windows as one
+// item.
+type entry struct {
+	wins  []*window // one for a window; a task's, in index order
+	title string    // a task's title; "" for a window
+	repo  string
+}
+
+func (e entry) isItem() bool { return e.title != "" }
+
 // renderTree lists the sessions, those with a flag first by their best
-// rank. Under each, its agent windows in index order, each with its
-// flag, its agent's mark and, for a split window, its panes; then its
-// other windows, folded into one row unless a search runs or the user
-// opened the fold.
+// rank. Under each, its agent windows, grouped by repository under a rule
+// line when the session has two or more: a task's windows as one item
+// row, first in their repository, then the others in index order. A
+// split window lists its busy panes. Then the session's other windows,
+// folded into one row unless a search runs or the user opened the fold.
 func renderTree(rows []Row, sessions []Session, p Panel) []PickRow {
 	wins := map[string][]*window{}
 	byKey := map[string]*window{}
@@ -228,18 +265,45 @@ func renderTree(rows []Row, sessions []Session, p Panel) []PickRow {
 			continue
 		}
 		slices.SortFunc(ws, func(a, b *window) int { return cmp.Compare(a.index, b.index) })
-		matches := func(w *window) bool { return matchesAll(s.Name+" "+w.best().Window, p.Words) }
-		var body []PickRow
+		var entries []*entry
+		items := map[string]*entry{}
 		var folded []*window
 		for _, w := range ws {
-			if !matches(w) {
+			key, title := w.task()
+			if !matchesAll(s.Name+" "+w.best().Window+" "+title, p.Words) {
 				continue
 			}
-			if !w.hasAgent() {
+			switch {
+			case key != "":
+				if it, ok := items[key]; ok {
+					it.wins = append(it.wins, w)
+					continue
+				}
+				items[key] = &entry{wins: []*window{w}, title: title}
+				entries = append(entries, items[key])
+			case w.hasAgent():
+				entries = append(entries, &entry{wins: []*window{w}})
+			default:
 				folded = append(folded, w)
-				continue
 			}
-			body = append(body, windowRows(w, true, p)...)
+		}
+		var body []PickRow
+		for _, g := range byRepo(entries, func(e *entry) string {
+			if e.isItem() {
+				return itemPane(windowRowsOf(e.wins)).Repo()
+			}
+			return e.wins[0].repo()
+		}) {
+			if g.rule {
+				body = append(body, ruleRow(s.Name, g.repo, p))
+			}
+			for _, e := range g.members {
+				if e.isItem() {
+					body = append(body, itemRow(windowRowsOf(e.wins), e.title, p))
+				} else {
+					body = append(body, windowRows(e.wins[0], true, p)...)
+				}
+			}
 		}
 		if len(folded) > 0 {
 			if len(p.Words) > 0 || slices.Contains(p.Open, s.ID) {
@@ -247,7 +311,7 @@ func renderTree(rows []Row, sessions []Session, p Panel) []PickRow {
 					body = append(body, windowRows(w, false, p)...)
 				}
 			} else {
-				body = append(body, foldRow(s, folded, p))
+				body = append(body, foldRow(s, folded, len(entries) > 0, p))
 			}
 		}
 		if len(body) == 0 {
@@ -260,6 +324,135 @@ func renderTree(rows []Row, sessions []Session, p Panel) []PickRow {
 	return out
 }
 
+// repoGroup is the members of one repository, and whether a rule line
+// heads them.
+type repoGroup[T any] struct {
+	repo    string
+	rule    bool
+	members []T
+}
+
+// byRepo groups members by repository, in the order each repository
+// first comes; members with none come first. An item (a task's row) goes
+// before the windows of its repository. Rule lines head the groups when
+// there are two or more, except the one with no repository.
+func byRepo[T interface{ isItem() bool }](members []T, repoOf func(T) string) []repoGroup[T] {
+	var groups []repoGroup[T]
+	at := map[string]int{}
+	for _, m := range members {
+		r := repoOf(m)
+		i, ok := at[r]
+		if !ok {
+			i = len(groups)
+			at[r] = i
+			groups = append(groups, repoGroup[T]{repo: r})
+		}
+		groups[i].members = append(groups[i].members, m)
+	}
+	slices.SortStableFunc(groups, func(a, b repoGroup[T]) int {
+		return cmp.Compare(boolInt(a.repo != ""), boolInt(b.repo != ""))
+	})
+	for i := range groups {
+		slices.SortStableFunc(groups[i].members, func(a, b T) int {
+			return cmp.Compare(boolInt(!a.isItem()), boolInt(!b.isItem()))
+		})
+		groups[i].rule = len(groups) > 1 && groups[i].repo != ""
+	}
+	return groups
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ruleRow is a repository's rule line: ─ name ────, to the row's width.
+// The cursor steps over it.
+func ruleRow(session, repo string, p Panel) PickRow {
+	dim := ansiFg(p.Col.Dim)
+	name := truncEllipsis(repo, max(p.Width-6, 1))
+	rest := max(p.Width-4-utf8.RuneCountInString(name), 1)
+	return PickRow{Label: repo, Session: session, Target: "=" + session + ":",
+		Text: dim + "─ \x1b[0m" + ansiFg(p.Col.Repo) + name + "\x1b[0m" + dim + " " + strings.Repeat("─", rest) + "\x1b[0m"}
+}
+
+// windowRowsOf are the rows of the windows' panes, best first.
+func windowRowsOf(ws []*window) []Row {
+	var rows []Row
+	for _, w := range ws {
+		for _, pn := range w.panes {
+			rows = append(rows, pn.row)
+		}
+	}
+	SortRows(rows)
+	return rows
+}
+
+// itemPane is the pane an item's row stands for: the one that waits for
+// the user, else the one that works, else the best.
+func itemPane(rows []Row) Row {
+	for _, st := range []State{NeedsYou, Working} {
+		for _, r := range rows {
+			if State(r.State) == st {
+				return r
+			}
+		}
+	}
+	return rows[0]
+}
+
+// itemRow is a task's windows as one row: its title, bold, and the role
+// that matters now. A working pane whose agent runs a role below it (a
+// review in a hook) shows that role: no context share of its own, and
+// its age since it started.
+func itemRow(rows []Row, title string, p Panel) PickRow {
+	r := itemPane(rows)
+	c := cellOf(r, title, p)
+	c.bold = true
+	if State(r.State) == Working && len(r.Runs) > 0 {
+		run := slices.MaxFunc(r.Runs, func(a, b RoleRun) int { return cmp.Compare(a.Start, b.Start) })
+		c.role, c.share, c.shareFg, c.age = run.Role, "–", p.Col.Dim, run.Age
+		c.tag = ""
+		if r.Subagents > 0 {
+			c.tag = SubagentGlyph + strconv.Itoa(r.Subagents)
+		}
+	}
+	row := c.render(p)
+	row.Session, row.Window, row.Target = r.Session, r.Window, "="+r.Target
+	win := strings.SplitN(r.Target, ".", 2)[0]
+	row.Kill = "=" + win
+	for _, o := range rows {
+		if w := "=" + strings.SplitN(o.Target, ".", 2)[0]; w != row.Kill && !slices.Contains(row.Also, w) {
+			row.Also = append(row.Also, w)
+		}
+	}
+	row.Labels = shownLabels(r)
+	return row
+}
+
+// cellOf is a row of the table for an agent pane, named name: its flag,
+// its agent's mark, its runs after the name, its role, context share and
+// age.
+func cellOf(r Row, name string, p Panel) cell {
+	share, fg := gaugeOf(r, p.Col)
+	return cell{lead: " " + glyphOf(r, p.Col) + " " + markOf(r, p) + " ", leadLen: leadLen,
+		name: name, tag: runsTag(r, p), role: r.Role, share: share, shareFg: fg, age: ageOf(r)}
+}
+
+// ageOf is a row's age as the table shows it: its flag's, or for an idle
+// agent the time since its last flag.
+func ageOf(r Row) string {
+	switch st := State(r.State); {
+	case st == Idle:
+		return r.IdleAge
+	case r.Age != "-":
+		return r.Age
+	}
+	return ""
+}
+
 // leadLen is the width of a window row's lead: its flag, then its
 // agent's mark and a space, as a terminal may draw a mark wider than its
 // cell.
@@ -267,35 +460,34 @@ const leadLen = 5
 
 // windowRows is a window's row and, for a window with two or more panes
 // that run an agent or have a flag, a row for each pane in index order; with
-// one such pane, the window's row goes to it and shows its labels. An agent window shows its flag, its agent's mark
-// and what the flag says; another window shows its name dim. Window
-// indexes are left out: the names say more.
+// one such pane, the window's row goes to it and shows its labels. An agent
+// window shows its flag, its agent's mark, its role, context share and
+// age; another window shows its name dim, and its command. Window indexes
+// are left out: the names say more.
 func windowRows(w *window, agent bool, p Panel) []PickRow {
 	r := w.best()
-	dim := ansiFg(p.Col.Dim)
+	busy := w.busyPanes()
 	var row PickRow
-	if agent {
-		lead := " " + glyphOf(r, p.Col) + " " + markOfWindow(w, p) + " "
-		ra := windowAgent(w)
-		row = line(lead, leadLen, r.Window, "", rightOf(r, ""), runsTag(ra, p), ra, p)
-	} else {
+	switch {
+	case !agent:
 		right := ""
 		if r.Command != "" && r.Command != r.Window {
 			right = r.Command
 		}
-		row = line(strings.Repeat(" ", leadLen), leadLen, r.Window, dim, right, "", Row{}, p)
+		row = line(strings.Repeat(" ", leadLen), leadLen, r.Window, ansiFg(p.Col.Dim), right, "", Row{}, p)
+	case len(busy) >= 2:
+		row = cell{lead: " " + glyphOf(r, p.Col) + " " + markOfWindow(w, p) + " ", leadLen: leadLen, name: r.Window}.render(p)
+	default:
+		if len(busy) == 1 {
+			r = busy[0].row
+		}
+		row = cellOf(r, r.Window, p).render(p)
 	}
 	row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, w.target(), w.target()
-	if len(w.panes) < 2 {
+	if len(busy) < 2 {
 		row.Labels = shownLabels(r)
-		return []PickRow{row}
-	}
-	if busy := w.busyPanes(); len(busy) < 2 {
-		// One pane that matters: the window's row stands for it.
-		row.Labels = shownLabels(r)
-		if len(busy) == 1 {
+		if len(w.panes) > 1 && len(busy) == 1 {
 			row.Target = w.target() + "." + strconv.Itoa(busy[0].index)
-			row.Labels = shownLabels(busy[0].row)
 		}
 		return []PickRow{row}
 	}
@@ -304,13 +496,14 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 	slices.SortFunc(panes, func(a, b paneOf) int { return cmp.Compare(a.index, b.index) })
 	for _, pn := range panes {
 		pr := pn.row
-		lead := "   " + glyphOf(pr, p.Col) + " ." + strconv.Itoa(pn.index) + " " + markOf(pr, p) + " "
-		paneLead := 9 + len(strconv.Itoa(pn.index))
-		right := ""
-		if pr.Rank < 4 {
-			right = rightOf(pr, "")
+		c := cellOf(pr, pr.Command, p)
+		c.lead = "   " + glyphOf(pr, p.Col) + " ." + strconv.Itoa(pn.index) + " " + markOf(pr, p) + " "
+		c.leadLen = 9 + len(strconv.Itoa(pn.index))
+		c.dimName = true
+		if pr.Rank >= 4 {
+			c.share, c.age = "", ""
 		}
-		row := line(lead, paneLead, pr.Command, dim, right, runsTag(pr, p), pr, p)
+		row := c.render(p)
 		row.Labels = shownLabels(pr)
 		target := w.target() + "." + strconv.Itoa(pn.index)
 		row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, target, target
@@ -319,17 +512,20 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 	return out
 }
 
-// foldRow is one dim row for a session's windows without an agent: their
-// names. It goes to the session; Enter opens it.
-func foldRow(s Session, ws []*window, p Panel) PickRow {
-	parts := make([]string, len(ws))
-	for i, w := range ws {
-		parts[i] = w.best().Window
+// foldRow is one dim row for a session's windows without an agent: how
+// many ("2 more windows" below agent rows). It goes to the session;
+// Enter opens it.
+func foldRow(s Session, ws []*window, more bool, p Panel) PickRow {
+	text := strconv.Itoa(len(ws))
+	if more {
+		text += " more"
 	}
-	lead := "   ┄  " // ┄ under the marks, the names under theirs
-	text := truncEllipsis(strings.Join(parts, " · "), p.Width-utf8.RuneCountInString(lead))
+	text += " window"
+	if len(ws) != 1 {
+		text += "s"
+	}
 	return PickRow{Session: s.Name, Target: "=" + s.Name + ":", Fold: s.ID,
-		Text: ansiFg(p.Col.Dim) + lead + text + "\x1b[0m"}
+		Text: ansiFg(p.Col.Dim) + "   " + text + "\x1b[0m"}
 }
 
 // stateGroups are the by-state view's groups in order: a title, its
@@ -345,28 +541,73 @@ var stateGroups = []struct {
 	{"IDLE", func(c Colours) string { return c.Dim }, func(r Row) bool { return r.Rank == 3 }},
 }
 
-// renderState lists every agent pane under its group, oldest flag first,
-// with its session as a dim column.
+// stateUnit is one row of the by-state view: an agent pane, or a task's
+// panes as one item.
+type stateUnit struct {
+	rows  []Row // one for a pane; a task's, best first
+	title string
+}
+
+func (u stateUnit) isItem() bool { return u.title != "" }
+func (u stateUnit) row() Row {
+	if u.isItem() {
+		return itemPane(u.rows)
+	}
+	return u.rows[0]
+}
+
+// renderState lists every agent pane, and each task as one item, under
+// the group of its flag, oldest flag first, grouped by repository under a
+// rule line when a group has two or more.
 func renderState(rows []Row, p Panel) []PickRow {
-	var out []PickRow
-	for _, g := range stateGroups {
-		var body []PickRow
-		for _, r := range rows {
-			if r.Rank > 3 || !g.holds(r) || !matchesAll(r.Session+" "+r.Window, p.Words) {
-				continue
+	var units []stateUnit
+	items := map[string]int{}
+	for _, r := range rows {
+		if r.Task == "" {
+			if r.Rank <= 3 {
+				units = append(units, stateUnit{rows: []Row{r}})
 			}
-			lead := " " + glyphOf(r, p.Col) + " " + markOf(r, p) + " "
-			row := line(lead, leadLen, r.Window, "", rightOf(r, r.Session), runsTag(r, p), r, p)
-			row.Session, row.Window, row.Target, row.Kill = r.Session, r.Window, "="+r.Target, "="+r.Target
-			row.Labels = shownLabels(r)
-			body = append(body, row)
-		}
-		if len(body) == 0 {
 			continue
 		}
-		title := g.title + " · " + strconv.Itoa(len(body))
+		if i, ok := items[r.Task]; ok {
+			units[i].rows = append(units[i].rows, r)
+			continue
+		}
+		items[r.Task] = len(units)
+		units = append(units, stateUnit{rows: []Row{r}, title: cmp.Or(r.TaskTitle, r.Task)})
+	}
+	var out []PickRow
+	for _, g := range stateGroups {
+		var members []stateUnit
+		for _, u := range units {
+			r := u.row()
+			if r.Rank > 3 || !g.holds(r) || !matchesAll(r.Session+" "+r.Window+" "+u.title, p.Words) {
+				continue
+			}
+			members = append(members, u)
+		}
+		if len(members) == 0 {
+			continue
+		}
+		slices.SortStableFunc(members, func(a, b stateUnit) int { return cmp.Compare(a.row().At, b.row().At) })
+		title := g.title + " · " + strconv.Itoa(len(members))
 		out = append(out, PickRow{Label: g.title, Text: " \x1b[1m" + ansiFg(g.colour(p.Col)) + title + "\x1b[0m"})
-		out = append(out, body...)
+		for _, rg := range byRepo(members, func(u stateUnit) string { return u.row().Repo() }) {
+			if rg.rule {
+				out = append(out, ruleRow("", rg.repo, p))
+			}
+			for _, u := range rg.members {
+				if u.isItem() {
+					out = append(out, itemRow(u.rows, u.title, p))
+					continue
+				}
+				r := u.rows[0]
+				row := cellOf(r, r.Window, p).render(p)
+				row.Session, row.Window, row.Target, row.Kill = r.Session, r.Window, "="+r.Target, "="+r.Target
+				row.Labels = shownLabels(r)
+				out = append(out, row)
+			}
+		}
 	}
 	if out == nil && len(p.Words) == 0 {
 		out = append(out, PickRow{Label: "none", Text: " " + ansiFg(p.Col.Dim) + "no agents\x1b[0m"})
@@ -420,54 +661,100 @@ func markOfWindow(w *window, p Panel) string {
 	return " "
 }
 
-// rightOf is what follows a row's name, right-aligned: a ? or ✓ row's
-// reason, the session when one is given, and the age. A working row has
-// only its age, an idle agent the time since its last output.
-func rightOf(r Row, session string) string {
-	var parts []string
-	st := State(r.State)
-	switch {
-	case st == NeedsYou || st == Done:
-		parts = append(parts, r.Detail)
-	case st == Idle && r.Gone != "":
-		parts = append(parts, r.Detail)
-	}
-	age := ""
-	switch {
-	case st != Idle && r.Age != "-":
-		age = r.Age
-	case st == Idle:
-		age = r.IdleAge
-	}
-	tail := strings.TrimSpace(session + " " + age)
-	if len(parts) > 0 && tail != "" {
-		return parts[0] + " · " + tail
-	}
-	if len(parts) > 0 {
-		return parts[0]
-	}
-	return tail
+// The table's columns at a row's right edge: the context share, a space
+// and the age, endGap columns before the edge. The role column ends a
+// space before them.
+const (
+	shareW = 4
+	ageW   = 3
+	roleW  = 11
+	endGap = 2
+)
+
+// cell is one row of the table before layout.
+type cell struct {
+	lead           string // the flag and the mark, with colour escapes
+	leadLen        int
+	name           string
+	bold, dimName  bool
+	tag            string // after the name, in the working colour
+	role           string
+	share, shareFg string // the context share and its colour; "" for none
+	age            string
 }
 
-// windowAgent is the row of the window's pane whose runs the window's row
-// counts: the best one with any.
-func windowAgent(w *window) Row {
-	for _, pn := range w.panes {
-		if pn.row.Subagents > 0 || len(pn.row.Nested) > 0 {
-			return pn.row
+// render lays the cell out: the lead, the name and its tag, then in their
+// columns the role, the share and the age. A name too long for its column
+// takes a line of its own, its columns below it. A row with no role lends
+// that column to its name.
+func (c cell) render(p Panel) PickRow {
+	start := max(p.Width-endGap-ageW-1-shareW, c.leadLen+4) // where the share starts
+	area := start - c.leadLen - 1                           // the name's, and the role's, after a space
+	nameArea := area
+	if c.role != "" {
+		nameArea = area - roleW - 1
+	}
+	tagLen, tag := 0, ""
+	if c.tag != "" {
+		tagLen = utf8.RuneCountInString(c.tag) + 1
+		tag = " " + ansiFg(p.Col.Working) + c.tag + "\x1b[0m"
+	}
+	style := ""
+	switch {
+	case c.bold:
+		style = "\x1b[1m"
+	case c.dimName:
+		style = ansiFg(p.Col.Dim)
+	}
+	right := ""
+	if c.share != "" || c.age != "" {
+		right = ansiFg(c.shareFg) + padLeft(c.share, shareW) + "\x1b[0m " + ansiFg(p.Col.Dim) + padLeft(c.age, ageW) + "\x1b[0m"
+	}
+	role := ""
+	if c.role != "" {
+		role = " " + ansiFg(p.Col.Role) + padRight(truncEllipsis(c.role, roleW), roleW) + "\x1b[0m"
+	}
+	var b strings.Builder
+	nameLen := utf8.RuneCountInString(c.name)
+	if nameLen+tagLen <= nameArea {
+		b.WriteString(c.lead + " " + style + highlight(c.name, p.Words) + "\x1b[0m" + tag)
+		if role != "" || right != "" {
+			b.WriteString(strings.Repeat(" ", nameArea-nameLen-tagLen) + role + right)
+		}
+	} else {
+		name := truncEllipsis(c.name, max(p.Width-c.leadLen-1-tagLen, 1))
+		b.WriteString(c.lead + " " + style + highlight(name, p.Words) + "\x1b[0m" + tag)
+		if role != "" || right != "" {
+			b.WriteString("\n" + strings.Repeat(" ", c.leadLen+1))
+			if role != "" {
+				b.WriteString(strings.Repeat(" ", nameArea) + role)
+			} else {
+				b.WriteString(strings.Repeat(" ", area))
+			}
+			b.WriteString(right)
 		}
 	}
-	return w.best()
+	return PickRow{Text: b.String(), indent: c.leadLen + 1, width: p.Width, dimText: ansiFg(p.Col.Dim)}
+}
+
+// padLeft and padRight fill s with spaces to n characters.
+func padLeft(s string, n int) string {
+	return strings.Repeat(" ", max(n-utf8.RuneCountInString(s), 0)) + s
+}
+
+func padRight(s string, n int) string {
+	return s + strings.Repeat(" ", max(n-utf8.RuneCountInString(s), 0))
 }
 
 // minName is how much of a name a row keeps before its right part is cut.
 const minName = 14
 
-// line lays out line one: the lead, the name (in colour nameFg, "" for
-// the default), the tag after it in the working colour (never cut), and at
-// the row's right edge the context share of gauge's row in its colour
-// (never cut), then the right part dim. The right part gives way first,
-// down to minName characters of the name; then the name.
+// line lays out line one of a window without an agent: the lead, the name
+// (in colour nameFg, "" for the default), the tag after it in the working
+// colour (never cut), and at the row's right edge the context share of
+// gauge's row in its colour (never cut), then the right part dim. The
+// right part gives way first, down to minName characters of the name; then
+// the name.
 func line(lead string, leadLen int, name, nameFg, right, tag string, gauge Row, p Panel) PickRow {
 	nameLen, rightLen := utf8.RuneCountInString(name), utf8.RuneCountInString(right)
 	room := p.Width - leadLen - 1 // after the lead and a space

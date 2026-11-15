@@ -31,6 +31,7 @@ func TestSidebarEndToEnd(t *testing.T) {
 	w0 := s.Display(t, "=proj-a:0", "#{window_id}")
 	origin := s.Display(t, "=proj-a:0", "#{pane_id}")
 	w1 := s.MustTmux(t, "new-window", "-d", "-t", "=proj-a:1", "-n", "w-two", "-P", "-F", "#{window_id}")
+	p1 := s.Display(t, w1, "#{pane_id}")
 	s.Attach(t, "proj-a", 120, 31)
 	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
 	tmuxAgent := func(args ...string) string {
@@ -80,7 +81,10 @@ func TestSidebarEndToEnd(t *testing.T) {
 	s.MustTmux(t, "select-window", "-t", w1)
 	tmuxtest.WaitFor(t, 5*time.Second, "the panel to follow to "+w1, func() bool { return panelIn() == w1 })
 
-	// A renamed window reloads the panel, through its fzf's socket.
+	// A renamed window reloads the panel, through its fzf's socket. A
+	// flag gives the window a row of its own: a fold shows no names.
+	tmuxAgent("flag", "working", "--pane", p1)
+	s.WaitForContent(t, panel, "w-two")
 	s.MustTmux(t, "rename-window", "-t", w1, "w-renamed")
 	s.WaitForContent(t, panel, "w-renamed")
 
@@ -127,7 +131,7 @@ func openPanel(t *testing.T, before ...[]string) (s *tmuxtest.Server, origin, pa
 		panel = strings.TrimSpace(s.MustTmux(t, "list-panes", "-a", "-F", "#{?#{"+sidebar.OptClient+"},#{pane_id},}"))
 		return panel != ""
 	})
-	s.WaitForContent(t, panel, "w-one")
+	s.WaitForContent(t, panel, "1 window") // the fold that holds w-one
 	return s, origin, panel
 }
 
@@ -143,10 +147,10 @@ func TestPanelShowsFlagChanges(t *testing.T) {
 		}
 	}
 	flag("needs-you", "--reason", "Bash(make)")
-	s.WaitForContent(t, panel, "Bash(make)")
+	s.WaitForContent(t, panel, "w-one") // a row of its own
 	flag("clear")
 	tmuxtest.WaitFor(t, 5*time.Second, "the cleared flag to leave the panel", func() bool {
-		return !strings.Contains(s.MustTmux(t, "capture-pane", "-p", "-t", panel), "Bash(make)")
+		return !strings.Contains(s.MustTmux(t, "capture-pane", "-p", "-t", panel), "w-one")
 	})
 }
 

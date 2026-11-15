@@ -881,7 +881,10 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 }
 
 // placeRow is what pick-key place needs of a row fzf shows.
-type placeRow struct{ Target, Fold, Session string }
+type placeRow struct {
+	Target, Fold, Session, Label string
+	Also                         []string `json:",omitempty"`
+}
 
 // notePlace keeps the rows fzf is about to show, for pick-key place: rows
 // read again later can differ, and a cursor put on another row takes the
@@ -894,7 +897,7 @@ func (a *app) notePlace(rows []attention.PickRow) {
 	}
 	noted := make([]placeRow, len(rows))
 	for i, r := range rows {
-		noted[i] = placeRow{r.Target, r.Fold, r.Session}
+		noted[i] = placeRow{r.Target, r.Fold, r.Session, r.Label, r.Also}
 	}
 	data, err := json.Marshal(noted)
 	if err == nil {
@@ -987,7 +990,7 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		}
 		rows := make([]attention.PickRow, len(noted))
 		for i, r := range noted {
-			rows[i] = attention.PickRow{Target: r.Target, Fold: r.Fold, Session: r.Session}
+			rows[i] = attention.PickRow{Target: r.Target, Fold: r.Fold, Session: r.Session, Label: r.Label, Also: r.Also}
 		}
 		if err := a.side.Placed(ctx, a.getenv("TMUX_PANE"), here); err != nil {
 			return err
@@ -1254,12 +1257,19 @@ func (a *app) leavePanel(ctx context.Context, client, self, origin, target strin
 
 // startRow is the row, from 1, the panel's cursor starts on for the
 // window ("=session:index"): the window's row (which may go to its agent's
-// pane), else its session's fold, else the first session's first row.
+// pane, or be its task's item), else its session's fold, else the first
+// row past the labels.
 func startRow(rows []attention.PickRow, window string) int {
 	start := 2
+	if i := slices.IndexFunc(rows, func(r attention.PickRow) bool { return !r.IsLabel() }); i >= 0 {
+		start = i + 1 // the first row past the labels (a session's name, a rule line)
+	}
 	session, _, _ := strings.Cut(strings.TrimPrefix(window, "="), ":")
 	for i, r := range rows {
-		if r.Target == window || strings.HasPrefix(r.Target, window+".") {
+		if r.IsLabel() {
+			continue
+		}
+		if r.Target == window || strings.HasPrefix(r.Target, window+".") || slices.Contains(r.Also, window) {
 			return i + 1
 		}
 		if r.Fold != "" && r.Session == session { // the window is in the fold

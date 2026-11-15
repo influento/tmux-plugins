@@ -460,20 +460,21 @@ func isGone(err error) bool {
 // Colours are the theme colours of the counts and glyphs.
 type Colours struct {
 	NeedsYou, Done, Failed, Working, Dim string
+	Role, Repo                           string // the panel's role column, its repository rules
 }
 
 // colours reads the theme options, with plain colour names for unset ones.
 func (c *Core) colours(ctx context.Context) Colours {
 	out, err := c.Tmux.Output(ctx, "display-message", "-p",
 		"#{@attention_fg_needs_you}"+sep+"#{@attention_fg_done}"+sep+"#{@attention_fg_working}"+sep+
-			"#{@attention_fg_dim}"+sep+"#{@attention_fg_failed}")
+			"#{@attention_fg_dim}"+sep+"#{@attention_fg_failed}"+sep+"#{@attention_fg_role}"+sep+"#{@attention_fg_repo}")
 	if err != nil {
 		out = ""
 	}
-	f := split(out, 5)
+	f := split(out, 7)
 	return Colours{
 		NeedsYou: or(f[0], "red"), Done: or(f[1], "green"), Working: or(f[2], "blue"),
-		Dim: or(f[3], "default"), Failed: or(f[4], "red"),
+		Dim: or(f[3], "default"), Failed: or(f[4], "red"), Role: or(f[5], "magenta"), Repo: or(f[6], "cyan"),
 	}
 }
 

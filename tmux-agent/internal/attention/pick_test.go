@@ -46,22 +46,22 @@ func check(t *testing.T, got, want []string) {
 }
 
 // The tree: sessions with a flag first by their best rank. Under each,
-// the agent windows in index order (no index shown) with their flag, their agent's mark
-// and, at the right edge, a ? or ✓ row's reason and the age (a working
-// row its age, an idle agent the time since its output); a split window's
-// panes under it. The other windows fold into one row.
+// the agent windows in index order (no index shown) with their flag, their
+// agent's mark and the age (an idle agent's since its last flag), no
+// reason; a split window's panes under it. The other windows fold into one
+// row that counts them.
 func TestRenderTree(t *testing.T) {
 	check(t, render(Panel{View: TreeView}), []string{
 		"=proj-b:|proj-b",
-		"=proj-b:2| ? ✳  gamma             permission · 4m",
-		"=proj-b:2.0|   ● .0 ✳  agent-a                   5m",
-		"=proj-b:2.1|   ? .1 ✳  agent-a      permission · 4m",
-		"=proj-b:3|   ◆  omega                          3h",
-		"=proj-b:|   ┄  zsh · notes",
+		"=proj-b:2| ? ✳  gamma",
+		"=proj-b:2.0|   ● .0 ✳  agent-a                 5m",
+		"=proj-b:2.1|   ? .1 ✳  agent-a                 4m",
+		"=proj-b:3|   ◆  omega                        3h",
+		"=proj-b:|   2 more windows",
 		"=host-c:|host-c",
-		"=host-c:1| ✗    delta         failed: exit 1 · 1m",
+		"=host-c:1| ✗    delta                        1m",
 		"=proj-a:|proj-a",
-		"=proj-a:|   ┄  alpha",
+		"=proj-a:|   1 window",
 	})
 }
 
@@ -88,21 +88,21 @@ func TestRenderTreeUnfolds(t *testing.T) {
 }
 
 // By state: only agents, under Needs you, Working, Done (a failed run
-// with its ✗) and Idle, each with its session dim before the age.
+// with its ✗) and Idle; no reason, no session.
 func TestRenderState(t *testing.T) {
 	check(t, render(Panel{View: StateView}), []string{
 		"| NEEDS YOU · 1",
-		"=proj-b:2.1| ? ✳  gamma      permission · proj-b 4m",
+		"=proj-b:2.1| ? ✳  gamma                        4m",
 		"| WORKING · 1",
-		"=proj-b:2.0| ● ✳  gamma                   proj-b 5m",
+		"=proj-b:2.0| ● ✳  gamma                        5m",
 		"| DONE · 1",
-		"=host-c:1.0| ✗    delta  failed: exit 1 · host-c 1m",
+		"=host-c:1.0| ✗    delta                        1m",
 		"| IDLE · 1",
-		"=proj-b:3.0|   ◆  omega                   proj-b 3h",
+		"=proj-b:3.0|   ◆  omega                        3h",
 	})
 	check(t, render(Panel{View: StateView, Words: QueryWords("delta")}), []string{
 		"| DONE · 1",
-		"=host-c:1.0| ✗    delta  failed: exit 1 · host-c 1m",
+		"=host-c:1.0| ✗    delta                        1m",
 	})
 	if got := RenderPickRows(nil, testSessions, Panel{View: StateView, Width: 39}); len(got) != 1 || !got[0].IsLabel() {
 		t.Errorf("no agents: %+v, want one label", got)
@@ -171,15 +171,15 @@ func TestRenderLabels(t *testing.T) {
 		got = append(got, escape.ReplaceAllString(r.Display(), ""))
 	}
 	check(t, got, []string{
-		" ? ✳  gamma             permission · 4m",
-		"   ● .0 ✳  agent-a                   5m\n           ⎇ main · review",
-		"   ? .1 ✳  agent-a      permission · 4m",
-		"   ◆  omega                          3h\n      ⎇ a-very-long-branch-name-for-a-…",
+		" ? ✳  gamma",
+		"   ● .0 ✳  agent-a                 5m\n           ⎇ main · review",
+		"   ? .1 ✳  agent-a                 4m",
+		"   ◆  omega                        3h\n      ⎇ a-very-long-branch-name-for-a-…",
 	})
 	p.View = StateView
 	for _, r := range RenderPickRows(rows, testSessions, p) {
 		if r.Target == "=proj-b:2.0" {
-			if got, want := escape.ReplaceAllString(r.Display(), ""), " ● ✳  gamma                   proj-b 5m\n      ⎇ main · review"; got != want {
+			if got, want := escape.ReplaceAllString(r.Display(), ""), " ● ✳  gamma                        5m\n      ⎇ main · review"; got != want {
 				t.Errorf("by state: %q, want %q", got, want)
 			}
 		}
@@ -200,13 +200,13 @@ func TestOneAgentPaneIsOneRow(t *testing.T) {
 	}
 	check(t, got, []string{
 		"=proj-a:|proj-a",
-		"=proj-a:1.1| ● ✳  work                           9s\n      ⎇ main",
+		"=proj-a:1.1| ● ✳  work                         9s\n      ⎇ main",
 	})
 }
 
 // A row whose agent runs subagents shows how many after its name, in the
-// working colour. The count is never cut: the right part and a long name
-// give way to it, as they do to each other.
+// working colour. The count is never cut: a name too long for its column
+// takes a line of its own, and its columns go on the line below.
 func TestRenderSubagentCount(t *testing.T) {
 	rows := []Row{
 		{Target: "proj-a:1.0", Session: "proj-a", Window: "build-fix", State: "working", Rank: 2, Age: "3m", Command: "agent-a", IsAgent: true, Subagents: 2},
@@ -220,16 +220,16 @@ func TestRenderSubagentCount(t *testing.T) {
 	}
 	check(t, got, []string{
 		"proj-a",
-		" ● ✳  build-fix ⑂2                   3m",
-		" ✓ ✳  a-very-long-w… ⑂12 turn ended · …",
-		"   ✳  docs                           2h",
+		" ● ✳  build-fix ⑂2                 3m",
+		" ✓ ✳  a-very-long-window-name-here ⑂12\n                                   1m",
+		"   ✳  docs                         2h",
 	})
 	p.View = StateView
 	var state []string
 	for _, r := range RenderPickRows(rows, nil, p) {
 		state = append(state, escape.ReplaceAllString(r.Display(), ""))
 	}
-	if !slices.Contains(state, " ● ✳  build-fix ⑂2            proj-a 3m") {
+	if !slices.Contains(state, " ● ✳  build-fix ⑂2                 3m") {
 		t.Errorf("state view:\n%s", strings.Join(state, "\n"))
 	}
 	// Agents the agent started count apart, each kind by its mark.
@@ -242,7 +242,7 @@ func TestRenderSubagentCount(t *testing.T) {
 	}
 	check(t, withRuns, []string{
 		"proj-a",
-		" ● ✳  python ⑂1 ✳2 ◆1                4m",
+		" ● ✳  python ⑂1 ✳2 ◆1              4m",
 	})
 	row := line(" ●", 2, "build-fix", "", "3m", "⑂2", Row{}, p)
 	if !strings.Contains(row.Text, "\x1b[38;2;137;180;250m⑂2") {
@@ -264,5 +264,107 @@ func TestGaugeOf(t *testing.T) {
 		if text, colour := gaugeOf(Row{Context: tt.context}, col); text != tt.text || colour != tt.colour {
 			t.Errorf("gaugeOf(%d) = %q %q, want %q %q", tt.context, text, colour, tt.text, tt.colour)
 		}
+	}
+}
+
+// itemPanes are one session's panes over two repositories: a task's
+// worker, whose agent runs a review below it, and its demo window; a
+// window of the same repository; one of another; one outside git.
+func itemPanes() []Row {
+	git := func(repo, branch string) Label {
+		return Label{Source: "git", Text: "⎇ " + branch, Tokens: map[string]string{"repo": repo, "branch": branch}}
+	}
+	return []Row{
+		{Target: "proj-a:4.0", Session: "proj-a", Window: "item-1-demo", State: "needs-you", Rank: 0, Age: "1m", Command: "agent-a", IsAgent: true,
+			Role: "role-d", Task: "tool-a/item-1", TaskTitle: "item one", Labels: []Label{git("repo-x", "item-1")}},
+		{Target: "proj-a:3.0", Session: "proj-a", Window: "item-1", State: "working", Rank: 2, Age: "5m", Command: "agent-a", IsAgent: true,
+			Role: "role-w", Context: 40, Task: "tool-a/item-1", TaskTitle: "item one", Runs: []RoleRun{{Role: "role-r", Start: 1, Age: "2m"}},
+			Labels: []Label{{Source: "tool-a", Text: "step 2"}, git("repo-x", "item-1")}},
+		{Target: "proj-a:2.0", Session: "proj-a", Window: "docs", State: "working", Rank: 2, Age: "3m", Command: "agent-a", IsAgent: true,
+			Labels: []Label{git("repo-y", "main")}},
+		{Target: "proj-a:1.0", Session: "proj-a", Window: "notes", State: "done", Rank: 1, Age: "9m", Command: "agent-a", IsAgent: true},
+		{Target: "proj-a:0.0", Session: "proj-a", Window: "fix", Rank: 3, Age: "-", Command: "agent-a", IsAgent: true, IdleAge: "2h",
+			Role: "role-w", Labels: []Label{git("repo-x", "fix")}},
+	}
+}
+
+func renderItems(t *testing.T, rows []Row, view View) []PickRow {
+	t.Helper()
+	return RenderPickRows(rows, []Session{{ID: "$1", Name: "proj-a"}}, Panel{View: view, Width: 39, Marks: testMarks})
+}
+
+func shown(rows []PickRow) []string {
+	var out []string
+	for _, r := range rows {
+		out = append(out, r.Target+"|"+escape.ReplaceAllString(r.Display(), ""))
+	}
+	return out
+}
+
+// A task's windows are one row, bold, named by its title: it stands for
+// the pane that waits for the user, else the one that works, with that
+// pane's role. A session's agents group by repository under rule lines,
+// the item first in its repository, the agents outside git first. Line
+// two starts with the branch.
+func TestRenderItems(t *testing.T) {
+	rows := renderItems(t, itemPanes(), TreeView)
+	check(t, shown(rows), []string{
+		"=proj-a:|proj-a",
+		"=proj-a:1| ✓ ✳  notes                        9m",
+		"=proj-a:|─ repo-x ─────────────────────────────",
+		"=proj-a:4.0| ? ✳  item one    role-d           1m\n      ⎇ item-1",
+		"=proj-a:0|   ✳  fix         role-w           2h\n      ⎇ fix",
+		"=proj-a:|─ repo-y ─────────────────────────────",
+		"=proj-a:2| ● ✳  docs                         3m\n      ⎇ main",
+	})
+	item := rows[3]
+	if !strings.Contains(item.Text, "\x1b[1m") {
+		t.Errorf("item row not bold: %q", item.Text)
+	}
+	if item.Kill != "=proj-a:4" || !slices.Equal(item.Also, []string{"=proj-a:3"}) {
+		t.Errorf("item kill %q, also %q", item.Kill, item.Also)
+	}
+	if !rows[2].IsLabel() || !rows[5].IsLabel() {
+		t.Error("a rule line is no place to go")
+	}
+}
+
+// With no one waiting, the item shows the role that works: a review its
+// agent runs below it shows as that role, with no context share of its
+// own and its age since it started. A session with one repository has
+// no rule line.
+func TestRenderItemBackgroundRole(t *testing.T) {
+	panes := itemPanes()
+	panes[0].State, panes[0].Rank = "", 3
+	check(t, shown(renderItems(t, panes[:2], TreeView)), []string{
+		"=proj-a:|proj-a",
+		"=proj-a:3.0| ● ✳  item one    role-r        –  2m\n      ⎇ item-1 · step 2",
+	})
+	panes[1].Runs = nil
+	check(t, shown(renderItems(t, panes[:2], TreeView))[1:], []string{
+		"=proj-a:3.0| ● ✳  item one    role-w      40%  5m\n      ⎇ item-1 · step 2",
+	})
+}
+
+// By state, an item is one row under its flag's group, grouped by
+// repository as in the tree.
+func TestRenderItemsByState(t *testing.T) {
+	check(t, shown(renderItems(t, itemPanes(), StateView)), []string{
+		"| NEEDS YOU · 1",
+		"=proj-a:4.0| ? ✳  item one    role-d           1m\n      ⎇ item-1",
+		"| WORKING · 1",
+		"=proj-a:2.0| ● ✳  docs                         3m\n      ⎇ main",
+		"| DONE · 1",
+		"=proj-a:1.0| ✓ ✳  notes                        9m",
+		"| IDLE · 1",
+		"=proj-a:0.0|   ✳  fix         role-w           2h\n      ⎇ fix",
+	})
+}
+
+func TestParseRuns(t *testing.T) {
+	got := parseRuns("role-r@100 role-s@x", 220)
+	want := []RoleRun{{Role: "role-r", Start: 100, Age: "2m"}, {Role: "role-s"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("parseRuns = %+v, want %+v", got, want)
 	}
 }

@@ -333,15 +333,23 @@ Rules:
   `display-message -c CLIENT` does not read that client's pane (it takes
   the newest session's): read it through `list-clients`. Two views, Tab
   switches: the tree (opens first) lists each session's agent windows
-  (flag, the agent's mark from its adapter's `Mark`, name, no index; a ?
-  or ✓ row keeps its reason, the others show only the age) and folds the
-  other windows into one row; Enter on a fold opens it, a search opens
-  all. By state lists only agents under Needs you, Working, Done (✗
-  included) and Idle, the session as a column. An idle agent's age counts
+  and folds the other windows into one row; Enter on a fold opens it, a
+  search opens all. By state lists only agents under Needs you, Working,
+  Done (✗ included) and Idle. Both are one table: flag, the agent's mark
+  (its adapter's `Mark`), name, role, context share, age; no reasons
+  (notifications keep them), no index, no session column. A row with no
+  role lends that column to its name; a name too long for it takes a line
+  of its own. A task's windows are one bold row, its title, standing for
+  the pane that waits for the user, else the one that works; a role run
+  below that pane's agent (a review in a hook) shows instead, with `–` for
+  its share. Agents group by the git label's `repo` under rule lines
+  (labels) when there are two or more repositories; tasks first in each.
+  An idle agent's age counts
   from `@attention_idle_at`, the time its last flag was set. A split
   window lists its panes only when two or more run an agent or have a
   flag; with one, the window's row goes to that pane. A row's second line
-  is its pane's labels (see below), dim, cut to the width. fzf only
+  is its pane's labels (see below), the branch first, dim, cut to the
+  width. fzf only
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
   have two lines) and filters by session and window name, so a session's
   name keeps all its windows; `pick-key` gives Tab's and Enter's actions.
