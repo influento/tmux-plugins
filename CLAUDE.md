@@ -363,14 +363,18 @@ Rules:
   come first. Each row carries the moves of up and down past the labels
   next to it, and the row each lands on: one shell per key, and fzf
   never draws the cursor on a label. The key writes the row to the
-  panel's `.want` file and starts `sidebar go CLIENT` in the background;
-  a go takes the client, under the panel lock, to the row in `.want`
-  then. A go that held up fzf's next key left a queue of moves that ran
-  on for seconds after a held key. Place keeps the cursor on the `.want`
-  row while its window is the client's, or the panel did not go there
-  yet (a go on its way); else it goes to the client's window and writes
-  that row to `.want`. A fold's go shows the session's current window,
-  which can have a row of its own. No `--track` or `track-current`: fzf
+  panel's `.want` file and starts `sidebar go CLIENT` in the background
+  unless one runs (the `.going` folder): one go at a time takes the
+  client, under the panel lock, to the row in `.want`, again while it
+  changes, notes each row it took in `.gone`, and looks once more after
+  it removes `.going`. A go that held up fzf's next key left a queue of
+  moves that ran on for seconds after a held key; a go per key starved
+  a slow machine. A go compares the client's own window, not
+  `@sidebar_went`: the client can have moved some other way. Place keeps
+  the cursor on the `.want` row while a go runs that has not taken it,
+  or its window is the client's; else it goes to the client's window
+  and writes that row to `.want` and `.gone`. A fold's go shows the
+  session's current window, which can have a row of its own. No `--track` or `track-current`: fzf
   undoes a key pressed during a reload that tracks. The focus event
   starts the go for the user's other moves (a click, a page): a
   reload's or a place's move fires focus with `$FZF_ACTION` `rebind`,
