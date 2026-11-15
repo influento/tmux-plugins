@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/influento/tmux-plugins/tmux-agent/internal/agent"
+	"github.com/influento/tmux-plugins/tmux-agent/internal/store"
 )
 
 // contractVersion is the version of the JSON that start and close print
@@ -37,6 +38,8 @@ type startedJSON struct {
 	Name         string `json:"name,omitempty"`
 	Agent        string `json:"agent"`
 	AgentSession string `json:"agent_session,omitempty"`
+	// Task is the task the window is bound to (--task).
+	Task *taskJSON `json:"task,omitempty"`
 }
 
 // start opens a window that runs an agent through the launcher, and
@@ -51,6 +54,7 @@ func (a *app) start(args []string) int {
 	focus := fs.Bool("focus", false, "")
 	timeout := fs.Duration("timeout", 30*time.Second, "")
 	asJSON := fs.Bool("json", false, "")
+	tf := addTaskFlags(fs)
 	if err := fs.Parse(args); err != nil || fs.NArg() == 0 || *timeout <= 0 {
 		fmt.Fprint(a.stderr, usage)
 		return 2
@@ -58,6 +62,11 @@ func (a *app) start(args []string) int {
 	fail := func(code int, format string, args ...any) int {
 		fmt.Fprintf(a.stderr, "tmux-agent start: "+format+"\n", args...)
 		return code
+	}
+	task, bind, err := tf.task()
+	if err != nil {
+		fmt.Fprintf(a.stderr, "tmux-agent start: %v\n", err)
+		return 2
 	}
 	ag := a.reg.Get(fs.Arg(0))
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -67,12 +76,24 @@ func (a *app) start(args []string) int {
 	if err != nil {
 		return fail(1, "%v", err)
 	}
+	if bind {
+		if task, err = a.openTask(task); err != nil {
+			return fail(1, "%v", err)
+		}
+	}
 	if *name != "" {
 		w, err := a.windowNamed(ctx, *name)
 		if err != nil {
 			return fail(1, "%v", err)
 		}
 		if w != "" {
+			if bind {
+				// The window is open (a demo opened again): it joins the
+				// task, as a new one would.
+				if err := a.bindWindow(ctx, task, w); err != nil {
+					return fail(1, "%v", err)
+				}
+			}
 			return fail(exitNameInUse, "a window %s is open: %s", *name, w)
 		}
 	}
@@ -104,6 +125,14 @@ func (a *app) start(args []string) int {
 		return fail(1, "new-window printed %q", out)
 	}
 	opened := startedJSON{Version: contractVersion, Pane: f[0], Window: f[1], Session: f[2], Name: *name, Agent: ag.Name()}
+	if bind {
+		// Before the agent's session starts, which notes the task in its
+		// record: the agent takes far longer to start than this call.
+		if err := a.env.BindTask(ctx, task, []string{opened.Pane}); err != nil {
+			return fail(1, "%v", err)
+		}
+		opened.Task = taskOf(task)
+	}
 
 	waitErr := a.tmux.WaitFor(ctx, channel)
 	// The wait used the time; what follows gets its own.
@@ -133,6 +162,15 @@ func (a *app) start(args []string) int {
 	}
 	fmt.Fprintln(a.stdout, opened.Pane)
 	return 0
+}
+
+// bindWindow binds the panes of a window to the task.
+func (a *app) bindWindow(ctx context.Context, t store.Task, window string) error {
+	out, err := a.tmux.Output(ctx, "list-panes", "-t", window, "-F", "#{pane_id}")
+	if err != nil {
+		return err
+	}
+	return a.env.BindTask(ctx, t, strings.Fields(out))
 }
 
 // when is a reason as the end of a sentence.
@@ -235,19 +273,31 @@ func (a *app) closeWindows(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	var named []window
+	for _, w := range ws {
+		if slices.Contains(fs.Args(), w.name) {
+			named = append(named, w)
+		}
+	}
+	return a.closeThese(ctx, named, func(closed []window) error { return a.printClosed(closed, *asJSON) })
+}
+
+// closeThese closes the windows, as the panel's kill does, the caller's
+// own last: closing it ends the caller. Before that one, it gives print
+// what it closes, the caller's window included.
+func (a *app) closeThese(ctx context.Context, ws []window, print func([]window) error) error {
 	own := ""
 	if pane := a.getenv("TMUX_PANE"); pane != "" {
+		var err error
 		if own, err = a.tmux.Display(ctx, pane, "#{window_id}"); err != nil {
 			own = "" // the caller's pane is gone: nothing of it to keep
 		}
 	}
 	var others, last []window
 	for _, w := range ws {
-		switch {
-		case !slices.Contains(fs.Args(), w.name):
-		case w.id == own:
+		if w.id == own {
 			last = append(last, w)
-		default:
+		} else {
 			others = append(others, w)
 		}
 	}
@@ -259,7 +309,8 @@ func (a *app) closeWindows(ctx context.Context, args []string) error {
 	}
 	if len(others) > 0 {
 		// A window the core keeps (the last session's) is not closed.
-		if ws, err = a.windows(ctx); err != nil {
+		ws, err := a.windows(ctx)
+		if err != nil {
 			return err
 		}
 		for _, w := range others {
@@ -270,7 +321,7 @@ func (a *app) closeWindows(ctx context.Context, args []string) error {
 	}
 	// The caller's window: what it closes is said first, since it ends
 	// the caller.
-	if err := a.printClosed(append(closed, last...), *asJSON); err != nil {
+	if err := print(append(closed, last...)); err != nil {
 		return err
 	}
 	for _, w := range last {

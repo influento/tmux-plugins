@@ -46,6 +46,13 @@ const usage = `usage:
                                        pane, or with --json the pane, window, session
                                        and the agent's session. Exit 3: a window NAME
                                        is open already
+                   [--task ID --source S [--title T]]
+                                       bind the window to a task, opened if new (a
+                                       window NAME open already joins it too)
+  tmux-agent task end ID --source S [--close] [--json]
+                                       forget a task; with --close, close its windows,
+                                       the caller's own last. Exit 4: no such task
+  tmux-agent task list [--json]        the open tasks, their windows and roles
   tmux-agent close [--json] NAME...    close every window with one of the names, in
                                        any session, the caller's own last; prints each
   tmux-agent revive AGENT SESSION      resume a session through the launcher, as a
@@ -182,6 +189,8 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 		return a.env.Launch(a.reg.Get(rest[0]), rest[1:], self, stderr)
 	case "start":
 		return a.start(rest)
+	case "task":
+		return a.taskCommand(rest)
 	case "revive":
 		if len(rest) != 2 {
 			fmt.Fprint(stderr, usage)

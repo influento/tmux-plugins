@@ -24,6 +24,9 @@ type Head struct {
 	Worktree bool
 	// Dir is the checkout's git folder, the one that holds its HEAD.
 	Dir string
+	// Repo is the repository's name: its main checkout's folder, for a
+	// linked worktree too (a bare repository's, without .git).
+	Repo string
 }
 
 // Timeout bounds each git call.
@@ -45,7 +48,7 @@ func HeadOf(ctx context.Context, dir string) (Head, error) {
 	if len(f) != 3 {
 		return Head{}, ErrNotARepo
 	}
-	h := Head{Worktree: filepath.Clean(f[0]) != filepath.Clean(f[1]), Dir: filepath.Clean(f[0])}
+	h := Head{Worktree: filepath.Clean(f[0]) != filepath.Clean(f[1]), Dir: filepath.Clean(f[0]), Repo: repoName(f[1])}
 	if b, ok := strings.CutPrefix(f[2], "refs/heads/"); ok {
 		h.Branch = b
 		return h, nil
@@ -60,6 +63,15 @@ func HeadOf(ctx context.Context, dir string) (Head, error) {
 
 // run runs git in dir, without the caller's GIT_* settings, which would
 // point it at another repository, and without taking optional locks.
+// repoName is the name of the repository whose common git folder is dir.
+func repoName(dir string) string {
+	dir = filepath.Clean(dir)
+	if filepath.Base(dir) == ".git" {
+		return filepath.Base(filepath.Dir(dir))
+	}
+	return strings.TrimSuffix(filepath.Base(dir), ".git")
+}
+
 func run(ctx context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()

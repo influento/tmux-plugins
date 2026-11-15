@@ -35,6 +35,9 @@ type Session struct {
 	Ended      int64  `json:"ended,omitempty"`
 	End        string `json:"end,omitempty"`  // how it ended: exited, killed, unknown
 	Exit       string `json:"exit,omitempty"` // exit code, or the signal that killed it
+	// Task is the open task the session's pane was bound to (Task.Key),
+	// so a resume after a restart binds its new pane again.
+	Task string `json:"task,omitempty"`
 }
 
 // Store is the folder that holds the records.

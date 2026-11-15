@@ -27,6 +27,14 @@ func (e *Env) refresh(ctx context.Context, a Agent, ev Event, l live, session st
 	if err := e.place(ctx, a, ev, l, session); err != nil {
 		return err
 	}
+	if ev.Kind == TurnEnd && ev.By == "" && l.role == "" {
+		// An agent that started before tmux-agent read roles.
+		if role := e.roleOf(a); role != "" {
+			if err := e.paneOpts(ctx, map[string]string{attention.OptRole: role}); err != nil {
+				return err
+			}
+		}
+	}
 	return e.gauge(ctx, a, ev, l)
 }
 
@@ -71,6 +79,9 @@ func gitLabel(h git.Head) attention.Label {
 	if h.Worktree {
 		l.Text += " wt"
 		l.Tokens["worktree"] = "1"
+	}
+	if h.Repo != "" {
+		l.Tokens["repo"] = h.Repo
 	}
 	return l
 }

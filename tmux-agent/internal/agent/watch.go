@@ -291,17 +291,14 @@ func (e *Env) nestedFor(ctx context.Context, pane string, l live) ([]int, error)
 	if tree == nil {
 		return nil, nil
 	}
-	names := e.Registry.ProcessNames()
-	procs := nestedProcs(l.panePid, names, tree)
-	var runs []string
+	procs := nestedProcs(l.panePid, e.Registry.ProcessNames(), tree)
 	var pids []int
 	for _, p := range procs {
-		runs = append(runs, agentName(p, names))
 		pids = append(pids, p.pid)
 	}
-	slices.Sort(runs)
+	runs, roles := e.runsOf(procs)
 	if !slices.Equal(runs, l.nested) {
-		if err := e.optsOf(ctx, pane, map[string]string{attention.OptNested: strings.Join(runs, " ")}); err != nil {
+		if err := e.optsOf(ctx, pane, map[string]string{attention.OptNested: strings.Join(runs, " "), attention.OptNestedRoles: roles}); err != nil {
 			return nil, err
 		}
 		e.changed(ctx)

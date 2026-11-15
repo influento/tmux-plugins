@@ -36,6 +36,9 @@ type Env struct {
 	// Nested reports whether the calling hook belongs to an agent started
 	// inside another one. NestedHook when nil.
 	Nested func(names []string, run int) bool
+	// AgentArgs reads the arguments of the calling hook's agent process;
+	// the nearest agent process above the hook when nil.
+	AgentArgs func(names []string, run int) ([]string, bool)
 	// OtherHooks reports whether hooks the agent started with the calling
 	// one, for the same event, still run. OtherHooksRun when nil.
 	OtherHooks func(names []string) bool
@@ -148,6 +151,7 @@ type live struct {
 	panePid                                                             int
 	run, oneShot, resume, revive, context                               string
 	starting                                                            string // the channel of a start that waits
+	task, role                                                          string // the pane's task binding, its agent's role
 	flag                                                                attention.State
 	autoRename                                                          bool
 	windowName, title                                                   string
@@ -161,6 +165,7 @@ var liveFormat = strings.Join([]string{
 	"#{" + optWaitBy + "}", "#{" + attention.OptSubagents + "}",
 	"#{" + attention.OptNested + "}", "#{" + optHeld + "}", "#{pane_pid}",
 	"#{" + attention.OptContext + "}", "#{" + OptStarting + "}",
+	"#{" + attention.OptTask + "}", "#{" + attention.OptRole + "}",
 }, "\x1f")
 
 func (e *Env) readLive(ctx context.Context) (live, error) { return e.liveOf(ctx, e.Pane) }
@@ -170,8 +175,8 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 	if err != nil {
 		return live{}, err
 	}
-	f := strings.SplitN(out, "\x1f", 23)
-	for len(f) < 23 {
+	f := strings.SplitN(out, "\x1f", 25)
+	for len(f) < 25 {
 		f = append(f, "")
 	}
 	return live{
@@ -181,7 +186,7 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 		flag: attention.State(f[12]), autoRename: f[13] == "1", windowName: f[14], title: f[15],
 		waitBy: f[16], subagents: strings.Fields(f[17]),
 		nested: strings.Fields(f[18]), held: f[19] != "", heldBy: f[19], panePid: atoi(f[20]), context: f[21],
-		starting: f[22],
+		starting: f[22], task: f[23], role: f[24],
 	}, nil
 }
 
@@ -447,7 +452,7 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 	opts := map[string]string{
 		optAgent: a.Name(), optSession: ev.SessionID, optTranscript: ev.Transcript, optCwd: ev.Cwd,
 		optState: string(state), optReason: reason, optWait: "", optWaitBy: "", optResume: "",
-		attention.OptSubagents: "", attention.OptNested: "", optHeld: "",
+		attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "",
 	}
 	if title != "" {
 		if err := e.applyTitle(ctx, title); err != nil {
@@ -456,12 +461,23 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 		opts[optNamed] = title
 	}
 	opts[OptRevive] = e.revive(a, ev.SessionID)
+	opts[attention.OptRole] = e.roleOf(a)
+	task := l.task
+	if task == "" && restoring {
+		// After a restart: the pane the session resumes in is bound to
+		// its task again, while the task is open.
+		if t, ok := e.openTask(rec.Task); ok {
+			task = t.Key()
+			opts[attention.OptTask], opts[attention.OptTaskTitle] = task, t.Title
+		}
+	}
 	if err := e.paneOpts(ctx, opts); err != nil {
 		return err
 	}
 	now := e.now().Unix()
 	e.remember(a, ev.SessionID, func(s *store.Session) {
 		s.Transcript, s.Cwd, s.State, s.Reason, s.Pane = ev.Transcript, ev.Cwd, string(state), reason, e.Pane
+		s.Task = task
 		if s.Started == 0 {
 			s.Started = now
 		}
@@ -606,7 +622,7 @@ func (e *Env) markTurnEnd(ctx context.Context, a Agent, ev Event, l live, sessio
 		return e.holdFor(ctx, e.Pane, l, runs)
 	}
 	if l.held || len(l.nested) > 0 {
-		if err := e.paneOpts(ctx, map[string]string{optHeld: "", attention.OptNested: ""}); err != nil {
+		if err := e.paneOpts(ctx, map[string]string{optHeld: "", attention.OptNested: "", attention.OptNestedRoles: ""}); err != nil {
 			return err
 		}
 	}
@@ -640,7 +656,7 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
 		return err
 	}
-	opts := map[string]string{optNamed: "", attention.OptSubagents: "", attention.OptNested: "", optHeld: "", attention.OptContext: ""}
+	opts := map[string]string{optNamed: "", attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "", attention.OptContext: ""}
 	if ev.End == EndExited {
 		for _, o := range sessionOpts {
 			opts[o] = ""
@@ -658,7 +674,7 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 
 // sessionOpts are the pane options that name the pane's session; they go
 // when the session ends for good.
-var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive, attention.OptSubagents, attention.OptNested, optHeld, attention.OptContext}
+var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive, attention.OptSubagents, attention.OptNested, attention.OptNestedRoles, optHeld, attention.OptContext, attention.OptRole}
 
 // releaseTitle gives the window of pane back to tmux when its name is
 // still the title the pane's agent set.

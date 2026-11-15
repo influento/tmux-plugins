@@ -39,6 +39,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -87,6 +88,30 @@ func (Claude) OneShot(args []string) bool {
 	}
 	return false
 }
+
+// Role is the agent type --agent names (claude --agent wb-reviewer): a
+// definition of the user's or a project's. "" for none, or for a name
+// that is no plain word.
+func (Claude) Role(args []string) string {
+	role := ""
+	for i, a := range args {
+		if a == "--" {
+			break
+		}
+		if a == "--agent" && i+1 < len(args) {
+			role = args[i+1]
+		} else if v, ok := strings.CutPrefix(a, "--agent="); ok {
+			role = v
+		}
+	}
+	if !validRole.MatchString(role) {
+		return ""
+	}
+	return role
+}
+
+// validRole is an agent type's name as the panel can show it.
+var validRole = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`)
 
 // ResumeArgs resume a session.
 func (Claude) ResumeArgs(session string) []string { return []string{"--resume", session} }

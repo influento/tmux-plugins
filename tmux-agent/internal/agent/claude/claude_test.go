@@ -303,3 +303,22 @@ func TestEventName(t *testing.T) {
 		}
 	}
 }
+
+// The role is the agent type --agent names, in either form.
+func TestRole(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-p", "review the branch", "--agent", "wb-reviewer", "--output-format", "json"}, "wb-reviewer"},
+		{[]string{"--agent=wb-worker"}, "wb-worker"},
+		{[]string{"--resume", "x"}, ""},
+		{[]string{"--agent"}, ""},
+		{[]string{"--", "--agent", "x"}, ""},
+		{[]string{"--agent", "two words"}, ""},
+	} {
+		if got := (Claude{}).Role(c.args); got != c.want {
+			t.Errorf("Role(%q) = %q, want %q", c.args, got, c.want)
+		}
+	}
+}

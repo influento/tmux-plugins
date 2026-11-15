@@ -36,8 +36,8 @@ func TestHeadOf(t *testing.T) {
 		dir  string
 		want Head
 	}{
-		{repo, Head{Branch: "main", Dir: filepath.Join(repo, ".git")}},
-		{wt, Head{Branch: "feat-a", Worktree: true, Dir: filepath.Join(repo, ".git", "worktrees", "proj-a-wt")}},
+		{repo, Head{Branch: "main", Dir: filepath.Join(repo, ".git"), Repo: "proj-a"}},
+		{wt, Head{Branch: "feat-a", Worktree: true, Dir: filepath.Join(repo, ".git", "worktrees", "proj-a-wt"), Repo: "proj-a"}},
 	} {
 		got, err := HeadOf(ctx, c.dir)
 		if err != nil || got != c.want {

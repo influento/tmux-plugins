@@ -285,6 +285,21 @@ Rules:
   session); its other variables come from tmux's environment. `close`
   matches window names in every session and closes the caller's own
   window last, through the panel's kill.
+- Tasks (T1): `start --task ID --source S [--title T]` binds the new
+  window's pane (`@agent_task` source/id, `@agent_task_title`) to an open
+  task, `$XDG_STATE_HOME/tmux-agent/tasks/<source>/<id>.json`, opened if
+  new; a window NAME open already joins it, and start still exits 3.
+  `task end` deletes it and unbinds its panes, or with `--close` closes
+  their windows, the caller's own last; an unknown task exits 4 and
+  closes nothing (the tool closes by name). A session that starts in a
+  bound pane notes the task in its record; its resume after a restart
+  binds the new pane again while the task is open. No history.
+- Roles: `@agent_role` is the agent type the pane's agent runs as, read
+  from its arguments by the adapter (`Roler`): by the launcher, by the
+  hook at a session start, and at a turn end for an agent started before.
+  `@agent_nested_roles` lists the nested runs that have one, as
+  role@start (unix). The git label carries the token `repo`: the main
+  checkout's name, for a worktree too.
 - A one-shot run (`claude -p`) is flagged working at launch and done or
   failed at exit by the launcher; its own hooks only name the session.
 - `popup` waits until the user closes the popup, with no timeout; `pick`

@@ -17,9 +17,9 @@ import (
 // they run leaves the pane working and held (optHeld): the agent waits on
 // them, not on the user. When the last one ends, the turn is done.
 
-// nestedRuns are the agents that run below the agent of the pane whose
-// shell is pid; none when the process table cannot be read.
-func (e *Env) nestedRuns(pid int) []string {
+// nestedRuns are the agent processes that run below the agent of the pane
+// whose shell is pid; none when the process table cannot be read.
+func (e *Env) nestedRuns(pid int) []proc {
 	if pid <= 0 {
 		return nil
 	}
@@ -27,15 +27,17 @@ func (e *Env) nestedRuns(pid int) []string {
 	if tree == nil {
 		return nil
 	}
-	return nestedAgents(pid, e.Registry.ProcessNames(), tree)
+	return nestedProcs(pid, e.Registry.ProcessNames(), tree)
 }
 
 // holdFor marks the pane's ended turn as held by runs, and lists them.
-func (e *Env) holdFor(ctx context.Context, pane string, l live, runs []string) error {
+func (e *Env) holdFor(ctx context.Context, pane string, l live, runs []proc) error {
 	opts := map[string]string{optHeld: heldRuns}
-	listed := slices.Equal(l.nested, runs)
+	names, roles := e.runsOf(runs)
+	listed := slices.Equal(l.nested, names)
 	if !listed {
-		opts[attention.OptNested] = strings.Join(runs, " ")
+		opts[attention.OptNested] = strings.Join(names, " ")
+		opts[attention.OptNestedRoles] = roles
 	}
 	if err := e.optsOf(ctx, pane, opts); err != nil {
 		return err
@@ -84,9 +86,10 @@ func (e *Env) SweepNested(ctx context.Context) error {
 	names := e.Registry.ProcessNames()
 	listed := false
 	for _, p := range panes {
-		runs := strings.Join(nestedAgents(p.pid, names, tree), " ")
+		ns, roles := e.runsOf(nestedProcs(p.pid, names, tree))
+		runs := strings.Join(ns, " ")
 		if runs != p.nested {
-			err := e.optsOf(ctx, p.id, map[string]string{attention.OptNested: runs})
+			err := e.optsOf(ctx, p.id, map[string]string{attention.OptNested: runs, attention.OptNestedRoles: roles})
 			if err != nil && !isGone(err) {
 				return err
 			}

@@ -33,6 +33,23 @@ const OptContext = "@agent_context"
 // keeps it; the panel shows how many, with each agent's mark.
 const OptNested = "@agent_nested"
 
+// OptRole is the pane option that holds the role the pane's agent runs
+// as: the agent type a tool started it with. The agent layer keeps it; the
+// panel shows it in its role column.
+const OptRole = "@agent_role"
+
+// OptNestedRoles is the pane option that lists the nested runs (OptNested)
+// that run as a role: role@start for each, start in unix seconds,
+// space-separated. The panel shows a task's background role from it.
+const OptNestedRoles = "@agent_nested_roles"
+
+// OptTask binds a pane to an open task (source/id), and OptTaskTitle
+// holds the task's title: the panel shows a task's windows as one row.
+const (
+	OptTask      = "@agent_task"
+	OptTaskTitle = "@agent_task_title"
+)
+
 // Label is what one source (a tool, or tmux-agent itself) says about a
 // pane: a short text the panel shows on the row's second line, and tokens
 // for tools to read. The core knows no source and no token.

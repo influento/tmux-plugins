@@ -265,7 +265,7 @@ func NestedHook(names []string, run int) bool {
 
 // hookSpread is how far apart, in clock ticks (USER_HZ, 100 a second on
 // Linux), an agent starts the hooks of one event: it starts them together.
-const hookSpread = 100
+const hookSpread = clockTicks
 
 // OtherHooksRun reports whether hooks the agent started with the calling
 // hook, for the same event, still run: other children of the agent

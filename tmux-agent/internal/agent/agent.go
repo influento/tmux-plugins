@@ -43,6 +43,13 @@ type Resumer interface {
 	ResumedSession(args []string) string
 }
 
+// Roler reads the role an agent process runs as from its arguments: the
+// agent type a tool started it with (claude --agent wb-reviewer); "" for
+// none.
+type Roler interface {
+	Role(args []string) string
+}
+
 // ProcessNamer lists the names the agent's processes run under. An adapter
 // with hook events needs it: it is how a hook tells the run's own agent from
 // one started inside it.
@@ -189,6 +196,16 @@ func (r *Registry) Get(name string) Agent {
 		return a
 	}
 	return Generic(name)
+}
+
+// ByProcess is the agent whose process names hold name.
+func (r *Registry) ByProcess(name string) (Agent, bool) {
+	for _, a := range r.agents {
+		if p, ok := a.(ProcessNamer); ok && slices.Contains(p.ProcessNames(), name) {
+			return a, true
+		}
+	}
+	return nil, false
 }
 
 // Agents returns the registered agents.
