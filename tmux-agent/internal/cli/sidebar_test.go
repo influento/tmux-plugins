@@ -360,3 +360,126 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		}
 	}
 }
+
+// panelRow is the label and the target of the row under the panel's
+// cursor.
+func panelRow(t *testing.T, socket string) (label, target string) {
+	t.Helper()
+	hc := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+	}}
+	resp, err := hc.Get("http://fzf/?limit=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var st struct{ Current *struct{ Text string } }
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Current == nil {
+		return "", ""
+	}
+	f := strings.Split(st.Current.Text, "\t")
+	if len(f) < 2 {
+		return "", ""
+	}
+	return f[0], f[1]
+}
+
+// Keys as fast as a held arrow move the cursor as fast as they come, and
+// the client follows to the row it stops on: no queue of moves runs on
+// after the keys end. Up at the top row stays there, never on the
+// session's name above it. Each key's move used to hold up the next
+// key, so the moves ran on for seconds.
+func TestPanelHeldKey(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	for _, n := range []string{"w-two", "w-three", "w-four", "w-five", "w-six"} {
+		p := s.MustTmux(t, "new-window", "-d", "-n", n, "-P", "-F", "#{pane_id}")
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+	}
+	s.WaitForContent(t, panel, "w-six")
+	socket := s.Display(t, panel, "#{"+sidebar.OptListen+"}")
+	client := func() string {
+		return s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}")
+	}
+	var keys sync.WaitGroup
+	keys.Go(func() {
+		s.MustTmux(t, "send-keys", "-t", panel, "Up") // from the fold to w-six
+		for range 40 {
+			s.MustTmux(t, "send-keys", "-t", panel, "Up")
+			s.MustTmux(t, "send-keys", "-t", panel, "Down")
+		}
+		for range 8 { // past the top
+			s.MustTmux(t, "send-keys", "-t", panel, "Up")
+		}
+	})
+	var labels []string
+	ended := time.Time{}
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		label, target := panelRow(t, socket)
+		if label != "" {
+			labels = append(labels, label)
+		}
+		if ended.IsZero() {
+			done := make(chan struct{})
+			go func() { keys.Wait(); close(done) }()
+			select {
+			case <-done:
+				ended = time.Now()
+			default:
+			}
+			continue
+		}
+		if target == "=proj-a:1" && client() == target {
+			if d := time.Since(ended); d > 1500*time.Millisecond {
+				t.Errorf("the client reached the cursor's row %v after the last key", d)
+			}
+			break
+		}
+	}
+	if label, target := panelRow(t, socket); target != "=proj-a:1" || client() != target {
+		t.Fatalf("cursor on %q %s, client on %s; want both on the top row", label, target, client())
+	}
+	if len(labels) > 0 {
+		t.Errorf("the cursor stopped on labels: %q", labels)
+	}
+}
+
+// A fold's row keeps the cursor when the panel reloads, though its go
+// leaves the client on a window that has a row of its own: the
+// session's current one.
+func TestPanelFoldKeepsCursor(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	p := s.MustTmux(t, "new-window", "-d", "-n", "w-two", "-P", "-F", "#{pane_id}")
+	if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+		t.Fatalf("flag: %v: %s", err, out)
+	}
+	s.WaitForContent(t, panel, "w-two")
+	socket := s.Display(t, panel, "#{"+sidebar.OptListen+"}")
+	client := func() string {
+		return s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}")
+	}
+	s.MustTmux(t, "send-keys", "-t", panel, "Up") // from the fold to w-two
+	tmuxtest.WaitFor(t, 5*time.Second, "the client on w-two", func() bool { return client() == "=proj-a:1" })
+	s.MustTmux(t, "send-keys", "-t", panel, "Down") // back to the fold
+	tmuxtest.WaitFor(t, 5*time.Second, "the cursor on the fold", func() bool {
+		_, target := panelRow(t, socket)
+		return target == "=proj-a:"
+	})
+	if out, err := s.Command(t, origin, "tmux-agent", "sidebar", "reload").CombinedOutput(); err != nil {
+		t.Fatalf("reload: %v: %s", err, out)
+	}
+	time.Sleep(500 * time.Millisecond) // the reload and its place
+	if _, target := panelRow(t, socket); target != "=proj-a:" {
+		t.Errorf("cursor on %s after a reload, want the fold", target)
+	}
+	if got := client(); got != "=proj-a:1" {
+		t.Errorf("client on %s, want w-two, the session's current window", got)
+	}
+}

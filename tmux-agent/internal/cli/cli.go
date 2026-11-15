@@ -870,8 +870,8 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	for _, r := range rows {
-		fmt.Fprint(a.stdout, ui.PickLine(r)+end)
+	for _, l := range ui.PickLines(rows) {
+		fmt.Fprint(a.stdout, l+end)
 	}
 	if end == "\x00" {
 		a.tellTick(next)
@@ -907,6 +907,42 @@ func (a *app) notePlace(rows []attention.PickRow) {
 		_ = os.Remove(path) // none is better than an old one
 		a.logf("pick-rows: %v", err)
 	}
+}
+
+// placeRow is the row, from 1, place puts the panel's cursor on: the row
+// the keys noted last while the client shows its window, or a go to it
+// is on its way (its window is not the one the panel went to last);
+// else the row of the client's window, here, which the client went to
+// some other way. A fold's row stays: its go shows a window of another
+// row. The keys then note that row.
+func (a *app) placeRow(ctx context.Context, rows []attention.PickRow, here string) (int, error) {
+	pane := a.getenv("TMUX_PANE")
+	path := a.panelSocket(pane, ".want")
+	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+		want := string(data)
+		i := slices.IndexFunc(rows, func(r attention.PickRow) bool { return !r.IsLabel() && r.Target == want })
+		out, err := a.tmux.Output(ctx, "display-message", "-p", "-t", want, "#{window_id} =#{session_name}:#{window_index}")
+		if i >= 0 && err == nil {
+			id, win, _ := strings.Cut(out, " ")
+			went, _, err := a.tmux.Option(ctx, "-p", pane, sidebar.OptWent)
+			if err != nil {
+				return 0, err
+			}
+			if id != went || win == here {
+				return i + 1, nil
+			}
+		}
+	}
+	pos := startRow(rows, here)
+	if err := a.side.Placed(ctx, pane, here); err != nil {
+		return 0, err
+	}
+	if path != "" && pos <= len(rows) {
+		if err := writeFileAtomic(path, []byte(rows[pos-1].Target)); err != nil {
+			a.logf("pick-key place: %v", err)
+		}
+	}
+	return pos, nil
 }
 
 // writeFileAtomic replaces path with data: a reader sees the old file or
@@ -992,10 +1028,11 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		for i, r := range noted {
 			rows[i] = attention.PickRow{Target: r.Target, Fold: r.Fold, Session: r.Session, Label: r.Label, Also: r.Also}
 		}
-		if err := a.side.Placed(ctx, a.getenv("TMUX_PANE"), here); err != nil {
+		pos, err := a.placeRow(ctx, rows, here)
+		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.stdout, "unbind(focus)+pos(%d)+rebind(focus)\n", startRow(rows, here))
+		fmt.Fprintf(a.stdout, "unbind(focus)+pos(%d)+rebind(focus)\n", pos)
 	case "enter":
 		fold := ""
 		if len(args) > 1 {
@@ -1084,6 +1121,15 @@ func (a *app) tickPanel(ctx context.Context, tick *net.UnixConn, socket string, 
 	}
 }
 
+// wantIf is want for a panel, "" for a picker in a popup: its keys wait
+// for each go.
+func wantIf(panel bool, want string) string {
+	if panel {
+		return want
+	}
+	return ""
+}
+
 // panelSocket is the path of the panel's socket of kind (".sock" for
 // fzf's, ".tick" for its times) in pane, fixed per server and pane: a
 // panel that was killed leaves its sockets for the next one to take. ""
@@ -1138,6 +1184,13 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 		return err
 	}
 	a.notePlace(rows) // not an older panel's in this pane
+	want := ""
+	if p := a.panelSocket(a.getenv("TMUX_PANE"), ".want"); p != "" {
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		want = p
+	}
 	startPane, startWindow, err := a.where(ctx, client)
 	if err != nil {
 		return err
@@ -1187,7 +1240,7 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
 		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width,
-		Cursor: cursor, Listen: listen})
+		Cursor: cursor, Listen: listen, Want: wantIf(listen != "", want)})
 	stopTick()
 	if listen != "" {
 		_ = os.Remove(listen) // fzf is gone; the panel may be too, so no tmux call
@@ -1303,6 +1356,21 @@ func (a *app) sidebar(ctx context.Context, args []string) error {
 	a.side.Skip = skip
 	action, rest := args[0], args[1:]
 	switch {
+	case action == "go" && len(rest) == 1:
+		// A key's go in the background: to the row the keys noted last.
+		path := a.panelSocket(a.getenv("TMUX_PANE"), ".want")
+		if path == "" {
+			return nil
+		}
+		target, moved, err := a.side.GoWant(ctx, rest[0], func() string {
+			data, _ := os.ReadFile(path) // none or empty: no row to go to
+			return string(data)
+		})
+		a.debugf("sidebar go %s to %q, moved %v, FZF_ACTION %q", rest[0], target, moved, a.getenv("FZF_ACTION"))
+		if err != nil || !moved {
+			return err
+		}
+		return a.seenOn(ctx, rest[0])
 	case action == "go" && len(rest) == 2:
 		// Which of fzf's events ran it: a go from a reload's or a place's
 		// move takes the client back.

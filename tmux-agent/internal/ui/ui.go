@@ -46,6 +46,10 @@ type PickOptions struct {
 	// none. A key would do for fzf, but one that lands just after the
 	// user's Esc turns both into an Alt key, and Esc is lost.
 	Listen string
+	// Want is the file the keys write the row they moved to in, for
+	// `sidebar go` in the background; "" for none: the keys then wait
+	// for each go.
+	Want string
 }
 
 var hexColour = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
@@ -72,11 +76,36 @@ func CursorColors(style string) string {
 	return strings.Join(out, ",")
 }
 
-// PickLine is a row as fzf reads it, tab separated: a label's text ("" on
-// the other rows), the switch-client target, what the row shows, what
-// ctrl-x kills, and the session id a fold row opens.
-func PickLine(r attention.PickRow) string {
-	return strings.Join([]string{r.Label, r.Target, r.Display(), r.Kill, r.Fold}, "\t")
+// PickLines are the rows as fzf reads them, tab separated: a label's text
+// ("" on the other rows), the switch-client target, what the row shows,
+// what ctrl-x kills, the session id a fold row opens, then the action of
+// up and the target it lands on, and the same of down: past the labels
+// next to the row in one step, so fzf never draws the cursor on one, and
+// no move at the list's ends.
+func PickLines(rows []attention.PickRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		up, upTo := stepFrom(rows, i, -1, "up")
+		down, downTo := stepFrom(rows, i, 1, "down")
+		out[i] = strings.Join([]string{r.Label, r.Target, r.Display(), r.Kill, r.Fold, up, upTo, down, downTo}, "\t")
+	}
+	return out
+}
+
+// stepFrom is the action that moves the cursor from row i to the next
+// row in direction dir that is no label, and that row's target: "ignore"
+// and row i's when there is none. From a label it is one step, and no
+// target: the result event moves the cursor off a label.
+func stepFrom(rows []attention.PickRow, i, dir int, action string) (string, string) {
+	if rows[i].IsLabel() {
+		return action, ""
+	}
+	for j := i + dir; j >= 0 && j < len(rows); j += dir {
+		if !rows[j].IsLabel() {
+			return strings.TrimSuffix(strings.Repeat(action+"+", (j-i)*dir), "+"), rows[j].Target
+		}
+	}
+	return "ignore", rows[i].Target
 }
 
 // Pick lets the user choose a session, a window or a pane with fzf and
@@ -94,20 +123,32 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		return "", errors.New("fzf is not installed")
 	}
 	var in strings.Builder
-	for _, r := range rows {
-		in.WriteString(PickLine(r) + "\x00")
+	for _, l := range PickLines(rows) {
+		in.WriteString(l + "\x00")
 	}
 	show := opts.Self + " sidebar go " + shell.Quote(opts.Client)
 	list := opts.Self + " pick-rows --fzf"
-	// A session line has its name in field 1: moves step over it, onto the
-	// next window in their direction (down from the top line). The key
-	// then takes the client there itself: fzf fires focus only when it
-	// draws, and a reload's result can come before that, whose place put
-	// the cursor back on the client's row and lost the move.
-	goHere := "+execute-silent([ -n {1} ] || " + show + " {2})"
-	skipDown := "down+transform([ -n {1} ] && echo down || true)" + goHere
-	skipUp := `up+transform(if [ -n {1} ]; then [ "$FZF_POS" = 1 ] && echo down || echo up; fi)` + goHere
+	// A row knows how far up and down go from it, past the labels, in one
+	// step (fields 6 and 8), and the row each lands on (7 and 9). The key
+	// takes the client there itself: fzf fires focus only when it draws,
+	// and a reload's result can come before that, whose place put the
+	// cursor back on the client's row and lost the move. With a Want file
+	// the key, in the same shell, only notes the row and starts the go in
+	// the background: fzf takes the next key at once, and a go takes the
+	// client to the row noted last (see sidebar go), so a held key leaves
+	// no queue of moves behind.
+	skipUp := "transform(echo {6})+execute-silent([ -n {1} ] || " + show + " {2})"
+	skipDown := "transform(echo {8})+execute-silent([ -n {1} ] || " + show + " {2})"
+	if opts.Want != "" {
+		goCmd := opts.Self + " sidebar go " + shell.Quote(opts.Client)
+		skipUp = "transform(" + noteAndGo(opts.Want, goCmd, "{7}") + "; echo {6})"
+		skipDown = "transform(" + noteAndGo(opts.Want, goCmd, "{9}") + "; echo {8})"
+	}
 	change := "reload-sync(" + list + ")"
+	focusGo := "[ -n {1} ] || " + show + " {2}"
+	if opts.Want != "" {
+		focusGo = "[ -n {1} ] || " + noteAndGo(opts.Want, opts.Self+" sidebar go "+shell.Quote(opts.Client), "{2}")
+	}
 	place := opts.Self + " pick-key place " + shell.Quote(opts.Client)
 	args := []string{"--ansi", "--height=100%", "--layout=reverse", "--no-sort",
 		// Rows show the name and the detail. fzf only displays: pick-rows
@@ -143,7 +184,7 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		// another order) or of place fires focus with $FZF_ACTION rebind or
 		// reload: a go then, from rows read before a window switch, took
 		// the client back. After up or down, the key went itself.
-		`--bind=focus:execute-silent(case "$FZF_ACTION" in rebind|reload|reload-sync|up|down) ;; *) [ -n {1} ] || ` + show + ` {2} ;; esac)`,
+		`--bind=focus:execute-silent(case "$FZF_ACTION" in rebind|reload|reload-sync|up|down) ;; *) ` + focusGo + ` ;; esac)`,
 		// The client stays where it is until the cursor is on its row: the
 		// first row fires a focus event before the cursor moves.
 		"--bind=start:unbind(focus)",
@@ -175,6 +216,16 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		return "", nil
 	}
 	return f[1], nil
+}
+
+// noteAndGo is the shell command that notes the row target (an fzf
+// field) in the file want and runs goCmd in the background, unless
+// target is empty (a label's) or noted already: a go for it is done or
+// on its way.
+func noteAndGo(want, goCmd, target string) string {
+	w := shell.Quote(want)
+	return `{ t=` + target + `; r=; read -r r 2>/dev/null <` + w + `; [ -z "$t" ] || [ "$r" = "$t" ] || { printf %s "$t" >` + w +
+		`; ` + goCmd + ` </dev/null >/dev/null 2>&1 & }; }`
 }
 
 // placeAction puts the cursor on the row of client's window, without a

@@ -358,14 +358,24 @@ Rules:
   client's window, read at that moment, in the rows `pick-rows` noted.
   A window read inside the reload's `pick-rows` could be from before a
   move's switch, and put the cursor back on the old row. So the arrows
-  and the wheel run `sidebar go` in their own binding, right after the
+  and the wheel start the go in their own binding, right after the
   move: fzf fires focus only when it draws, and a reload's result can
-  come first. No `--track` or `track-current`: fzf undoes a key pressed
-  during a reload that tracks. The focus event runs `sidebar go` for the
-  user's other moves (a click, a page): a reload's or a place's move
-  fires focus with `$FZF_ACTION` `rebind`, `reload` or `reload-sync`, an
-  arrow's with `up` or `down`. A focus fired twice for one move: a go to
-  the window the panel went to or placed its cursor in last
+  come first. Each row carries the moves of up and down past the labels
+  next to it, and the row each lands on: one shell per key, and fzf
+  never draws the cursor on a label. The key writes the row to the
+  panel's `.want` file and starts `sidebar go CLIENT` in the background;
+  a go takes the client, under the panel lock, to the row in `.want`
+  then. A go that held up fzf's next key left a queue of moves that ran
+  on for seconds after a held key. Place keeps the cursor on the `.want`
+  row while its window is the client's, or the panel did not go there
+  yet (a go on its way); else it goes to the client's window and writes
+  that row to `.want`. A fold's go shows the session's current window,
+  which can have a row of its own. No `--track` or `track-current`: fzf
+  undoes a key pressed during a reload that tracks. The focus event
+  starts the go for the user's other moves (a click, a page): a
+  reload's or a place's move fires focus with `$FZF_ACTION` `rebind`,
+  `reload` or `reload-sync`, an arrow's with `up` or `down`. A go to the
+  window the panel went to or placed its cursor in last
   (`@sidebar_went`) does nothing.
   A change of a flag, reason or label reloads the open panels
   (`Core.Changed`). What changes with no event (an age's next value, a

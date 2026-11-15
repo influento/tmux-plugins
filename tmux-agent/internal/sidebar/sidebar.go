@@ -468,15 +468,48 @@ func (s *Sidebar) GoFocus(ctx context.Context, clientName, target string) (moved
 	return s.goTo(ctx, clientName, target, true)
 }
 
+// GoWant takes the client's panel and the client to the row the panel's
+// keys noted last, which want reads under the panel's lock: of the gos a
+// held key starts, the first to get the lock takes the client to the row
+// noted last, and the others find it there. A client with no panel (it
+// closed meanwhile) stays where it is, as does one already there.
+func (s *Sidebar) GoWant(ctx context.Context, clientName string, want func() string) (target string, moved bool, err error) {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	defer unlock()
+	target = want()
+	if target == "" {
+		return "", false, nil
+	}
+	ps, err := s.panels(ctx)
+	if err != nil {
+		return target, false, err
+	}
+	if !slices.ContainsFunc(ps, func(p panel) bool { return p.client == clientName }) {
+		return target, false, nil
+	}
+	moved, err = s.goLocked(ctx, clientName, target, true, ps)
+	return target, moved, err
+}
+
 func (s *Sidebar) goTo(ctx context.Context, clientName, target string, once bool) (moved bool, err error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer unlock()
-	ps, err := s.panels(ctx)
-	if err != nil {
-		return false, err
+	return s.goLocked(ctx, clientName, target, once, nil)
+}
+
+// goLocked is goTo under the lock, with the panels read already (nil:
+// not yet).
+func (s *Sidebar) goLocked(ctx context.Context, clientName, target string, once bool, ps []panel) (moved bool, err error) {
+	if ps == nil {
+		if ps, err = s.panels(ctx); err != nil {
+			return false, err
+		}
 	}
 	cs, err := s.clients(ctx)
 	if err != nil {
