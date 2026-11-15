@@ -326,14 +326,16 @@ Rules:
   After a reload, fzf's result event, and the follow hook for a client
   moved some other way, run `pick-key place`: the cursor goes to the
   client's window, read at that moment, in the rows `pick-rows` noted.
-  fzf runs it after the go of every move before it; a window read inside
-  the reload's `pick-rows` could be from before a move's switch, and put
-  the cursor back on the old row. No `--track` or `track-current`: fzf
-  undoes a key pressed during a reload that tracks. The focus event runs
-  `sidebar go` only for the user's moves: a reload's or a place's move
-  fires focus with `$FZF_ACTION` `rebind`, `reload` or `reload-sync`.
-  A reload that ends while a key is in fires focus again, with the key's
-  action: a go to the window the panel went to or placed its cursor in last
+  A window read inside the reload's `pick-rows` could be from before a
+  move's switch, and put the cursor back on the old row. So the arrows
+  and the wheel run `sidebar go` in their own binding, right after the
+  move: fzf fires focus only when it draws, and a reload's result can
+  come first. No `--track` or `track-current`: fzf undoes a key pressed
+  during a reload that tracks. The focus event runs `sidebar go` for the
+  user's other moves (a click, a page): a reload's or a place's move
+  fires focus with `$FZF_ACTION` `rebind`, `reload` or `reload-sync`, an
+  arrow's with `up` or `down`. A focus fired twice for one move: a go to
+  the window the panel went to or placed its cursor in last
   (`@sidebar_went`) does nothing.
   A change of a flag, reason or label reloads the open panels
   (`Core.Changed`). What changes with no event (an age's next value, a

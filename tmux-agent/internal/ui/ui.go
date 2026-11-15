@@ -100,9 +100,13 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 	show := opts.Self + " sidebar go " + shell.Quote(opts.Client)
 	list := opts.Self + " pick-rows --fzf"
 	// A session line has its name in field 1: moves step over it, onto the
-	// next window in their direction (down from the top line).
-	skipDown := "down+transform:[ -n {1} ] && echo down || true"
-	skipUp := `up+transform:if [ -n {1} ]; then [ "$FZF_POS" = 1 ] && echo down || echo up; fi`
+	// next window in their direction (down from the top line). The key
+	// then takes the client there itself: fzf fires focus only when it
+	// draws, and a reload's result can come before that, whose place put
+	// the cursor back on the client's row and lost the move.
+	goHere := "+execute-silent([ -n {1} ] || " + show + " {2})"
+	skipDown := "down+transform([ -n {1} ] && echo down || true)" + goHere
+	skipUp := `up+transform(if [ -n {1} ]; then [ "$FZF_POS" = 1 ] && echo down || echo up; fi)` + goHere
 	change := "reload-sync(" + list + ")"
 	place := opts.Self + " pick-key place " + shell.Quote(opts.Client)
 	args := []string{"--ansi", "--height=100%", "--layout=reverse", "--no-sort",
@@ -134,11 +138,12 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		// gone, or the client moved some other way.
 		`--bind=result:transform:if [ -n {q} ]; then echo 'pos(2)'; elif [ -n {1} ]; then echo down; else ` + place + `; fi`,
 		"--bind=enter:transform:[ -n {1} ] || " + opts.Self + " pick-key enter {5}",
-		// Only the user's moves take the client along. A move of a reload
-		// (rows gone or in another order) or of place fires focus with
-		// $FZF_ACTION rebind or reload: a go then, from rows read before a
-		// window switch, took the client back.
-		`--bind=focus:execute-silent(case "$FZF_ACTION" in rebind|reload|reload-sync) ;; *) [ -n {1} ] || ` + show + ` {2} ;; esac)`,
+		// Only the user's moves take the client along: the other moves (a
+		// click, a page) through focus. A move of a reload (rows gone or in
+		// another order) or of place fires focus with $FZF_ACTION rebind or
+		// reload: a go then, from rows read before a window switch, took
+		// the client back. After up or down, the key went itself.
+		`--bind=focus:execute-silent(case "$FZF_ACTION" in rebind|reload|reload-sync|up|down) ;; *) [ -n {1} ] || ` + show + ` {2} ;; esac)`,
 		// The client stays where it is until the cursor is on its row: the
 		// first row fires a focus event before the cursor moves.
 		"--bind=start:unbind(focus)",
