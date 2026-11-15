@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -159,4 +160,96 @@ func TestAgentArgsAndBelow(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A hook counts for a run only when the run is above it: a headless run
+// whose hook process was killed (a Stop hook's timeout kills its process
+// group) sends its last hooks from under init, with the pane's run still
+// in its environment.
+func TestNestedFrom(t *testing.T) {
+	fakeProcs(t, map[int][]string{
+		10: {"1", "S", "zsh", "zsh"},
+		11: {"10", "S", "tmux-agent", "claude", "run", "claude"},
+		12: {"11", "S", "claude", "claude"},
+		13: {"12", "S", "zsh", "zsh", "-c", "claude -p hi"},
+		14: {"13", "S", "node", "node", "/opt/bin/claude", "-p", "hi"},
+		15: {"14", "S", "sh", "sh", "-c", "tmux-agent hook claude"},
+		20: {"12", "S", "sh", "sh", "-c", "tmux-agent hook claude"},
+		30: {"1", "S", "claude", "claude", "-p", "review", "--agent", "rev"},
+		31: {"30", "S", "sh", "sh", "-c", "tmux-agent hook claude"},
+	})
+	names := []string{"claude"}
+	for _, c := range []struct {
+		name      string
+		from, run int
+		want      bool
+	}{
+		{"the run's own hook", 20, 11, false},
+		{"the nested agent's hook", 15, 11, true},
+		{"a run's hook gone from under it", 31, 11, true},
+		{"no launcher", 31, 0, false},
+		{"nested, no launcher", 15, 0, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := nestedFrom(c.from, names, c.run); got != c.want {
+				t.Errorf("nestedFrom(%d, run %d) = %v, want %v", c.from, c.run, got, c.want)
+			}
+		})
+	}
+}
+
+// fakeStarts gives processes of fakeProcs their start times, in clock
+// ticks after boot.
+func fakeStarts(t *testing.T, starts map[int]int) {
+	t.Helper()
+	for pid, at := range starts {
+		path := filepath.Join(procRoot, strconv.Itoa(pid), "stat")
+		stat, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Fields 3 to 21 after the name; the start is the 22nd field.
+		fields := strings.Fields(string(stat))
+		for len(fields) < 21 {
+			fields = append(fields, "0")
+		}
+		fields = append(fields[:21], strconv.Itoa(at))
+		if err := os.WriteFile(path, []byte(strings.Join(fields, " ")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The agent starts an event's hooks together: the calling hook's
+// siblings that started with it and still run are the event's other
+// hooks; a shell that runs in the background since earlier is none.
+func TestOtherHooks(t *testing.T) {
+	names := []string{"claude"}
+	table := map[int][]string{
+		11: {"10", "S", "tmux-agent", "claude", "run", "claude"},
+		12: {"11", "S", "claude", "claude"},
+		20: {"12", "S", "sh", "sh", "-c", "tmux-agent hook claude"},
+		22: {"12", "S", "zsh", "zsh", "-c", "make watch"},
+		23: {"12", "Z", "sh", "sh"},
+	}
+	starts := map[int]int{11: 10, 12: 20, 20: 5000, 22: 1000, 23: 5000}
+	t.Run("none", func(t *testing.T) {
+		fakeProcs(t, table)
+		fakeStarts(t, starts)
+		if got := otherHooks(20, names); len(got) != 0 {
+			t.Errorf("otherHooks = %v, want none", got)
+		}
+	})
+	t.Run("a review hook", func(t *testing.T) {
+		table := maps.Clone(table)
+		table[21] = []string{"12", "S", "bash", "bash", ".claude/hooks/review"}
+		table[30] = []string{"21", "S", "claude", "claude", "-p", "review"}
+		fakeProcs(t, table)
+		starts := maps.Clone(starts)
+		starts[21], starts[30] = 5001, 5100
+		fakeStarts(t, starts)
+		if got := otherHooks(20, names); !slices.Equal(got, []int{21}) {
+			t.Errorf("otherHooks = %v, want [21]", got)
+		}
+	})
 }

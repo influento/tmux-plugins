@@ -217,7 +217,14 @@ Rules:
   itself when the agent stops itself (Ctrl-Z in a TUI), and dies from the
   agent's signal.
 - A hook counts for a run only when its nearest agent process is the run's
-  own; a launcher started inside an agent runs the agent in its place.
+  own and the run is above it (a Stop hook's timeout kills its process
+  group: a `claude -p` it ran sends its last hooks from under init); a
+  launcher started inside an agent runs the agent in its place.
+- A turn that ends while the agent's other Stop hooks run (workbench's
+  review runs `claude -p` in one) stays working, held (`@agent_held`
+  `hook`): Claude Code ends the turn after its last Stop hook, and one can
+  take the turn on, which sends no hook. The watcher ends it when Claude
+  Code's status file goes idle. Hooks of one event start within a second.
 - A watcher keeps a pane live from what no hook tells, while
   its agent runs: a turn cut short, a subagent stopped, the context share,
   the title, the branch, the nested runs. It waits on inotify (the

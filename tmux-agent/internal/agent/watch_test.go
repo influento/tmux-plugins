@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -162,11 +163,13 @@ func TestWatch(t *testing.T) {
 		return map[string]string{"TMUX": s.Socket + "," + server + ",0", "XDG_RUNTIME_DIR": s.RuntimeDir}[k]
 	}
 	a := fileAgent{}
+	var hooksRun atomic.Bool // the agent's other turn-end hooks
 	e := &Env{
 		Tmux: s.Client, Core: &attention.Core{Tmux: s.Client}, Registry: NewRegistry(a), Pane: pane,
-		Store:    &store.Store{Dir: s.StateHome},
-		LockPath: filepath.Join(s.RuntimeDir, "lock"),
-		Getenv:   getenv,
+		OtherHooks: func([]string) bool { return hooksRun.Load() },
+		Store:      &store.Store{Dir: s.StateHome},
+		LockPath:   filepath.Join(s.RuntimeDir, "lock"),
+		Getenv:     getenv,
 		Git: func(_ context.Context, d string) (git.Head, error) {
 			if d != dir {
 				return git.Head{}, git.ErrNotARepo
@@ -246,6 +249,31 @@ func TestWatch(t *testing.T) {
 	}
 	status(fileStatus{Session: sessionA, Idle: time.Now().Add(time.Second)})
 	shows("the idle turn's flag gone", "#{@attention}", "")
+
+	// A turn that ends while the agent's other turn-end hooks run (a
+	// review that runs an agent of its own) stays working until the
+	// agent goes idle: a hook can take the turn on.
+	status(fileStatus{Session: sessionA})
+	if err := e.Apply(ctx, a, Event{Kind: Working, SessionID: sessionA}); err != nil {
+		t.Fatal(err)
+	}
+	hooksRun.Store(true)
+	if err := e.Apply(ctx, a, Event{Kind: TurnEnd, SessionID: sessionA}); err != nil {
+		t.Fatal(err)
+	}
+	hooksRun.Store(false)
+	if got := show("#{@attention} #{" + optHeld + "}"); got != "working hook" {
+		t.Fatalf("flag and hold %q after a turn end with hooks running, want working hook", got)
+	}
+	st.Title = "barrier-hooks"
+	state(st)
+	shows("the title after the hooks' turn end", "#{window_name}", st.Title)
+	if got := show("#{@attention}"); got != "working" {
+		t.Fatalf("flag %q while the hooks run, want working", got)
+	}
+	// Idle: the hooks are over. The agent's nested run holds it now.
+	status(fileStatus{Session: sessionA, Idle: time.Now().Add(time.Second)})
+	shows("the turn held by the run once idle", "#{@attention} #{"+optHeld+"}", "working "+heldRuns)
 
 	if err := e.Apply(ctx, a, Event{Kind: SubagentStart, SessionID: sessionA, By: "sub-a", Subagent: &Subagent{ID: "sub-a"}}); err != nil {
 		t.Fatal(err)

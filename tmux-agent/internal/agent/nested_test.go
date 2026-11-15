@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 )
@@ -58,6 +59,43 @@ func TestHeldTurn(t *testing.T) {
 		}
 		if got := s.Display(t, e.Pane, "#{"+optHeld+"}"); got != "" {
 			t.Errorf("held = %q, want gone with the new turn", got)
+		}
+	})
+	t.Run("hooks end", func(t *testing.T) {
+		e, a, _, s := subEnv(t)
+		if err := e.Apply(ctx, a, Event{Kind: Working, SessionID: sessionA}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.paneOpts(ctx, map[string]string{optHeld: heldHooks}); err != nil {
+			t.Fatal(err)
+		}
+		l, err := e.readLive(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		busy := func() (time.Time, bool) { return time.Time{}, false }
+		if err := e.endHooksHeld(ctx, e.Pane, a, l, busy); err != nil {
+			t.Fatal(err)
+		}
+		if st, _ := flag(t, e); st != attention.Working {
+			t.Errorf("flag = %s while the agent works, want working", st)
+		}
+		before := func() (time.Time, bool) { return time.Now().Add(-time.Hour), true }
+		if err := e.endHooksHeld(ctx, e.Pane, a, l, before); err != nil {
+			t.Fatal(err)
+		}
+		if st, _ := flag(t, e); st != attention.Working {
+			t.Errorf("flag = %s for an idle from before the turn, want working", st)
+		}
+		idle := func() (time.Time, bool) { return time.Now().Add(time.Second), true }
+		if err := e.endHooksHeld(ctx, e.Pane, a, l, idle); err != nil {
+			t.Fatal(err)
+		}
+		if st, reason := flag(t, e); st != attention.Done || reason != "turn ended" {
+			t.Errorf("flag = %s %q once idle, want done, turn ended", st, reason)
+		}
+		if got := s.Display(t, e.Pane, "#{"+optHeld+"}"); got != "" {
+			t.Errorf("held = %q, want gone", got)
 		}
 	})
 }

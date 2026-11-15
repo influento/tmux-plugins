@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 )
@@ -31,7 +32,7 @@ func (e *Env) nestedRuns(pid int) []string {
 
 // holdFor marks the pane's ended turn as held by runs, and lists them.
 func (e *Env) holdFor(ctx context.Context, pane string, l live, runs []string) error {
-	opts := map[string]string{optHeld: "1"}
+	opts := map[string]string{optHeld: heldRuns}
 	listed := slices.Equal(l.nested, runs)
 	if !listed {
 		opts[attention.OptNested] = strings.Join(runs, " ")
@@ -62,9 +63,8 @@ func (e *Env) SweepNested(ctx context.Context) error {
 		return err
 	}
 	type pane struct {
-		id, nested string
-		pid        int
-		held       bool
+		id, nested, heldBy string
+		pid                int
 	}
 	var panes []pane
 	for _, l := range strings.Split(out, "\n") {
@@ -72,7 +72,7 @@ func (e *Env) SweepNested(ctx context.Context) error {
 		if len(f) < 5 || f[2] == "" {
 			continue
 		}
-		panes = append(panes, pane{id: f[0], pid: atoi(f[1]), nested: f[3], held: f[4] == "1"})
+		panes = append(panes, pane{id: f[0], pid: atoi(f[1]), nested: f[3], heldBy: f[4]})
 	}
 	if len(panes) == 0 {
 		return nil
@@ -92,8 +92,15 @@ func (e *Env) SweepNested(ctx context.Context) error {
 			}
 			listed = true
 		}
-		if p.held && runs == "" {
+		if p.heldBy == heldRuns && runs == "" {
 			if err := e.endHeld(ctx, p.id); err != nil && !isGone(err) {
+				return err
+			}
+		}
+		if p.heldBy == heldHooks {
+			// A watcher ends it when the agent goes idle; this is for a
+			// pane whose watcher is gone.
+			if err := e.endHooksHeldIdle(ctx, p.id, firstAgentBelow(p.pid, names, tree)); err != nil && !isGone(err) {
 				return err
 			}
 		}
@@ -115,6 +122,27 @@ func (e *Env) endHeld(ctx context.Context, pane string) error {
 		return err
 	}
 	return pe.markTurnEnd(ctx, e.Registry.Get(l.agent), Event{Kind: TurnEnd}, l, l.session)
+}
+
+// endHooksHeldIdle ends the turn of pane held by its agent's turn-end
+// hooks, once its agent, process pid, went idle after the flag.
+func (e *Env) endHooksHeldIdle(ctx context.Context, pane string, pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	defer e.lock(ctx)()
+	pe := *e
+	pe.Pane = pane
+	l, err := pe.readLive(ctx)
+	if err != nil || l.heldBy != heldHooks {
+		return err
+	}
+	a := e.Registry.Get(l.agent)
+	id, ok := a.(Idler)
+	if !ok {
+		return nil
+	}
+	return e.endHooksHeld(ctx, pane, a, l, func() (time.Time, bool) { return id.IdleSince(pid, l.session, e.getenv) })
 }
 
 // atoi is n, or 0 for no number.

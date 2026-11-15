@@ -231,17 +231,23 @@ func (w *watchState) follow(e *Env, ctx context.Context, transcript, cwd string)
 
 // wentIdle ends the pane's working turn when the agent's process went idle
 // after the flag was set, with no word in the transcript: Esc before the
-// first token. A turn held by nested runs stays, and so does one while
-// subagents run: the process is idle while they work, after its own turn
-// ended. The caller holds the lock.
+// first token. A turn held by the agent's turn-end hooks ends as done. A
+// turn held by nested runs stays, and so does one while subagents run:
+// the process is idle while they work, after its own turn ended. The
+// caller holds the lock.
 func (e *Env) wentIdle(ctx context.Context, w *watchState, l live) error {
 	id, ok := w.a.(Idler)
-	if !ok || w.process <= 0 || l.flag != attention.Working || l.held || len(l.subagents) > 0 {
+	if !ok || w.process <= 0 || l.flag != attention.Working || len(l.subagents) > 0 {
 		return nil
 	}
-	return e.endTurnAt(ctx, e.Pane, w.a, l.session, func() (time.Time, bool) {
-		return id.IdleSince(w.process, l.session, e.getenv)
-	}, attention.Working)
+	idle := func() (time.Time, bool) { return id.IdleSince(w.process, l.session, e.getenv) }
+	switch l.heldBy {
+	case "":
+		return e.endTurnAt(ctx, e.Pane, w.a, l.session, idle, attention.Working)
+	case heldHooks:
+		return e.endHooksHeld(ctx, e.Pane, w.a, l, idle)
+	}
+	return nil
 }
 
 // gitLabelOf is the git label of folder dir: empty outside a checkout.
@@ -300,7 +306,7 @@ func (e *Env) nestedFor(ctx context.Context, pane string, l live) ([]int, error)
 		}
 		e.changed(ctx)
 	}
-	if l.held && len(runs) == 0 {
+	if l.heldBy == heldRuns && len(runs) == 0 {
 		if err := e.endHeld(ctx, pane); err != nil {
 			return nil, err
 		}

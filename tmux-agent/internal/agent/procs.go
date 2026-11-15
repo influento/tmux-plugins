@@ -252,12 +252,82 @@ func agentAncestors(pid int, names []string, stop, max int) int {
 // inherits the outer pane and run, and its hooks would take them over. A
 // hook counts for a run only when its nearest agent process is the run's
 // own, so two agent processes between the hook and the launcher (or init)
-// mean nested.
+// mean nested. So does a run (the launcher) not above the hook at all: an
+// agent the run started outlived the process between them, as a Stop
+// hook's run does when the hook's timeout kills its process group, and
+// sends its last hooks from under init.
 func NestedHook(names []string, run int) bool {
 	if len(names) == 0 {
 		return false
 	}
-	return agentAncestors(os.Getppid(), names, run, 2) >= 2
+	return nestedFrom(os.Getppid(), names, run)
+}
+
+// hookSpread is how far apart, in clock ticks (USER_HZ, 100 a second on
+// Linux), an agent starts the hooks of one event: it starts them together.
+const hookSpread = 100
+
+// OtherHooksRun reports whether hooks the agent started with the calling
+// hook, for the same event, still run: other children of the agent
+// process that started within hookSpread of the calling hook's own. Claude
+// Code ends a turn only after its last Stop hook, and one can take the
+// turn on. A background shell that started that close to the turn's end
+// counts too; it is rare, and costs only a later done.
+func OtherHooksRun(names []string) bool {
+	return len(otherHooks(os.Getppid(), names)) > 0
+}
+
+// otherHooks is OtherHooksRun for a hook whose parent is pid: the pids of
+// the other hooks.
+func otherHooks(pid int, names []string) []int {
+	var own proc // the child of the agent the calling hook runs in
+	for pid > 1 {
+		p, err := readProc(pid)
+		if err != nil {
+			return nil
+		}
+		parent, err := readProc(p.ppid)
+		if err != nil {
+			return nil
+		}
+		if isAgentProc(parent, names) {
+			own = p
+			break
+		}
+		pid = p.ppid
+	}
+	started, err := strconv.ParseInt(own.start, 10, 64)
+	if own.pid == 0 || err != nil {
+		return nil
+	}
+	var out []int
+	for _, c := range processTree()[own.ppid] {
+		at, err := strconv.ParseInt(c.start, 10, 64)
+		if c.pid == own.pid || c.state == 'Z' || err != nil || at < started-hookSpread || at > started+hookSpread {
+			continue
+		}
+		out = append(out, c.pid)
+	}
+	return out
+}
+
+// nestedFrom is NestedHook for a hook whose parent is pid.
+func nestedFrom(pid int, names []string, run int) bool {
+	n := 0
+	for pid > 1 {
+		if pid == run {
+			return n >= 2
+		}
+		p, err := readProc(pid)
+		if err != nil {
+			break
+		}
+		if isAgentProc(p, names) {
+			n++
+		}
+		pid = p.ppid
+	}
+	return n >= 2 || run > 0
 }
 
 // OneShotHook reports whether the hook process runs under a one-turn run

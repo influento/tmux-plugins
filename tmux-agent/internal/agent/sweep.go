@@ -241,20 +241,8 @@ func (e *Env) cutShort(ctx context.Context, pane string, a Agent, session, trans
 // so an end and a new prompt within one second can clear the new turn's
 // flag; its next hook sets it again. The caller holds the lock.
 func (e *Env) endTurnAt(ctx context.Context, pane string, a Agent, session string, when func() (time.Time, bool), states ...attention.State) error {
-	now, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{@attention}\x1f#{@attention_at}")
-	if err != nil {
+	if ended, err := e.endedSinceFlag(ctx, pane, when, states); err != nil || !ended {
 		return err
-	}
-	state, at, _ := strings.Cut(now, "\x1f")
-	if !slices.Contains(states, attention.State(state)) {
-		return nil
-	}
-	since, err := strconv.ParseInt(at, 10, 64)
-	if err != nil {
-		return nil
-	}
-	if ended, ok := when(); !ok || ended.Unix() < since {
-		return nil
 	}
 	if err := e.Core.Clear(ctx, pane); err != nil {
 		return err
@@ -264,4 +252,35 @@ func (e *Env) endTurnAt(ctx context.Context, pane string, a Agent, session strin
 	}
 	e.remember(a, session, func(s *store.Session) { s.State, s.Reason = "", "" })
 	return nil
+}
+
+// endedSinceFlag reports whether the pane's flag is one of states and the
+// turn ended (when) at or after the flag was set.
+func (e *Env) endedSinceFlag(ctx context.Context, pane string, when func() (time.Time, bool), states []attention.State) (bool, error) {
+	now, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{@attention}\x1f#{@attention_at}")
+	if err != nil {
+		return false, err
+	}
+	state, at, _ := strings.Cut(now, "\x1f")
+	if !slices.Contains(states, attention.State(state)) {
+		return false, nil
+	}
+	since, err := strconv.ParseInt(at, 10, 64)
+	if err != nil {
+		return false, nil
+	}
+	ended, ok := when()
+	return ok && ended.Unix() >= since, nil
+}
+
+// endHooksHeld ends a turn held by the agent's turn-end hooks, as its turn
+// end would have, once the agent went idle (when) after the flag: the
+// hooks are over, and none took the turn on. The caller holds the lock.
+func (e *Env) endHooksHeld(ctx context.Context, pane string, a Agent, l live, when func() (time.Time, bool)) error {
+	if ended, err := e.endedSinceFlag(ctx, pane, when, []attention.State{attention.Working}); err != nil || !ended {
+		return err
+	}
+	pe := *e
+	pe.Pane = pane
+	return pe.markTurnEnd(ctx, a, Event{Kind: TurnEnd}, l, l.session)
 }

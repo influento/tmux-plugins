@@ -36,6 +36,9 @@ type Env struct {
 	// Nested reports whether the calling hook belongs to an agent started
 	// inside another one. NestedHook when nil.
 	Nested func(names []string, run int) bool
+	// OtherHooks reports whether hooks the agent started with the calling
+	// one, for the same event, still run. OtherHooksRun when nil.
+	OtherHooks func(names []string) bool
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 	// Git reads a folder's checkout; git.HeadOf when nil.
@@ -127,7 +130,7 @@ const (
 	optOneShot    = "@agent_oneshot"    // "1" for a one-turn run
 	optResume     = "@agent_resume"     // the session the run resumes
 	optStarted    = "@agent_started"    // when the run started, unix seconds
-	optHeld       = "@agent_held"       // "1": the turn ended, agents it started still run
+	optHeld       = "@agent_held"       // the turn ended, but heldRuns or heldHooks still run
 	// OptTitle is the window option that holds the title an agent gave
 	// the window.
 	OptTitle = "@agent_title"
@@ -140,7 +143,8 @@ const (
 type live struct {
 	agent, session, transcript, cwd, state, reason, wait, waitBy, named string
 	subagents, nested                                                   []string
-	held                                                                bool
+	held                                                                bool   // the turn ended, held by heldBy
+	heldBy                                                              string // heldRuns or heldHooks
 	panePid                                                             int
 	run, oneShot, resume, revive, context                               string
 	starting                                                            string // the channel of a start that waits
@@ -176,7 +180,7 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 		run: f[8], oneShot: f[9], resume: f[10], revive: f[11],
 		flag: attention.State(f[12]), autoRename: f[13] == "1", windowName: f[14], title: f[15],
 		waitBy: f[16], subagents: strings.Fields(f[17]),
-		nested: strings.Fields(f[18]), held: f[19] == "1", panePid: atoi(f[20]), context: f[21],
+		nested: strings.Fields(f[18]), held: f[19] != "", heldBy: f[19], panePid: atoi(f[20]), context: f[21],
 		starting: f[22],
 	}, nil
 }
@@ -528,7 +532,17 @@ func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session st
 	if err := e.syncSubagents(ctx, a, ev, l, session); err != nil {
 		return err
 	}
-	if err := e.markTurnEnd(ctx, a, ev, l, session); err != nil {
+	if len(ev.Subagents) == 0 && e.otherHooks(a) {
+		// The agent's other turn-end hooks still run (a review that
+		// runs an agent of its own, say), and one can take the turn on:
+		// the turn ends when the agent goes idle (wentIdle).
+		if err := e.markWorking(ctx, a, session); err != nil {
+			return err
+		}
+		if err := e.paneOpts(ctx, map[string]string{optHeld: heldHooks}); err != nil {
+			return err
+		}
+	} else if err := e.markTurnEnd(ctx, a, ev, l, session); err != nil {
 		return err
 	}
 	return e.retitle(ctx, a, or(ev.Transcript, l.transcript), l, session)
@@ -555,6 +569,26 @@ func (e *Env) retitle(ctx context.Context, a Agent, transcript string, l live, s
 	}
 	e.remember(a, session, func(s *store.Session) { s.Title = title })
 	return nil
+}
+
+// What holds a turn that ended (optHeld).
+const (
+	heldRuns  = "1"    // agents the turn started run on
+	heldHooks = "hook" // the agent's other turn-end hooks run on
+)
+
+// otherHooks reports whether hooks of agent a for the calling hook's event
+// still run beside it. Only an agent that tells when it went idle can
+// be held by them: nothing else would tell when they ended the turn.
+func (e *Env) otherHooks(a Agent) bool {
+	if _, ok := a.(Idler); !ok {
+		return false
+	}
+	other := e.OtherHooks
+	if other == nil {
+		other = OtherHooksRun
+	}
+	return other(e.Registry.ProcessNames())
 }
 
 // markTurnEnd sets the flag a turn end leaves.
