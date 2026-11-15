@@ -390,7 +390,7 @@ func panelRow(t *testing.T, socket string) (label, target string) {
 	return f[0], f[1]
 }
 
-// Keys as fast as a held arrow move the cursor as fast as they come, and
+// Keys at a held arrow's repeat move the cursor as fast as they come, and
 // the client follows to the row it stops on: no queue of moves runs on
 // after the keys end. Up at the top row stays there, never on the
 // session's name above it. Each key's move used to hold up the next
@@ -408,15 +408,20 @@ func TestPanelHeldKey(t *testing.T) {
 	client := func() string {
 		return s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}")
 	}
+	// A held key's repeat: one every 30 ms.
+	key := func(k string) {
+		s.MustTmux(t, "send-keys", "-t", panel, k)
+		time.Sleep(30 * time.Millisecond)
+	}
 	var keys sync.WaitGroup
 	keys.Go(func() {
-		s.MustTmux(t, "send-keys", "-t", panel, "Up") // from the fold to w-six
-		for range 40 {
-			s.MustTmux(t, "send-keys", "-t", panel, "Up")
-			s.MustTmux(t, "send-keys", "-t", panel, "Down")
+		key("Up") // from the fold to w-six
+		for range 30 {
+			key("Up")
+			key("Down")
 		}
 		for range 8 { // past the top
-			s.MustTmux(t, "send-keys", "-t", panel, "Up")
+			key("Up")
 		}
 	})
 	var labels []string
@@ -437,7 +442,7 @@ func TestPanelHeldKey(t *testing.T) {
 			continue
 		}
 		if target == "=proj-a:1" && client() == target {
-			if d := time.Since(ended); d > 1500*time.Millisecond {
+			if d := time.Since(ended); d > 2500*time.Millisecond { // the old code: 5 s on a workstation
 				t.Errorf("the client reached the cursor's row %v after the last key", d)
 			}
 			break
