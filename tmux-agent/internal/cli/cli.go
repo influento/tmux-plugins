@@ -263,6 +263,7 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 		Command: func(client, origin string) string {
 			return shell.Join([]string{a.self, "pick", client, origin})
 		},
+		Trace: a.tracef,
 	}
 	return a
 }
@@ -287,6 +288,19 @@ func (a *app) debugf(format string, args ...any) {
 	if a.debug {
 		a.logf(format, args...)
 	}
+}
+
+// tracef writes a line to the log, always: each move of a client or a
+// panel and why, each switch the panel's follow hook sees, and each place
+// that moves the panel's cursor or rewrites .want. A run from fzf names
+// fzf's last action ($FZF_ACTION): in a key's transform, the action before
+// the key. Where to look when the client went somewhere on its own.
+func (a *app) tracef(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	if ev := a.getenv("FZF_ACTION"); ev != "" {
+		line += " [fzf after " + ev + "]"
+	}
+	a.logf("%s", line)
 }
 
 // spawnNotify starts the notifier for a flag and returns: it waits a moment
@@ -970,15 +984,28 @@ func (a *app) goWanted(ctx context.Context, client string) error {
 func (a *app) placeRow(ctx context.Context, rows []attention.PickRow, here string) (int, error) {
 	pane := a.getenv("TMUX_PANE")
 	path, gonePath := a.panelSocket(pane, ".want"), a.panelSocket(pane, ".gone")
+	want, gone, going := "", "", false
+	// A place that moves the cursor goes to the trace, with what it read.
+	trace := func(pos int, why string) {
+		if strconv.Itoa(pos) != a.getenv("FZF_POS") || rows[pos-1].Target != want {
+			a.tracef("place: client on %s, cursor row %s → %d %s: %s (.want %q, .gone %q, a go running %v)",
+				here, a.getenv("FZF_POS"), pos, rows[pos-1].Target, why, want, gone, going)
+		}
+	}
 	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-		want := string(data)
-		gone, _ := os.ReadFile(gonePath) // none: no go took a row yet
+		want = string(data)
+		data, _ := os.ReadFile(gonePath) // none: no go took a row yet
+		gone = string(data)
 		if i := slices.IndexFunc(rows, func(r attention.PickRow) bool { return !r.IsLabel() && r.Target == want }); i >= 0 {
-			if _, err := os.Stat(a.panelSocket(pane, ".going")); err == nil && string(gone) != want {
+			_, err := os.Stat(a.panelSocket(pane, ".going"))
+			going = err == nil
+			if going && gone != want {
+				trace(i+1, "the row in .want, a go on its way")
 				return i + 1, nil
 			}
 			win, err := a.tmux.Output(ctx, "display-message", "-p", "-t", want, "=#{session_name}:#{window_index}")
 			if err == nil && win == here {
+				trace(i+1, "the row in .want, where the client is")
 				return i + 1, nil
 			}
 		}
@@ -986,6 +1013,13 @@ func (a *app) placeRow(ctx context.Context, rows []attention.PickRow, here strin
 	pos := startRow(rows, here)
 	if err := a.side.Placed(ctx, pane, here); err != nil {
 		return 0, err
+	}
+	if pos <= len(rows) {
+		why := "the client's window, noted in .want"
+		if r := rows[pos-1]; r.Target != here && !strings.HasPrefix(r.Target, here+".") && !slices.Contains(r.Also, here) {
+			why = "no row of the client's window: its session's fold or the first row, noted in .want"
+		}
+		trace(pos, why)
 	}
 	if path != "" && pos <= len(rows) {
 		row := []byte(rows[pos-1].Target)
@@ -1313,9 +1347,11 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 		if startPane == "" {
 			return nil
 		}
+		a.tracef("pick: Esc, client %q back to %s", client, startPane)
 		_, err := a.tmux.Run(ctx, append(append([]string{"switch-client"}, clientArgs(client)...), "-t", startPane)...)
 		return err
 	}
+	a.tracef("pick: client %q to %s", client, target)
 	if _, err := a.tmux.Run(ctx, append(append([]string{"switch-client"}, clientArgs(client)...), "-t", target)...); err != nil {
 		return err
 	}
@@ -1499,8 +1535,10 @@ func (a *app) jump(ctx context.Context, args []string) error {
 		if err := a.sweepAgents(ctx); err != nil {
 			return err
 		}
+		a.tracef("jump: to the next pane that needs you")
 		return a.core.Jump(ctx)
 	}
+	a.tracef("jump: to %s", *paneArg)
 	if err := a.core.GoTo(ctx, *paneArg); err != nil {
 		return err
 	}

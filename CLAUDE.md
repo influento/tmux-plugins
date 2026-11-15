@@ -453,7 +453,12 @@ Rules:
   another pass moved the tally. `tmux-init` spawns `tokens scan`; one
   pass reads at a time (`tokens.lock`), and a report waits for it.
 - The log, `$XDG_STATE_HOME/tmux-agent/log` (to `log.old` past 4 MiB),
-  gets every error no caller can show: the hook's, the watcher's. With
+  gets every error no caller can show: the hook's, the watcher's. It
+  always gets the panel's trace: each move of a client or a panel and why,
+  each switch the follow hook sees (whoever made it), and each place that
+  moves the cursor or rewrites `.want`: where to look when the client went
+  somewhere on its own. A run from fzf adds `$FZF_ACTION`, fzf's last
+  action: in a key's transform, the one before the key. With
   `TMUX_AGENT_DEBUG` in the agent's environment it also gets each hook
   event, a dropped one too, each change of the context share, and each
   panel `sidebar go` with its `$FZF_ACTION`: where to look when a flag,

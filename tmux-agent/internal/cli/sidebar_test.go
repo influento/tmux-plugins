@@ -517,3 +517,43 @@ func TestPanelFollowsSwitchAfterGo(t *testing.T) {
 		})
 	}
 }
+
+// The log tells each move of the client and why, and each switch the panel's follow hook sees, whoever made it.
+// A panel that only ticks writes nothing: the log stays readable for the
+// day a switch nobody asked for needs explaining.
+func TestPanelTracesMoves(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	p := s.MustTmux(t, "new-window", "-d", "-n", "w-two", "-P", "-F", "#{pane_id}")
+	if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+		t.Fatalf("flag: %v: %s", err, out)
+	}
+	s.WaitForContent(t, panel, "w-two")
+	two := s.Display(t, "=proj-a:1", "#{window_id}")
+	logPath := filepath.Join(s.Sandbox.StateHome, "tmux-agent", "log")
+	log := func() string {
+		data, _ := os.ReadFile(logPath) // none yet: nothing logged
+		return string(data)
+	}
+	s.MustTmux(t, "send-keys", "-t", panel, "Up") // from the fold to w-two
+	tmuxtest.WaitFor(t, 5*time.Second, "the go in the log", func() bool {
+		return strings.Contains(log(), "go to the row in .want =proj-a:1: client ") &&
+			strings.Contains(log(), " → "+two+", panel "+panel)
+	})
+	tmuxtest.WaitFor(t, 5*time.Second, "the follow of the go's switch", func() bool {
+		return strings.Contains(log(), "follow: client ") && strings.Contains(log(), " on "+two+", panel "+panel)
+	})
+	n := len(log())
+	s.MustTmux(t, "select-window", "-t", "=proj-a:0") // a switch some other way
+	one := s.Display(t, "=proj-a:0", "#{window_id}")
+	tmuxtest.WaitFor(t, 5*time.Second, "the other switch and the cursor's place", func() bool {
+		l := log()[n:]
+		return strings.Contains(l, " on "+one+", panel "+panel) &&
+			strings.Contains(l, "place: client on =proj-a:0, cursor row ")
+	})
+	// The ages tick each second: each reload places the cursor where it is.
+	before := strings.Count(log(), "place: ")
+	time.Sleep(2500 * time.Millisecond)
+	if after := strings.Count(log(), "place: "); after != before {
+		t.Errorf("%d place lines while nothing moved:\n%s", after-before, log())
+	}
+}

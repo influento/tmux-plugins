@@ -74,6 +74,15 @@ type Sidebar struct {
 	Command func(client, origin string) string
 	// Skip reports a session the panel never goes to; none when nil.
 	Skip func(session string) bool
+	// Trace notes each move of a client or a panel, and why, and each
+	// switch the follow hook sees; none when nil.
+	Trace func(format string, args ...any)
+}
+
+func (s *Sidebar) trace(format string, args ...any) {
+	if s.Trace != nil {
+		s.Trace(format, args...)
+	}
 }
 
 const sep = "\x1f"
@@ -457,7 +466,7 @@ func forget(w string) []string {
 // a panel the client goes to target's window and the focus stays where
 // it was; without one, to target itself.
 func (s *Sidebar) Go(ctx context.Context, clientName, target string) error {
-	_, err := s.goTo(ctx, clientName, target, false)
+	_, err := s.goTo(ctx, clientName, target, false, "go")
 	return err
 }
 
@@ -465,7 +474,7 @@ func (s *Sidebar) Go(ctx context.Context, clientName, target string) error {
 // window the panel went to or placed its cursor in last does nothing, and
 // moved is false.
 func (s *Sidebar) GoFocus(ctx context.Context, clientName, target string) (moved bool, err error) {
-	return s.goTo(ctx, clientName, target, true)
+	return s.goTo(ctx, clientName, target, true, "go to the cursor's row")
 }
 
 // GoWant takes the client's panel and the client to the row the panel's
@@ -504,22 +513,22 @@ func (s *Sidebar) GoWant(ctx context.Context, clientName string, want func() str
 	if c, ok := cs[clientName]; !ok || (c.window == to.id && ps[i].window == to.id) {
 		return target, false, nil
 	}
-	moved, err = s.goLocked(ctx, clientName, target, false, ps)
+	moved, err = s.goLocked(ctx, clientName, target, false, ps, "go to the row in .want")
 	return target, moved, err
 }
 
-func (s *Sidebar) goTo(ctx context.Context, clientName, target string, once bool) (moved bool, err error) {
+func (s *Sidebar) goTo(ctx context.Context, clientName, target string, once bool, why string) (moved bool, err error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer unlock()
-	return s.goLocked(ctx, clientName, target, once, nil)
+	return s.goLocked(ctx, clientName, target, once, nil, why)
 }
 
 // goLocked is goTo under the lock, with the panels read already (nil:
-// not yet).
-func (s *Sidebar) goLocked(ctx context.Context, clientName, target string, once bool, ps []panel) (moved bool, err error) {
+// not yet). why goes to the trace.
+func (s *Sidebar) goLocked(ctx context.Context, clientName, target string, once bool, ps []panel, why string) (moved bool, err error) {
 	if ps == nil {
 		if ps, err = s.panels(ctx); err != nil {
 			return false, err
@@ -539,13 +548,14 @@ func (s *Sidebar) goLocked(ctx context.Context, clientName, target string, once 
 			if once && p.went == to.id {
 				return false, nil
 			}
-			if err := s.moveTo(ctx, c, p, to, true); err != nil {
+			if err := s.moveTo(ctx, c, p, to, true, why+" "+target); err != nil {
 				return false, err
 			}
 			_, err = s.Tmux.Run(ctx, "set-option", "-p", "-t", p.pane, OptWent, to.id)
 			return true, err
 		}
 	}
+	s.trace("%s: client %q to %s, no panel", why, clientName, target)
 	args := []string{"switch-client"}
 	if clientName != "" {
 		args = append(args, "-c", clientName)
@@ -571,16 +581,21 @@ func (s *Sidebar) Placed(ctx context.Context, pane, window string) error {
 // client there. The window it leaves is laid out from its main area; the
 // window it joins, for the client's size, which the window takes as the
 // client switches to it.
-func (s *Sidebar) move(ctx context.Context, c client, p panel, target string, take bool) error {
+func (s *Sidebar) move(ctx context.Context, c client, p panel, target string, take bool, why string) error {
 	to, err := s.window(ctx, target)
 	if err != nil {
 		return err
 	}
-	return s.moveTo(ctx, c, p, to, take)
+	return s.moveTo(ctx, c, p, to, take, why)
 }
 
-// moveTo is move, to the window read already.
-func (s *Sidebar) moveTo(ctx context.Context, c client, p panel, to window, take bool) error {
+// moveTo is move, to the window read already. why goes to the trace.
+func (s *Sidebar) moveTo(ctx context.Context, c client, p panel, to window, take bool, why string) error {
+	if take {
+		s.trace("%s: client %s %s → %s, panel %s %s → %s", why, c.name, c.window, to.id, p.pane, p.window, to.id)
+	} else if to.id != p.window {
+		s.trace("%s: panel %s %s → %s, client %s stays on %s", why, p.pane, p.window, to.id, c.name, c.window)
+	}
 	if to.id == p.window {
 		if !take {
 			return nil
@@ -680,7 +695,8 @@ func (s *Sidebar) Step(ctx context.Context, clientName, spec string) error {
 		_, err := s.Tmux.Run(ctx, "display-message", "-c", clientName, "no window "+spec)
 		return err
 	}
-	return s.Go(ctx, clientName, target)
+	_, err = s.goTo(ctx, clientName, target, false, "step "+spec)
+	return err
 }
 
 // Preset applies a preset layout (a name, next or previous) to the main
@@ -774,6 +790,8 @@ func (s *Sidebar) Follow(ctx context.Context) error {
 	left := len(ps)
 	for _, p := range ps {
 		c, ok := cs[p.client]
+		// Each switch runs this, whoever made it: the trace's timeline.
+		s.trace("follow: client %q on %s, panel %s in %s", p.client, c.window, p.pane, p.window)
 		switch {
 		case !ok:
 			errs = append(errs, s.close(ctx, p, left == 1, ""))
@@ -781,7 +799,7 @@ func (s *Sidebar) Follow(ctx context.Context) error {
 		case c.window != p.window:
 			// The client is there: a switch to a window read before
 			// its next switch would take it back.
-			errs = append(errs, s.move(ctx, c, p, c.window, false))
+			errs = append(errs, s.move(ctx, c, p, c.window, false, "follow"))
 		}
 	}
 	return errors.Join(errs...)
@@ -971,7 +989,7 @@ func (s *Sidebar) alone(ctx context.Context, p panel, open int) error {
 	if to == "" {
 		return s.close(ctx, p, open == 1, "")
 	}
-	return s.move(ctx, c, p, to, true)
+	return s.move(ctx, c, p, to, true, "the panel alone in its window")
 }
 
 // elsewhere is the window a panel goes to when its window goes: the last
@@ -1065,7 +1083,7 @@ func (s *Sidebar) Evacuate(ctx context.Context, target string) error {
 			left--
 			continue
 		}
-		errs = append(errs, s.move(ctx, c, p, to, true))
+		errs = append(errs, s.move(ctx, c, p, to, true, "evacuate "+target))
 	}
 	return errors.Join(errs...)
 }
