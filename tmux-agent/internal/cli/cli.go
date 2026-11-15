@@ -980,6 +980,9 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		for i, r := range noted {
 			rows[i] = attention.PickRow{Target: r.Target, Fold: r.Fold, Session: r.Session}
 		}
+		if err := a.side.Placed(ctx, a.getenv("TMUX_PANE"), here); err != nil {
+			return err
+		}
 		fmt.Fprintf(a.stdout, "unbind(focus)+pos(%d)+rebind(focus)\n", startRow(rows, here))
 	case "enter":
 		fold := ""
@@ -1285,8 +1288,13 @@ func (a *app) sidebar(ctx context.Context, args []string) error {
 		// Which of fzf's events ran it: a go from a reload's or a place's
 		// move takes the client back.
 		a.debugf("sidebar go %s %s, FZF_ACTION %q", rest[0], rest[1], a.getenv("FZF_ACTION"))
-		if err := a.side.Go(ctx, rest[0], rest[1]); err != nil {
+		moved, err := a.side.GoFocus(ctx, rest[0], rest[1])
+		if err != nil {
 			return err
+		}
+		if !moved {
+			a.debugf("sidebar go %s %s: the panel's last row, skipped", rest[0], rest[1])
+			return nil
 		}
 		return a.seenOn(ctx, rest[0])
 	case action == "step" && len(rest) == 2:

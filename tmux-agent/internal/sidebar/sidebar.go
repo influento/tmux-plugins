@@ -39,6 +39,10 @@ const (
 	OptCursorStyle = "@sidebar_cursor_style"
 	// OptListen is the unix socket a panel's fzf takes actions on: Reload's.
 	OptListen = "@sidebar_listen"
+	// OptWent is the window (its id) a panel last took its client to, or
+	// put its cursor on the row of: a go there again is fzf's focus event
+	// fired twice for one move, and would undo a switch made since.
+	OptWent = "@sidebar_went"
 	// OptReviveSkip keeps the panel out of tmux-revive's saves.
 	OptReviveSkip = "@revive_skip"
 )
@@ -78,6 +82,7 @@ const sep = "\x1f"
 type panel struct {
 	pane, client, window, session string
 	active                        bool
+	went                          string // OptWent
 }
 
 // client is one tmux client.
@@ -137,19 +142,19 @@ func lines(out string) []string {
 
 func (s *Sidebar) panels(ctx context.Context) ([]panel, error) {
 	out, err := s.Tmux.Output(ctx, "list-panes", "-a", "-F",
-		strings.Join([]string{"#{pane_id}", "#{" + OptClient + "}", "#{window_id}", "#{session_name}", "#{pane_active}"}, sep))
+		strings.Join([]string{"#{pane_id}", "#{" + OptClient + "}", "#{window_id}", "#{session_name}", "#{pane_active}", "#{" + OptWent + "}"}, sep))
 	if err != nil {
 		return nil, err
 	}
 	var ps []panel
 	seen := map[string]bool{}
 	for _, l := range lines(out) {
-		f := split(l, 5)
+		f := split(l, 6)
 		if f[1] == "" || seen[f[0]] { // a linked window lists its panes again
 			continue
 		}
 		seen[f[0]] = true
-		ps = append(ps, panel{pane: f[0], client: f[1], window: f[2], session: f[3], active: f[4] == "1"})
+		ps = append(ps, panel{pane: f[0], client: f[1], window: f[2], session: f[3], active: f[4] == "1", went: f[5]})
 	}
 	return ps, nil
 }
@@ -452,30 +457,66 @@ func forget(w string) []string {
 // a panel the client goes to target's window and the focus stays where
 // it was; without one, to target itself.
 func (s *Sidebar) Go(ctx context.Context, clientName, target string) error {
+	_, err := s.goTo(ctx, clientName, target, false)
+	return err
+}
+
+// GoFocus is Go for the panel's cursor on target's row: a go to the
+// window the panel went to or placed its cursor in last does nothing, and
+// moved is false.
+func (s *Sidebar) GoFocus(ctx context.Context, clientName, target string) (moved bool, err error) {
+	return s.goTo(ctx, clientName, target, true)
+}
+
+func (s *Sidebar) goTo(ctx context.Context, clientName, target string, once bool) (moved bool, err error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer unlock()
 	ps, err := s.panels(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	cs, err := s.clients(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	c, ok := cs[clientName]
 	for _, p := range ps {
 		if ok && p.client == clientName {
-			return s.move(ctx, c, p, target, true)
+			to, err := s.window(ctx, target)
+			if err != nil {
+				return false, err
+			}
+			if once && p.went == to.id {
+				return false, nil
+			}
+			if err := s.moveTo(ctx, c, p, to, true); err != nil {
+				return false, err
+			}
+			_, err = s.Tmux.Run(ctx, "set-option", "-p", "-t", p.pane, OptWent, to.id)
+			return true, err
 		}
 	}
 	args := []string{"switch-client"}
 	if clientName != "" {
 		args = append(args, "-c", clientName)
 	}
-	_, err = s.Tmux.Run(ctx, append(args, "-t", target)...)
+	if _, err := s.Tmux.Run(ctx, append(args, "-t", target)...); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Placed notes that the panel pane shows its cursor on the row of
+// window, where its client is.
+func (s *Sidebar) Placed(ctx context.Context, pane, window string) error {
+	id, err := s.Tmux.Output(ctx, "display-message", "-p", "-t", window, "#{window_id}")
+	if err != nil {
+		return err
+	}
+	_, err = s.Tmux.Run(ctx, "set-option", "-p", "-t", pane, OptWent, id)
 	return err
 }
 
@@ -488,6 +529,11 @@ func (s *Sidebar) move(ctx context.Context, c client, p panel, target string, ta
 	if err != nil {
 		return err
 	}
+	return s.moveTo(ctx, c, p, to, take)
+}
+
+// moveTo is move, to the window read already.
+func (s *Sidebar) moveTo(ctx context.Context, c client, p panel, to window, take bool) error {
 	if to.id == p.window {
 		if !take {
 			return nil

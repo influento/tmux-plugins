@@ -332,6 +332,9 @@ Rules:
   undoes a key pressed during a reload that tracks. The focus event runs
   `sidebar go` only for the user's moves: a reload's or a place's move
   fires focus with `$FZF_ACTION` `rebind`, `reload` or `reload-sync`.
+  A reload that ends while a key is in fires focus again, with the key's
+  action: a go to the window the panel went to or placed its cursor in last
+  (`@sidebar_went`) does nothing.
   A change of a flag, reason or label reloads the open panels
   (`Core.Changed`). What changes with no event (an age's next value, a
   label's end) `pick-rows` tells the panel's `pick` on its `.tick` socket,

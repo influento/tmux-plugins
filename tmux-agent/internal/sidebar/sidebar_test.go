@@ -194,6 +194,43 @@ func TestGoMovesThePanel(t *testing.T) {
 	}
 }
 
+// fzf fires its focus event twice for one move when a reload ends while
+// the move's key is in: the second go to the row does nothing. One took
+// the client back from a window it went to since, before the panel
+// followed. A go there after the cursor was placed in another window
+// moves the client.
+func TestGoFocusOnce(t *testing.T) {
+	e := newEnv(t)
+	w0 := e.Display(t, "=proj-a:", "#{window_id}")
+	w1 := e.MustTmux(t, "new-window", "-d", "-t", "=proj-a:1", "-P", "-F", "#{window_id}")
+	pane := e.MustTmux(t, "split-window", "-d", "-t", w1, "-P", "-F", "#{pane_id}")
+	must(t, e.side.Toggle(e.ctx(), e.client))
+	p := e.panel(t)
+	goFocus := func(target string, want bool) {
+		t.Helper()
+		moved, err := e.side.GoFocus(e.ctx(), e.client, target)
+		must(t, err)
+		if moved != want {
+			t.Errorf("GoFocus %s: moved %v, want %v", target, moved, want)
+		}
+	}
+
+	goFocus("=proj-a:1", true)
+	e.wantPanel(t, w1)
+	e.MustTmux(t, "switch-client", "-c", e.client, "-t", w0) // the panel follows later
+	goFocus("=proj-a:1", false)
+	goFocus(pane, false) // a row of a pane in the window
+	if got := e.where(t); got != w0 {
+		t.Errorf("client on %s after the second go, want %s", got, w0)
+	}
+
+	must(t, e.side.Placed(e.ctx(), p, "=proj-a:0"))
+	goFocus("=proj-a:1", true)
+	if got := e.where(t); got != w1 {
+		t.Errorf("client on %s after a go from another row, want %s", got, w1)
+	}
+}
+
 // Step goes to the next, previous or numbered window, panel and all.
 func TestStep(t *testing.T) {
 	e := newEnv(t)
