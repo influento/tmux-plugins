@@ -246,7 +246,7 @@ func panelCursor(t *testing.T, socket string) string {
 // client showed before the move, and the window and the row disagreed
 // until the next reload. A switch some other way moves the cursor. The
 // limits rule out a lost move, not a slow one: a move takes 25-75 ms on
-// a workstation, up to 600 ms on CI's runner with -race.
+// a workstation, up to 2 s on a slow CI runner with -race.
 func TestPanelMoveWhileReloading(t *testing.T) {
 	s, origin, panel := openPanel(t)
 	names := []string{"w-two", "w-three", "w-four", "w-five"}
@@ -279,6 +279,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 	}
 	offsets := []time.Duration{-10 * time.Millisecond, 0, 5 * time.Millisecond, 15 * time.Millisecond, 30 * time.Millisecond}
 
+	const limit = 5 * time.Second
 	t0 := time.Now()
 	var seen []string
 	lastC, lastW := "", ""
@@ -313,7 +314,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		seen = append(seen, fmt.Sprintf("%6.1f ms send %s", float64(time.Since(t0).Microseconds())/1000, key))
 		s.MustTmux(t, "send-keys", "-t", panel, key)
 		to := ""
-		for time.Since(start) < 2*time.Second && to == "" {
+		for time.Since(start) < limit && to == "" {
 			c := panelCursor(t, socket)
 			note(c, client())
 			if c != from {
@@ -325,7 +326,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		}
 		// Until the client is there, and a moment after: the cursor stays.
 		var followed time.Duration
-		for end := start.Add(2 * time.Second); time.Now().Before(end); {
+		for end := start.Add(limit); time.Now().Before(end); {
 			c, w := panelCursor(t, socket), client()
 			note(c, w)
 			if c != to {
@@ -349,7 +350,7 @@ func TestPanelMoveWhileReloading(t *testing.T) {
 		s.MustTmux(t, "select-window", "-t", to)
 		for c := panelCursor(t, socket); c != to; c = panelCursor(t, socket) {
 			note(c, client())
-			if time.Since(start) > 2*time.Second {
+			if time.Since(start) > limit {
 				t.Fatalf("cursor on %s %v after a switch to %s", c, time.Since(start), to)
 			}
 		}
