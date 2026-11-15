@@ -487,10 +487,24 @@ func (s *Sidebar) GoWant(ctx context.Context, clientName string, want func() str
 	if err != nil {
 		return target, false, err
 	}
-	if !slices.ContainsFunc(ps, func(p panel) bool { return p.client == clientName }) {
+	i := slices.IndexFunc(ps, func(p panel) bool { return p.client == clientName })
+	if i < 0 {
 		return target, false, nil
 	}
-	moved, err = s.goLocked(ctx, clientName, target, true, ps)
+	cs, err := s.clients(ctx)
+	if err != nil {
+		return target, false, err
+	}
+	to, err := s.window(ctx, target)
+	if err != nil {
+		return target, false, err
+	}
+	// Where the client is, not where the panel went last: the client can
+	// have gone elsewhere some other way since.
+	if c, ok := cs[clientName]; !ok || (c.window == to.id && ps[i].window == to.id) {
+		return target, false, nil
+	}
+	moved, err = s.goLocked(ctx, clientName, target, false, ps)
 	return target, moved, err
 }
 

@@ -47,9 +47,9 @@ type PickOptions struct {
 	// user's Esc turns both into an Alt key, and Esc is lost.
 	Listen string
 	// Want is the file the keys write the row they moved to in, for
-	// `sidebar go` in the background; "" for none: the keys then wait
-	// for each go.
-	Want string
+	// `sidebar go` in the background, and Going the folder that is there
+	// while a go runs; "" for none: the keys then wait for each go.
+	Want, Going string
 }
 
 var hexColour = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
@@ -141,13 +141,13 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 	skipDown := "transform(echo {8})+execute-silent([ -n {1} ] || " + show + " {2})"
 	if opts.Want != "" {
 		goCmd := opts.Self + " sidebar go " + shell.Quote(opts.Client)
-		skipUp = "transform(" + noteAndGo(opts.Want, goCmd, "{7}") + "; echo {6})"
-		skipDown = "transform(" + noteAndGo(opts.Want, goCmd, "{9}") + "; echo {8})"
+		skipUp = "transform(" + noteAndGo(opts.Want, opts.Going, goCmd, "{7}") + "; echo {6})"
+		skipDown = "transform(" + noteAndGo(opts.Want, opts.Going, goCmd, "{9}") + "; echo {8})"
 	}
 	change := "reload-sync(" + list + ")"
 	focusGo := "[ -n {1} ] || " + show + " {2}"
 	if opts.Want != "" {
-		focusGo = "[ -n {1} ] || " + noteAndGo(opts.Want, opts.Self+" sidebar go "+shell.Quote(opts.Client), "{2}")
+		focusGo = "[ -n {1} ] || " + noteAndGo(opts.Want, opts.Going, opts.Self+" sidebar go "+shell.Quote(opts.Client), "{2}")
 	}
 	place := opts.Self + " pick-key place " + shell.Quote(opts.Client)
 	args := []string{"--ansi", "--height=100%", "--layout=reverse", "--no-sort",
@@ -219,13 +219,13 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 }
 
 // noteAndGo is the shell command that notes the row target (an fzf
-// field) in the file want and runs goCmd in the background, unless
-// target is empty (a label's) or noted already: a go for it is done or
-// on its way.
-func noteAndGo(want, goCmd, target string) string {
+// field) in the file want, and runs goCmd in the background unless one
+// runs (the folder going is there): that go takes the row too. Nothing
+// for an empty target (a label's) or one noted already.
+func noteAndGo(want, going, goCmd, target string) string {
 	w := shell.Quote(want)
 	return `{ t=` + target + `; r=; read -r r 2>/dev/null <` + w + `; [ -z "$t" ] || [ "$r" = "$t" ] || { printf %s "$t" >` + w +
-		`; ` + goCmd + ` </dev/null >/dev/null 2>&1 & }; }`
+		`; mkdir ` + shell.Quote(going) + ` 2>/dev/null && { ` + goCmd + ` </dev/null >/dev/null 2>&1 & }; }; }`
 }
 
 // placeAction puts the cursor on the row of client's window, without a

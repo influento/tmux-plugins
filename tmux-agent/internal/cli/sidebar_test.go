@@ -483,3 +483,32 @@ func TestPanelFoldKeepsCursor(t *testing.T) {
 		t.Errorf("client on %s, want w-two, the session's current window", got)
 	}
 }
+
+// After a row chosen in the panel, a switch some other way (a key of
+// tmux's, a click on the status line) moves the cursor to the client's
+// window. The chosen row used to keep it: the panel took it for a move
+// still on its way.
+func TestPanelFollowsSwitchAfterGo(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	for _, n := range []string{"w-two", "w-three"} {
+		p := s.MustTmux(t, "new-window", "-d", "-n", n, "-P", "-F", "#{pane_id}")
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+	}
+	s.WaitForContent(t, panel, "w-three")
+	socket := s.Display(t, panel, "#{"+sidebar.OptListen+"}")
+	client := func() string {
+		return s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}")
+	}
+	s.MustTmux(t, "send-keys", "-t", panel, "Up") // from the fold to w-three
+	tmuxtest.WaitFor(t, 5*time.Second, "the client on w-three", func() bool { return client() == "=proj-a:2" })
+	s.MustTmux(t, "select-pane", "-t", "=proj-a:2.0") // the focus in the main area, as after C-l
+	for _, w := range []string{"=proj-a:1", "=proj-a:2", "=proj-a:1"} {
+		s.MustTmux(t, "select-window", "-t", w)
+		tmuxtest.WaitFor(t, 5*time.Second, "the cursor on "+w, func() bool {
+			_, target := panelRow(t, socket)
+			return target == w
+		})
+	}
+}

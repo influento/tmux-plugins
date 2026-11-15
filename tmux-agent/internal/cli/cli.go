@@ -909,26 +909,76 @@ func (a *app) notePlace(rows []attention.PickRow) {
 	}
 }
 
+// goWanted is the panel's go in the background, which its keys start
+// when none runs (the .going folder is there while one runs): it takes
+// the client to the row the keys noted last in .want, and again while
+// they note another. It notes each row it took in .gone. Before it ends
+// it removes .going, then looks once more: a key that found the folder
+// there noted its row before, and started no go.
+func (a *app) goWanted(ctx context.Context, client string) error {
+	pane := a.getenv("TMUX_PANE")
+	want, gone, going := a.panelSocket(pane, ".want"), a.panelSocket(pane, ".gone"), a.panelSocket(pane, ".going")
+	if want == "" {
+		return nil
+	}
+	read := func() string {
+		data, _ := os.ReadFile(want) // none, or a key's write under way: the next look sees it
+		return string(data)
+	}
+	owned := going // .going while this go holds it
+	defer func() {
+		if owned != "" {
+			_ = os.Remove(owned)
+		}
+	}()
+	for ctx.Err() == nil {
+		target, moved, err := a.side.GoWant(ctx, client, read)
+		if err == nil {
+			err = writeFileAtomic(gone, []byte(target))
+		}
+		a.debugf("sidebar go %s to %q, moved %v, FZF_ACTION %q", client, target, moved, a.getenv("FZF_ACTION"))
+		if err == nil && moved {
+			err = a.seenOn(ctx, client)
+		}
+		if err != nil {
+			return err
+		}
+		if read() != target {
+			continue
+		}
+		if err := os.Remove(going); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		owned = ""
+		if read() == target {
+			return nil
+		}
+		if os.Mkdir(going, 0o700) != nil {
+			return nil // a key started another go, which takes the row
+		}
+		owned = going
+	}
+	return ctx.Err()
+}
+
 // placeRow is the row, from 1, place puts the panel's cursor on: the row
-// the keys noted last while the client shows its window, or a go to it
-// is on its way (its window is not the one the panel went to last);
-// else the row of the client's window, here, which the client went to
-// some other way. A fold's row stays: its go shows a window of another
-// row. The keys then note that row.
+// the keys noted last while a go to it is on its way (a go runs and
+// .gone is not that row) or the client shows its window; else the row of
+// the client's window, here, which the client went to some other way. A
+// fold's row stays: its go shows a window of another row. The keys then
+// note that row.
 func (a *app) placeRow(ctx context.Context, rows []attention.PickRow, here string) (int, error) {
 	pane := a.getenv("TMUX_PANE")
-	path := a.panelSocket(pane, ".want")
+	path, gonePath := a.panelSocket(pane, ".want"), a.panelSocket(pane, ".gone")
 	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
 		want := string(data)
-		i := slices.IndexFunc(rows, func(r attention.PickRow) bool { return !r.IsLabel() && r.Target == want })
-		out, err := a.tmux.Output(ctx, "display-message", "-p", "-t", want, "#{window_id} =#{session_name}:#{window_index}")
-		if i >= 0 && err == nil {
-			id, win, _ := strings.Cut(out, " ")
-			went, _, err := a.tmux.Option(ctx, "-p", pane, sidebar.OptWent)
-			if err != nil {
-				return 0, err
+		gone, _ := os.ReadFile(gonePath) // none: no go took a row yet
+		if i := slices.IndexFunc(rows, func(r attention.PickRow) bool { return !r.IsLabel() && r.Target == want }); i >= 0 {
+			if _, err := os.Stat(a.panelSocket(pane, ".going")); err == nil && string(gone) != want {
+				return i + 1, nil
 			}
-			if id != went || win == here {
+			win, err := a.tmux.Output(ctx, "display-message", "-p", "-t", want, "=#{session_name}:#{window_index}")
+			if err == nil && win == here {
 				return i + 1, nil
 			}
 		}
@@ -938,7 +988,8 @@ func (a *app) placeRow(ctx context.Context, rows []attention.PickRow, here strin
 		return 0, err
 	}
 	if path != "" && pos <= len(rows) {
-		if err := writeFileAtomic(path, []byte(rows[pos-1].Target)); err != nil {
+		row := []byte(rows[pos-1].Target)
+		if err := errors.Join(writeFileAtomic(path, row), writeFileAtomic(gonePath, row)); err != nil {
 			a.logf("pick-key place: %v", err)
 		}
 	}
@@ -1184,12 +1235,15 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 		return err
 	}
 	a.notePlace(rows) // not an older panel's in this pane
-	want := ""
+	// The keys' files of an older panel in this pane go.
+	want, going := "", ""
 	if p := a.panelSocket(a.getenv("TMUX_PANE"), ".want"); p != "" {
-		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
+		want, going = p, a.panelSocket(a.getenv("TMUX_PANE"), ".going")
+		for _, f := range []string{want, going, a.panelSocket(a.getenv("TMUX_PANE"), ".gone")} {
+			if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
 		}
-		want = p
 	}
 	startPane, startWindow, err := a.where(ctx, client)
 	if err != nil {
@@ -1240,7 +1294,7 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
 		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width,
-		Cursor: cursor, Listen: listen, Want: wantIf(listen != "", want)})
+		Cursor: cursor, Listen: listen, Want: wantIf(listen != "", want), Going: going})
 	stopTick()
 	if listen != "" {
 		_ = os.Remove(listen) // fzf is gone; the panel may be too, so no tmux call
@@ -1357,20 +1411,7 @@ func (a *app) sidebar(ctx context.Context, args []string) error {
 	action, rest := args[0], args[1:]
 	switch {
 	case action == "go" && len(rest) == 1:
-		// A key's go in the background: to the row the keys noted last.
-		path := a.panelSocket(a.getenv("TMUX_PANE"), ".want")
-		if path == "" {
-			return nil
-		}
-		target, moved, err := a.side.GoWant(ctx, rest[0], func() string {
-			data, _ := os.ReadFile(path) // none or empty: no row to go to
-			return string(data)
-		})
-		a.debugf("sidebar go %s to %q, moved %v, FZF_ACTION %q", rest[0], target, moved, a.getenv("FZF_ACTION"))
-		if err != nil || !moved {
-			return err
-		}
-		return a.seenOn(ctx, rest[0])
+		return a.goWanted(ctx, rest[0])
 	case action == "go" && len(rest) == 2:
 		// Which of fzf's events ran it: a go from a reload's or a place's
 		// move takes the client back.
