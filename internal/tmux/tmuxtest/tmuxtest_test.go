@@ -11,17 +11,6 @@ import (
 	"time"
 )
 
-// running reports whether process pid runs: it exists and is not a zombie
-// waiting for its parent.
-func running(pid int) bool {
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return false
-	}
-	f := strings.Fields(string(b[strings.LastIndexByte(string(b), ')')+1:]))
-	return len(f) > 0 && f[0] != "Z"
-}
-
 // Nothing started in a sandbox outlives it: a program left behind, such
 // as a notifier a hook starts in the background, could write into the
 // sandbox while it is removed.
@@ -43,7 +32,7 @@ func TestSandboxStopsLeftovers(t *testing.T) {
 	if pid == 0 {
 		t.Fatal("no process started")
 	}
-	if running(pid) {
+	if alive(pid) {
 		t.Errorf("process %d outlived its sandbox", pid)
 	}
 }

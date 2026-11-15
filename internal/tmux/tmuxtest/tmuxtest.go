@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,9 +145,18 @@ func NewSandbox(t testing.TB) *Sandbox {
 // into the sandbox while it is removed.
 func stopLeftovers(t testing.TB, marker string) {
 	t.Helper()
+	// A killed process lets go of its memory, environment included, before
+	// it exits: it no longer shows the marker, so each one killed is
+	// followed until it is a zombie or gone.
+	killed := map[int]bool{}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		pids := processesWith(marker)
+		for pid := range killed {
+			if alive(pid) && !slices.Contains(pids, pid) {
+				pids = append(pids, pid)
+			}
+		}
 		if len(pids) == 0 {
 			return
 		}
@@ -156,9 +166,24 @@ func stopLeftovers(t testing.TB, marker string) {
 		}
 		for _, pid := range pids {
 			_ = syscall.Kill(pid, syscall.SIGKILL) // gone already: nothing to stop
+			killed[pid] = true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// alive reports whether process pid still runs: it exists and is no zombie.
+func alive(pid int) bool {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return false
+	}
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 {
+		return false
+	}
+	f := strings.Fields(string(b[i+1:]))
+	return len(f) > 0 && f[0] != "Z" && f[0] != "X"
 }
 
 // processesWith lists the processes whose environment holds the variable
