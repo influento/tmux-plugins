@@ -436,12 +436,17 @@ func (s *Server) PaneEnv(t testing.TB, pane string, extra ...string) []string {
 }
 
 // InPane sets TMUX and TMUX_PANE in the test process itself, so code under
-// test that runs plain `tmux` reaches this server and sees pane as current.
+// test that runs plain `tmux` reaches this server and sees pane as current,
+// and the sandbox's HOME and XDG folders.
 func (s *Server) InPane(t *testing.T, pane string) {
 	t.Helper()
 	pid := s.MustTmux(t, "display-message", "-p", "#{pid}")
 	t.Setenv("TMUX", s.Socket+","+pid+",0")
 	t.Setenv("TMUX_PANE", pane)
+	// The code under test keeps its files in the sandbox, not the user's.
+	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"} {
+		t.Setenv(name, s.env[name])
+	}
 }
 
 // Command builds a command, found on the sandbox's PATH, that runs as if
