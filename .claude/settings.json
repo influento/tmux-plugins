@@ -3,7 +3,76 @@
     "ask": [
       "Bash(stack add *)",
       "Bash(stack rm *)",
-      "Bash(stack update *)"
+      "Bash(stack update *)",
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/hooks/workshop-guard)",
+      "Edit(/.claude/workshop.conf)",
+      "Edit(/go-gate/**)",
+      "Edit(/go.mod)",
+      "Edit(/go.sum)",
+      "Edit(/go.work)",
+      "Edit(/go.work.sum)",
+      "Edit(/vendor/**)"
+    ],
+    "allow": [
+      "Bash(bash go-gate/scripts/gate.sh)",
+      "Bash(bash go-gate/scripts/gate.sh --local)",
+      "Bash(bash go-gate/scripts/gate.sh --fix)",
+      "Bash(go test *)",
+      "Bash(go mod tidy)"
+    ],
+    "deny": [
+      "Bash(go get)",
+      "Bash(go get *)",
+      "Bash(go -* get)",
+      "Bash(go -* get *)",
+      "Bash(go install)",
+      "Bash(go install *)",
+      "Bash(go -* install)",
+      "Bash(go -* install *)",
+      "Bash(go mod edit)",
+      "Bash(go mod edit *)",
+      "Bash(go -* mod edit)",
+      "Bash(go -* mod edit *)",
+      "Bash(go work)",
+      "Bash(go work *)",
+      "Bash(go -* work)",
+      "Bash(go -* work *)",
+      "Bash(go env -w *)",
+      "Bash(go env * -w *)",
+      "Bash(go -* env -w *)",
+      "Bash(go -* env * -w *)",
+      "Bash(go env -u *)",
+      "Bash(go env * -u *)",
+      "Bash(go -* env -u *)",
+      "Bash(go -* env * -u *)",
+      "Bash(go run *@*)",
+      "Bash(go -* run *@*)",
+      "Bash(go * -modfile*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash go-gate/scripts/stop-hook.sh",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workshop-guard"
+          }
+        ]
+      }
     ]
   }
 }

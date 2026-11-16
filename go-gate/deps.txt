@@ -1,0 +1,2 @@
+# Modules the user approved, one per line: a module path, or a replace as old[@version] => new[@version].
+# The gate fails on any other module that go.mod requires directly or the code imports.

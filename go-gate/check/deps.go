@@ -1,0 +1,324 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+)
+
+const depsFile = "go-gate/deps.txt"
+
+type modVersion struct {
+	Path    string `json:"Path"`
+	Version string `json:"Version"`
+}
+
+// goMod is what `go mod edit -json` prints.
+type goMod struct {
+	Require []struct {
+		Path     string `json:"Path"`
+		Indirect bool   `json:"Indirect"`
+	} `json:"Require"`
+	Replace []struct {
+		Old modVersion `json:"Old"`
+		New modVersion `json:"New"`
+	} `json:"Replace"`
+	Tool []struct {
+		Path string `json:"Path"`
+	} `json:"Tool"`
+}
+
+type listedPkg struct {
+	ImportPath string   `json:"ImportPath"`
+	Name       string   `json:"Name"`
+	Dir        string   `json:"Dir"`
+	Standard   bool     `json:"Standard"`
+	GoFiles    []string `json:"GoFiles"`
+	CgoFiles   []string `json:"CgoFiles"`
+	TestFiles  []string `json:"TestGoFiles"`
+	XTestFiles []string `json:"XTestGoFiles"`
+	Imports    []string `json:"Imports"`
+	TestImps   []string `json:"TestImports"`
+	XTestImps  []string `json:"XTestImports"`
+	Module     *struct {
+		Path string `json:"Path"`
+		Main bool   `json:"Main"`
+	} `json:"Module"`
+}
+
+// goCmd runs the go command with the project's GOFLAGS, which gate.sh passes in GO_GATE_GOFLAGS:
+// the check itself runs under -mod=readonly, from its own module.
+func goCmd(args ...string) ([]byte, error) { return goCmdEnv(nil, args...) }
+
+// goCmdEnv: goCmd with env added to the environment.
+func goCmdEnv(env []string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(context.Background(), "go", args...)
+	cmd.Env = append(append(os.Environ(), "GOFLAGS="+os.Getenv("GO_GATE_GOFLAGS")), env...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, stderr.String())
+	}
+	return out, nil
+}
+
+func readGoMod() (goMod, error) {
+	var m goMod
+	out, err := goCmd("mod", "edit", "-json")
+	if err != nil {
+		return m, err
+	}
+	err = json.Unmarshal(out, &m)
+	if err != nil {
+		return m, fmt.Errorf("go mod edit -json: %w", err)
+	}
+	return m, nil
+}
+
+func listPackages(deps bool, env ...string) ([]listedPkg, error) {
+	args := []string{"list", "-e", "-json=ImportPath,Name,Dir,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,Imports,TestImports,XTestImports,Module"}
+	if deps {
+		args = append(args, "-deps", "-test")
+	}
+	out, err := goCmdEnv(env, append(args, "./...")...)
+	if err != nil {
+		return nil, err
+	}
+	var pkgs []listedPkg
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var p listedPkg
+		err := dec.Decode(&p)
+		if errors.Is(err, io.EOF) {
+			return pkgs, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("go list: %w", err)
+		}
+		pkgs = append(pkgs, p)
+	}
+}
+
+func replaceLine(o, n modVersion) string {
+	at := func(m modVersion) string {
+		if m.Version == "" {
+			return m.Path
+		}
+		return m.Path + "@" + m.Version
+	}
+	return at(o) + " => " + at(n)
+}
+
+// toolModule: the required module a tool's package path lies in.
+func toolModule(m goMod, tool string) string {
+	best := ""
+	for _, r := range m.Require {
+		if (tool == r.Path || strings.HasPrefix(tool, r.Path+"/")) && len(r.Path) > len(best) {
+			best = r.Path
+		}
+	}
+	return best
+}
+
+// approved: what a first install puts on the list. go.mod's direct requires, the modules of its
+// tools and its replaces: the indirect requires come with them.
+func approved() ([]string, error) {
+	m, err := readGoMod()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range m.Require {
+		if !r.Indirect {
+			out = append(out, r.Path)
+		}
+	}
+	for _, t := range m.Tool {
+		if mod := toolModule(m, t.Path); mod != "" {
+			out = append(out, mod)
+		}
+	}
+	slices.Sort(out)
+	out = slices.Compact(out)
+	for _, r := range m.Replace {
+		out = append(out, replaceLine(r.Old, r.New))
+	}
+	return out, nil
+}
+
+func readApproved() map[string]bool {
+	ok := map[string]bool{}
+	data, err := os.ReadFile(depsFile)
+	if err != nil {
+		return nil
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if line = strings.Join(strings.Fields(line), " "); line != "" && !strings.HasPrefix(line, "#") {
+			ok[line] = true
+		}
+	}
+	return ok
+}
+
+// goModLine: the line of go.mod that names path, for the finding's position.
+func goModLine(path string) int {
+	data, _ := os.ReadFile("go.mod")
+	for i, l := range strings.Split(string(data), "\n") {
+		if slices.Contains(strings.Fields(l), path) {
+			return i + 1
+		}
+	}
+	return 1
+}
+
+// deps: every direct require, every module the project's packages and tests import, every tool and
+// every replace of go.mod must be on go-gate/deps.txt, the list the user approved. `go mod tidy`
+// writes go.mod from the imports, from its own process, so a deny rule cannot stop a new module; this
+// check does. Also no-excluded: an import of a package that exclude covers.
+func deps(s settings) ([]finding, error) {
+	m, err := readGoMod()
+	if err != nil {
+		return nil, err
+	}
+	pkgs, err := listPackages(true)
+	if err != nil {
+		return nil, err
+	}
+	var out []finding
+	if ok := readApproved(); ok != nil {
+		out = append(out, unapproved(m, pkgs, ok)...)
+	}
+	return append(out, importsExcluded(s, pkgs)...), nil
+}
+
+func unapproved(m goMod, pkgs []listedPkg, ok map[string]bool) []finding {
+	mods := map[string]bool{}
+	for _, r := range m.Require {
+		if !r.Indirect {
+			mods[r.Path] = true
+		}
+	}
+	for _, t := range m.Tool {
+		if mod := toolModule(m, t.Path); mod != "" {
+			mods[mod] = true
+		}
+	}
+	byPath := map[string]listedPkg{}
+	for _, p := range pkgs {
+		byPath[p.ImportPath] = p
+	}
+	for _, p := range pkgs {
+		if p.Module == nil || !p.Module.Main {
+			continue
+		}
+		for _, imp := range p.Imports {
+			if d, found := byPath[imp]; found && d.Module != nil && !d.Module.Main && !d.Standard {
+				mods[d.Module.Path] = true
+			}
+		}
+	}
+	var out []finding
+	fix := "Remove what brought it in and run go mod tidy, or ask the user to approve it: after the user " +
+		"approves, add the line on a new line in " + depsFile
+	for _, mod := range slices.Sorted(maps.Keys(mods)) {
+		if !ok[mod] {
+			out = append(out, finding{"go.mod", goModLine(mod), "deps", fmt.Sprintf(
+				"the project depends on module %s, which the user did not approve (%s). %s", mod, depsFile, fix)})
+		}
+	}
+	for _, r := range m.Replace {
+		if line := replaceLine(r.Old, r.New); !ok[line] {
+			out = append(out, finding{"go.mod", goModLine(r.Old.Path), "deps", fmt.Sprintf(
+				"`replace %s` points a module at other code, and the user did not approve it (%s). %s",
+				line, depsFile, fix)})
+		}
+	}
+	return out
+}
+
+func relDir(dir string) string {
+	wd, _ := os.Getwd()
+	rel, err := filepath.Rel(wd, dir)
+	if err != nil {
+		return dir
+	}
+	return filepath.ToSlash(rel)
+}
+
+// excludedPkg: a package of the project whose every file, tests too, exclude covers.
+func excludedPkg(s settings, p listedPkg) bool {
+	files := slices.Concat(p.GoFiles, p.CgoFiles, p.TestFiles, p.XTestFiles)
+	if len(s.exclude) == 0 || p.Module == nil || !p.Module.Main || len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		if !matches(s.exclude, relDir(filepath.Join(p.Dir, f))) {
+			return false
+		}
+	}
+	return true
+}
+
+// importsExcluded: no-excluded, as ts-gate's dependency-cruiser rule. What an excluded path holds can
+// go at any time.
+func importsExcluded(s settings, pkgs []listedPkg) []finding {
+	if len(s.exclude) == 0 {
+		return nil
+	}
+	byPath := map[string]listedPkg{}
+	for _, p := range pkgs {
+		byPath[p.ImportPath] = p
+	}
+	var out []finding
+	seen := map[string]bool{}
+	for _, p := range pkgs {
+		if p.Module == nil || !p.Module.Main || excludedPkg(s, p) {
+			continue
+		}
+		for _, imp := range p.Imports {
+			d, found := byPath[imp]
+			at := relDir(p.Dir)
+			key := at + " " + d.ImportPath
+			if !found || !excludedPkg(s, d) || seen[key] || matches(s.off["no-excluded"], at+"/") {
+				continue
+			}
+			seen[key] = true
+			name, _, _ := strings.Cut(d.ImportPath, " ")
+			out = append(out, finding{at, 1, "no-excluded", fmt.Sprintf("this package imports %s, which "+
+				"exclude in .claude/workshop.conf leaves out of the gate: what it holds can go at any time. "+
+				"Move the code you need into a checked package", name)})
+		}
+	}
+	return out
+}
+
+// testPackages: the packages go test runs. ./... when exclude covers none.
+func testPackages(s settings) ([]string, error) {
+	pkgs, err := listPackages(false)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	cut := false
+	for _, p := range pkgs {
+		if excludedPkg(s, p) {
+			cut = true
+			continue
+		}
+		out = append(out, p.ImportPath)
+	}
+	if !cut && len(out) > 0 {
+		return []string{"./..."}, nil
+	}
+	return out, nil
+}

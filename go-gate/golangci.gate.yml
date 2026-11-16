@@ -1,0 +1,116 @@
+# go-gate's golangci-lint config. golangci-lint has no config inheritance, so
+# the gate writes the config it runs with at each run (check config): this
+# file, with each `# go-gate:` line filled from the project's exclude, its
+# go-gate.off.<linter> keys and go-gate-legacy.txt. Every linter is on but
+# those below, each with its reason; the counts: CLAUDE.md, "Evidence". A
+# project turns a linter off with go-gate.off.<linter> in
+# .claude/workshop.conf, never here.
+version: "2"
+run:
+  tests: true
+  relative-path-mode: gomod
+linters:
+  default: all
+  disable:
+    # layout and naming: fire on every run and on correct code
+    - wsl              # deprecated, as wsl_v5
+    - wsl_v5
+    - nlreturn
+    - varnamelen
+    - noinlineerr
+    - embeddedstructfieldcheck
+    - funcorder
+    - lll
+    - godot
+    - tagliatelle      # wants camelCase JSON keys; a task names its own
+    # opinions the baseline's correct code breaks
+    - exhaustruct      # deprecated, as exhaustruct_v5
+    - exhaustruct_v5   # every field of every struct literal
+    - paralleltest
+    - tparallel
+    - testpackage
+    - err113           # fmt.Errorf with a message is normal Go
+    - wrapcheck        # returning os.ReadFile's error keeps errors.Is(fs.ErrNotExist) working
+    - goconst
+    - mnd
+    - gochecknoglobals # test tables
+    - nonamedreturns
+    - prealloc
+    - perfsprint
+    - ireturn          # returning an interface is a store's constructor
+    - nilerr           # 3 of 3 hits wrong: io.EOF, a job skipped after cancel
+    - gocritic         # its one hit was wrong
+    - cyclop
+    - gocyclo
+    - gocognit
+    - funlen
+    - nestif
+    - maintidx
+    - forbidigo        # fmt.Println in main
+    - gosmopolitan
+    - godox
+    - dupword
+    - exhaustive       # 11 of 11 hits on correct code: a switch that skips the kinds it ignores on purpose
+    - musttag          # 16 of 16 on correct code: a field without a json tag keeps its own name
+    # need the project's own rules
+    - depguard
+    - gomodguard       # deprecated, as gomodguard_v2
+    - gomodguard_v2    # go-gate/deps.txt is the gate's list of modules
+    # the gate refuses every ignore comment itself (check: no-ignore-comment)
+    - nolintlint
+  settings:
+    staticcheck:
+      # its default, with the quick-fix suggestions off (QF1001 rewrote a correct condition)
+      checks: ["all", "-ST1000", "-ST1003", "-ST1016", "-ST1020", "-ST1021", "-ST1022", "-QF*"]
+    govet:
+      enable-all: true
+      disable: [fieldalignment, shadow]
+    usetesting:
+      # a unix socket path must fit in 108 bytes; t.TempDir's paths do not (3 of 3 hits)
+      os-mkdir-temp: false
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      # #nosec comments do nothing: the gate refuses them too
+      config:
+        global:
+          nosec: true
+        # the highest mode each allows: Go's normal 0644 files, 0755 executables
+        # and folders, 0700 private folders pass; a world-writable mode fails
+        G301: "0755"
+        G302: "0755"
+        G306: "0755"
+    gomoddirectives:
+      # a replace is approved in go-gate/deps.txt, as a module is
+      replace-local: true
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  exclusions:
+    # A generated-code header on a hand-written file hid its issues.
+    generated: disable
+    paths: [] # go-gate:paths
+    rules:
+      # contextcheck: 17 of 17 test hits were a test helper's own context;
+      # unparam: 6 of 6 were test helpers that take a value tests never vary
+      - path: _test\.go
+        linters: [forcetypeassert, gosec, contextcheck, unparam]
+      # G204: a subprocess with a variable argument; every hit in a real project was
+      # correct code (tmux, git). G103: a use of unsafe, to be audited, which no
+      # comment can mark as done.
+      - linters: [gosec]
+        text: "G304|G104|G204|G103"
+      # go-gate:rules
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
+formatters:
+  enable: [gofumpt, goimports] # go-gate:formatters
+  exclusions:
+    generated: disable
+    paths: [] # go-gate:paths
