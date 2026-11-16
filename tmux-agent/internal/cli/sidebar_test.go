@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -424,29 +425,37 @@ func TestPanelHeldKey(t *testing.T) {
 			key("Up")
 		}
 	})
+	// The keys end in the top row. From when the cursor is there, the
+	// client makes at most two moves: the one running, then the one to
+	// that row. A go per key made one per key still queued.
+	keysSent := make(chan struct{})
+	go func() { keys.Wait(); close(keysSent) }()
 	var labels []string
-	ended := time.Time{}
+	var settled time.Time // the cursor on its last row, the keys sent
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		label, target := panelRow(t, socket)
 		if label != "" {
 			labels = append(labels, label)
 		}
-		if ended.IsZero() {
-			done := make(chan struct{})
-			go func() { keys.Wait(); close(done) }()
+		if settled.IsZero() {
 			select {
-			case <-done:
-				ended = time.Now()
+			case <-keysSent:
+				if target == "=proj-a:1" {
+					settled = time.Now()
+				}
 			default:
 			}
 			continue
 		}
-		if target == "=proj-a:1" && client() == target {
-			if d := time.Since(ended); d > 2500*time.Millisecond { // the old code: 5 s on a workstation
-				t.Errorf("the client reached the cursor's row %v after the last key", d)
-			}
+		if client() == target {
 			break
 		}
+	}
+	if settled.IsZero() {
+		t.Fatal("the cursor never stopped on the top row after the keys")
+	}
+	if moves := movesSince(t, s, settled); moves > 2 {
+		t.Errorf("the client made %d moves after the cursor stopped; want at most 2", moves)
 	}
 	if label, target := panelRow(t, socket); target != "=proj-a:1" || client() != target {
 		t.Fatalf("cursor on %q %s, client on %s; want both on the top row", label, target, client())
@@ -454,6 +463,33 @@ func TestPanelHeldKey(t *testing.T) {
 	if len(labels) > 0 {
 		t.Errorf("the cursor stopped on labels: %q", labels)
 	}
+}
+
+// movesSince counts the panel's moves of a client, whatever their
+// reason, in the log from since on.
+var clientMove = regexp.MustCompile(`client \S+ @\d+ → @\d+`)
+
+func movesSince(t *testing.T, s *tmuxtest.Server, since time.Time) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(s.StateHome, "tmux-agent", "log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, l := range strings.Split(string(data), "\n") {
+		stamp, rest, _ := strings.Cut(l, " ")
+		if !clientMove.MatchString(rest) {
+			continue
+		}
+		at, err := time.Parse("2006-01-02T15:04:05.000Z07:00", stamp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !at.Before(since.Truncate(time.Millisecond)) {
+			n++
+		}
+	}
+	return n
 }
 
 // A fold's row keeps the cursor when the panel reloads, though its go
