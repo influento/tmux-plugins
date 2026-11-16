@@ -17,9 +17,10 @@
 4. **Say what you expect before any work.** Before work starts, you and the
    user agree on what the result must show. Only that check judges the
    result.
-5. **The user sees it work.** An item is proven when the user has seen it
-   work, shown live. Any other claim rests on what a command printed. A
-   summary or a reading of the code is not proof.
+5. **Proof is a run that someone saw.** An item is proven by its steps
+   run on the reviewed code: each command step by an agent that did not
+   write the code, and each step that only the user can judge by the user.
+   A summary or a reading of the code is not proof.
 6. **The user decides; the agent proposes.** A question that only the user
    can answer is parked, never assumed.
 
@@ -112,6 +113,11 @@ The check is the list of steps that judges an item. Each step is one of:
 The check holds only steps and their expected results, no reasoning and no
 design.
 
+Make a step a command step whenever a command can judge it: a command can
+drive the project as its users do and read back what it shows. Make it a
+step that only the user can judge only when no command can. The user does
+each such step alone, so keep them few.
+
 The item's scope is what the item must change. In a bug, the scope is each
 behaviour that the root cause makes wrong in the way that the Why
 describes. In a feature, the scope is each change that the Why asks for,
@@ -120,10 +126,10 @@ worked before the change is in the scope only if the Why asks to change it.
 
 If the check has no step for a case in the scope, decide what the project
 does in that case. Follow the way the project handles similar cases. In
-the item's session, do not ask the user about such a case before the demo.
-Write each such decision in the proof, with the command that shows it. At
-the demo, `wb-demo` shows and records each such decision in the same way
-as a step.
+the item's session, do not ask the user about such a case before the test
+book. Write each such decision in the proof, with the command that shows
+it. `wb-tester` runs that command, and the test book shows the decision to
+the user.
 If the user wants a different behaviour, agree a step for it with the user.
 
 An existing behaviour is a behaviour that the project had before the
@@ -146,8 +152,8 @@ item's scope and the check has no step for it:
 
 - Add an entry for the behaviour to `workbench/BACKLOG.md`.
 - Commit the entry on the item's branch.
-- At the demo, `wb-demo` shows the user each entry that the item's branch
-  adds to `workbench/BACKLOG.md`.
+- The test book shows the user each entry that the item's branch adds to
+  `workbench/BACKLOG.md`.
 - If the user agrees a step for the behaviour, delete the entry.
 
 While you keep the behaviour:
@@ -266,16 +272,30 @@ the proof what the user said. Write it in the user's words, with the date
 that the user said it. A `No test:` line that you write for one of the
 cases above needs no words of the user.
 
-The proof is the demo. After the review, `wb-demo` shows the user each
-step of the check live. `wb-demo` is an agent that did not write the code.
-It runs each command where the user sees it run, or it lets the user do
-the step. It gives its own verdict on each step, and asks for the verdict
-of the user. For each step, it writes in the proof the output, its
-verdict, what the user said in the user's words, and the date.
+The proof is the run of each step on the reviewed code. After a review
+with no finding, `wb-tester`, an agent that did not write the code, runs
+each command step. Workbench writes its output and verdict in the proof.
+Then you give the user the test book, and the user does each step that
+only the user can judge.
+
+The test book is one message, numbered. It holds:
+
+- each step that only the user can judge: the exact commands or actions
+  that show it on the branch's code, and what to look for;
+- each decision that you made for a case that no step covers, with the
+  output of `wb-tester`'s run of its command;
+- each entry that the branch adds to `workbench/BACKLOG.md`.
+
+After the message, ask the user through the question prompt to do the
+book and then answer: each line passed, a line failed, or the user wants
+you to go through a line together. To go through a line, run what shows it, say what to look for,
+and wait for the user. Write in the proof, under each line, what the user
+said in the user's words, and the date. If the book has no line, ask the
+user if the item merges.
 
 If you showed the user a step before the change, write in the proof what
-the user said then, and the date. Before the demo, paste in the proof, as
-it was printed:
+the user said then, and the date. Before each `workbench ready`, paste in
+the proof, as it was printed:
 
 - for a command step that checks what the project does now: its output
   before the change;
@@ -290,8 +310,8 @@ rewrite either, except to replace a secret. Paste each output when it is
 printed. A compact or a new session loses an output that is not in the
 proof.
 
-A step that the user did not see is not proven. A summary or a table
-typed by hand is not proof. Replace each secret with `<REDACTED>`.
+A step that did not run on the reviewed code is not proven. A summary or a
+table typed by hand is not proof. Replace each secret with `<REDACTED>`.
 
 ## Decisions
 
@@ -329,20 +349,17 @@ answer. Never look for another way to do what was refused.
    reviews the branch, and workbench tells you what to do next. When your
    changes after a review, to the code or to the Why, the Check or a
    decision line, are complete and committed, run `workbench ready <id>`
-   again. Then end your turn. Never start `wb-reviewer` or `wb-judge`
-   yourself.
-5. When workbench tells you to, run `workbench demo <id>`. The command
-   opens a session of `wb-demo` in its own tmux window, `<id>-demo`. Then
-   end your turn. Do not change anything in the worktree until `wb-demo`
-   tells you how the demo went. Never show the demo yourself.
-   - If the demo passed, ask the user if the item merges. If the user
-     says yes, run `workbench merge`.
-   - If a step failed, or the user or `wb-demo` found a problem, fix each
-     failure and each problem on the branch as you fix a review finding.
-     Then run `workbench ready <id>` again. If you cannot make a step
-     pass, do as "Check and proof" says for a step that misses its
-     expected result. If the user wants a new step, agree the step with
-     the user.
+   again. Then end your turn. Never start `wb-reviewer`, `wb-judge` or
+   `wb-tester` yourself.
+5. When workbench tells you that `wb-tester` passed each command step,
+   give the user the test book.
+   - If each line passed and the user has no open problem, ask the user if
+     the item merges. If the user says yes, run `workbench merge`.
+   - If a line failed, or the user found a problem, fix each failure and
+     each problem on the branch as you fix a review finding. Then run
+     `workbench ready <id>` again. If you cannot make a step pass, do as
+     "Check and proof" says for a step that misses its expected result.
+     If the user wants a new step, agree the step with the user.
 6. `workbench merge <id> "<subject>"` runs `workbench/checks`, the
    project's own checks, in the item's worktree, if that file exists.
    Then it squashes the branch onto main as one commit with the trailer

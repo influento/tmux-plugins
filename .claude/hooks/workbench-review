@@ -3,14 +3,16 @@
 # Stop hook of an item's session. After 'workbench ready <id>', when the
 # session ends its turn, this hook has wb-judge judge each judged change
 # that ready listed. Then, if the code changed since the last review, it has
-# wb-reviewer review the branch. Each runs in a headless session. Then the
-# hook gives the item's session its next step. The state is in
+# wb-reviewer review the branch. After a review with no finding, wb-tester
+# runs each command step of the Check, and the hook writes its results in
+# the Proof and commits them. Each agent runs in a headless session. Then
+# the hook gives the item's session its next step. The state is in
 # <git common dir>/workbench-reviews/<id>/state, which merge reads.
 set -euo pipefail
 # The reviewer's session runs the project's hooks too, in the same worktree.
 [ -z "${WORKBENCH_REVIEW:-}" ] || exit 0
 exec python3 -c "$(cat <<'PY'
-import json, os, re, subprocess, sys
+import json, os, re, subprocess, sys, time
 
 # From this review on, the user decides about the findings: after two
 # rounds of fixes, reviewers start to report bugs that are not there.
@@ -28,6 +30,32 @@ SCHEMA = {
     }},
         "blocked": {"type": "string", "description": "Empty when you ran each part of the project that the change touches. Otherwise, which part you could not run, and why."}},
     "required": ["findings", "blocked"],
+}
+TESTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "steps": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "step": {"type": "string", "description": "The step, as the Check writes it."},
+                "verdict": {"type": "string", "enum": ["pass", "fail", "user"]},
+                "command": {"type": "string", "description": "The command as you ran it. Empty for a user step."},
+                "output": {"type": "string", "description": "Its whole output. Empty for a user step."},
+                "seen": {"type": "string", "description": "One or two sentences: why the verdict."},
+            },
+            "required": ["step", "verdict", "command", "output", "seen"],
+        }},
+        "decisions": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "decision": {"type": "string", "description": "The decision, as the Proof writes it."},
+                "command": {"type": "string", "description": "The command as you ran it."},
+                "output": {"type": "string", "description": "Its whole output."},
+            },
+            "required": ["decision", "command", "output"],
+        }},
+    },
+    "required": ["steps", "decisions"],
 }
 JUDGE_SCHEMA = {
     "type": "object",
@@ -55,9 +83,6 @@ def say(text):
 
 
 hook = json.load(sys.stdin)
-# wb-demo's session runs in the same worktree. It does not end the item's turn.
-if hook.get("agent_type") == "wb-demo":
-    sys.exit(0)
 item = git("symbolic-ref", "-q", "--short", "HEAD")
 common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
 top = git("rev-parse", "--show-toplevel")
@@ -71,14 +96,15 @@ try:
 except OSError:
     sys.exit(0)
 ready = state.get("ready", "")
-if not ready or ready == state.get("reviewed", ""):
+# test_only: review saw this code, and only wb-tester runs.
+if not ready or (ready == state.get("reviewed", "") and not state.get("test_only")):
     sys.exit(0)
 
 
 def save(**changes):
     state.update(changes)
     with open(path, "w") as fh:
-        fh.writelines(f"{k}={state.get(k, '')}\n" for k in ("ready", "reviewed", "count", "judges", "base", "judge_only"))
+        fh.writelines(f"{k}={state.get(k, '')}\n" for k in ("ready", "reviewed", "count", "judges", "base", "judge_only", "tested", "test_only"))
 
 
 if git("rev-parse", "HEAD") != ready or git("status", "--porcelain") != "":
@@ -202,13 +228,74 @@ if judged:
             + f"\n\nCommit. Then run 'workbench ready {item}'. No review runs before a judge accepts "
             "each judged change.")
 
-demo = (f"Run 'workbench demo {item}'. Then end your turn. wb-demo shows the user the demo and "
-        "tells you how it went. Change nothing in the worktree until then.")
+
+# A fence that no line of the text can close.
+def fenced(text):
+    runs = [len(m) for m in re.findall(r"~+", text)]
+    fence = "~" * max(3, max(runs, default=0) + 1)
+    return f"{fence}\n{text.rstrip(chr(10))}\n{fence}"
+
+
+def test(seen_by):
+    """wb-tester runs the Check on the reviewed code. Its results go in the
+    Proof, as workbench writes them, so that no agent retypes an output."""
+    report = report_for("test")
+    try:
+        result = run(report, "wb-tester", item, TESTER_SCHEMA)
+        steps, decisions = result["steps"], result["decisions"]
+        if not isinstance(steps, list) or not isinstance(decisions, list):
+            raise TypeError(steps)
+    except (OSError, ValueError, KeyError, TypeError):
+        save(ready="", test_only="")
+        say(f"{seen_by} wb-tester did not finish its run of the Check on {short}. Its output is in {report}. "
+            "Tell the user. Merge refuses this code until wb-tester passes it. The user decides what follows.")
+    date = time.strftime("%Y-%m-%d")
+    block = [f"### wb-tester on {short}, {date}", ""]
+    for s in steps:
+        verdict = str(s.get("verdict", "")).upper()
+        block += [f"#### {s.get('step', '')}", "", f"{verdict}: {s.get('seen', '')}", ""]
+        if s.get("verdict") != "user":
+            block += [fenced(f"$ {s.get('command', '')}\n{s.get('output', '')}"), ""]
+    for d in decisions:
+        block += [f"#### Decision: {d.get('decision', '')}", "",
+                  fenced(f"$ {d.get('command', '')}\n{d.get('output', '')}"), ""]
+    rel = os.path.join("workbench", "items", item + ".md")
+    with open(os.path.join(top, rel), "a") as fh:
+        fh.write("\n" + "\n".join(block))
+    if subprocess.run(["git", "-C", top, "commit", "--quiet", "-m", f"proof: wb-tester on {short}", "--", rel],
+                      capture_output=True).returncode != 0:
+        save(ready="", test_only="")
+        say(f"{seen_by} wb-tester ran the Check on {short}, and workbench wrote its results in {rel}, but the "
+            "commit failed. Tell the user. Merge refuses this code until wb-tester passes it.")
+    proof = git("rev-parse", "--short", "HEAD")
+    failed = [s for s in steps if s.get("verdict") not in ("pass", "user")]
+    if failed:
+        save(ready="", test_only="")
+        lines = []
+        for i, f in enumerate(failed, 1):
+            lines += [f"{i}. {f.get('step', '')}", f"   {f.get('seen', '')}", f"   command: {f.get('command', '')}",
+                      "   output:"] + ["     " + line for line in str(f.get("output", "")).split("\n")]
+        say(f"{seen_by} wb-tester ran the Check on {short}, and {len(failed)} step{'' if len(failed) == 1 else 's'} "
+            f"failed. Its results are in the Proof, at {proof}:\n\n" + "\n".join(lines) + "\n\n"
+            "Run each failed command yourself. If it fails for you too, fix it on the branch as you fix a review "
+            "finding. If it passes for you, or wb-tester could not run it, show the user the step, wb-tester's "
+            "output and yours: the user decides. When your changes are committed, or if you changed nothing, "
+            f"run 'workbench ready {item}'. Then end your turn.")
+    save(tested=git("rev-parse", "HEAD"), test_only="")
+    users = sum(1 for s in steps if s.get("verdict") == "user")
+    say(f"{seen_by} wb-tester ran the Check on {short}, and each command step passed. Its results are in the "
+        f"Proof, at {proof}. {users} step{' is' if users == 1 else 's are'} the user's. Give the user the test "
+        "book, as \"Check and proof\" says.")
+
+
+# Review saw this code; wb-tester did not pass it yet.
+if state.get("test_only"):
+    test(f"review {state.get('count')} saw the code of {short} already, so no review ran.")
 
 # Only the agreed parts of the item changed since the last review, and the judge accepted them.
 if state.get("judge_only"):
     save(reviewed=ready, judge_only="")
-    say(f"review {state.get('count')} saw the code of {short} already, so no review ran. {demo}")
+    test(f"review {state.get('count')} saw the code of {short} already, so no review ran.")
 
 n = int(state.get("count") or 0) + 1
 report = report_for(str(n))
@@ -221,7 +308,7 @@ except (OSError, ValueError, KeyError, TypeError):
     # No review saw the code, so merge still refuses it.
     save(ready="")
     say(f"review {n} of {short} did not finish. Its output is in {report}. Tell the user. "
-        "Do not start the demo before a review finishes. Merge refuses this code until a review of it "
+        "Merge refuses this code until a review of it "
         "finishes. The user decides what follows.")
 
 lines = []
@@ -235,11 +322,13 @@ if blocked:
     # A review that could not run a part of the project did not see the code, so merge still refuses it.
     save(ready="")
     say(f"review {n} of {short} could not run a part of the project: {blocked.rstrip('.')}." + found
-        + "Tell the user. Do not start the demo before a review runs each part that the change touches. "
+        + "Tell the user. "
         "Merge refuses this code until a review runs each such part. The user decides what follows.")
 save(reviewed=ready, count=str(n))
 if not findings:
-    say(f"review {n} of {short} found no bug. {demo}")
+    test(f"review {n} of {short} found no bug.")
+rerun = (f"run 'workbench ready {item}' and end your turn: review {n} saw this code, so only wb-tester runs "
+         "the Check.")
 found = (f"review {n} of {short} found {len(findings)} bug{'' if len(findings) == 1 else 's'}:\n\n"
          + "\n".join(lines) + "\n\n")
 fixed = ("For each finding that you fix, paste its command and its output before and after the fix "
@@ -247,11 +336,11 @@ fixed = ("For each finding that you fix, paste its command and its output before
          f"'workbench ready {item}'.")
 if n < USER_DECIDES_FROM:
     say(found + "Run the command of each finding again. Drop each finding whose output you cannot "
-        f"reproduce. If no finding reproduces: {demo} "
+        f"reproduce. If no finding reproduces, {rerun} "
         "Otherwise, fix each finding that reproduces on the branch. Then run its command again. " + fixed)
 say(found + f"This was review {n}. From review {USER_DECIDES_FROM} on, the user decides about the "
     "findings. Run the command of each finding again. Show the user each finding, and whether its "
     "output reproduces. Do not fix a finding before the user answers. Then do what the user decided. "
-    + fixed + f" If the user decides on no change to the code: {demo}")
+    + fixed + f" If the user decides on no change to the code, {rerun}")
 PY
 )"

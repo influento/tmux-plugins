@@ -54,7 +54,8 @@
       "Edit(/.claude/agents/wb-demo.md)",
       "Edit(/.claude/agents/wb-judge.md)",
       "Edit(/.claude/agents/wb-worker.md)",
-      "Edit(/.claude/hooks/workbench-review)"
+      "Edit(/.claude/hooks/workbench-review)",
+      "Edit(/.claude/agents/wb-tester.md)"
     ]
   },
   "hooks": {
