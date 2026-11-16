@@ -636,7 +636,6 @@ a release has it, run `make test` against it.
 - Quote all variable expansions
 
 ### Git
-- P0 work happens on the `p0` branch and is merged before the v0.2.0 tag
 - Before every commit/push, audit the staged diff for sensitive information
   leaks: usernames, passwords, API keys, tokens, private IPs, email
   addresses, or any data that should not appear in a public repository. Flag
