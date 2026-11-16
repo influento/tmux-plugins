@@ -63,8 +63,8 @@ root `internal/`.
 Unit tests use synthetic data. Integration tests use `internal/tmux/tmuxtest`:
 
 - `tmuxtest.Start` runs a private tmux server in a sandbox with its own HOME
-  and XDG directories, and stubs for `notify-send`, `claude`, `swaymsg` and
-  `systemctl` first on PATH; `Calls(name)` returns what each stub received, parallel
+  and XDG directories, and stubs for `notify-send`, `claude`, `swaymsg`,
+  `systemctl`, `systemd-inhibit`, `busctl` and `loginctl` first on PATH; `Calls(name)` returns what each stub received, parallel
   calls included. The sandbox environment is an allowlist, so nothing
   reaches the user's desktop, tmux server or agent session, and its PATH
   leaves out the user's home, so installed copies in `~/.local/bin` never
@@ -563,6 +563,18 @@ Rules:
   what the program covers: the history, and the saved normal screen
   (`capture-pane -a`) up to the line above `#{alternate_saved_y}`. Capture
   removes files of panes neither live nor in a kept snapshot.
+- Scrollback is captured every `@revive_scrollback_interval`, and at a
+  shutdown or logout by the shutdown guard (`shutdown-guard`, one per
+  server, started by tmux-init; `internal/logind`). It holds a logind
+  delay lock (`systemd-inhibit --what=shutdown --mode=delay`) with
+  `shutdown-wait` under it, which waits on `PrepareForShutdown` (`busctl
+  wait`, systemd 257), saves and captures, then ends: logind waits for it
+  up to its `InhibitDelayMaxSec` (5 s). While a shutdown is under way
+  logind refuses a new lock; the guard takes one once it is cancelled.
+  Logout has no lock: tmux dies when the user's service manager stops,
+  `UserStopDelaySec` (10 s) after the last session, so the guard saves and
+  captures at a `SessionRemoved` that leaves the user `closing`. A power
+  cut, a crash or a forced reboot still loses up to one interval.
 - Known gaps: `exit` in the last shell runs no hook; swap, move, join and
   break of panes or windows have no `after-` hooks in 3.8, so the next
   save picks them up; a pane has no `@revive_pane` until its first save,

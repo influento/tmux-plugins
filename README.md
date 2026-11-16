@@ -69,7 +69,9 @@ windows, layouts, names, folders, programs (nvim, less, man, ssh, ...),
 scrollback, and each pane's `@revive_cmd`, which tmux-agent sets to resume an
 agent's conversation. Whatever closes tmux from outside (a reboot, logout,
 `kill-server`, a crash) comes back in full; what you close inside tmux stays
-closed. `tmux-revive --help` lists the subcommands.
+closed. Scrollback is captured every `@revive_scrollback_interval` (300 s),
+and with systemd 257 or later also as a reboot, poweroff or logout starts, so
+nothing printed before it is lost. `tmux-revive --help` lists the subcommands.
 
 ```tmux
 # last lines of tmux.conf: tmux-revive's hooks, at index [20]

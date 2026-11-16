@@ -38,12 +38,17 @@ const usage = `usage:
   tmux-revive shell-init zsh         zsh hooks: save on cd, and when a
                                      restorable program starts or ends
   tmux-revive tmux-init              set tmux-revive's hooks at index [20],
-                                     and start the scrollback timer
+                                     and start the scrollback timer and the
+                                     shutdown guard
   tmux-revive --version
 internal:
   tmux-revive paint FILE             print saved scrollback, then become the shell
   tmux-revive scrollback-loop        capture scrollback every
                                      @revive_scrollback_interval seconds
+  tmux-revive shutdown-guard         save and capture as a shutdown starts
+                                     (a logind delay lock) or the last login
+                                     session ends
+  tmux-revive shutdown-wait          the guard's run under the lock
 `
 
 // hookIndex is tmux-revive's slot in each tmux hook array; tmux-agent has
@@ -143,6 +148,16 @@ func (a *app) command(cmd string, args []string) error {
 			return errUsage
 		}
 		return a.scrollbackLoop()
+	case "shutdown-guard":
+		if len(args) != 0 {
+			return errUsage
+		}
+		return a.shutdownGuard()
+	case "shutdown-wait":
+		if len(args) != 0 {
+			return errUsage
+		}
+		return a.shutdownWait()
 	}
 	return errUsage
 }
@@ -332,14 +347,16 @@ func TmuxHookEvents() []string {
 // tmuxInit sets tmux-revive's hooks at its own index, so prefix r leaves no
 // duplicates and tmux-agent's index stays untouched. On a server that
 // already has sessions (prefix r, or the first run after an upgrade) it
-// also marks the server ready and saves. It starts the scrollback timer.
+// also marks the server ready and saves. It starts the scrollback timer
+// and the shutdown guard.
 func (a *app) tmuxInit(ctx context.Context) error {
 	var args []string
 	for _, ev := range saveHooks {
 		args = append(args, "set-hook", "-g", fmt.Sprintf("%s[%d]", ev, hookIndex), saveCommand, ";")
 	}
 	args = append(args, "set-hook", "-g", fmt.Sprintf("after-set-option[%d]", hookIndex), optionHook, ";")
-	args = append(args, "run-shell", "-b", "tmux-revive scrollback-loop")
+	args = append(args, "run-shell", "-b", "tmux-revive scrollback-loop", ";")
+	args = append(args, "run-shell", "-b", "tmux-revive shutdown-guard")
 	if _, err := a.tmux.RunAll(ctx, args...); err != nil {
 		return err
 	}
@@ -507,24 +524,11 @@ func termSize(fd int) (rows, cols int, err error) {
 // loop runs per server: tmux-init starts one on every run, and the others
 // find the lock taken and end.
 func (a *app) scrollbackLoop() error {
-	socket, _, _ := strings.Cut(a.getenv("TMUX"), ",")
-	h := fnv.New64a()
-	h.Write([]byte(socket))
-	unlock, ok, err := lockfile.TryLock(filepath.Join(a.r.LockDir, fmt.Sprintf("scrollback-%x.lock", h.Sum64())))
+	unlock, alive, ok, err := a.perServer("scrollback")
 	if err != nil || !ok {
 		return err
 	}
 	defer unlock()
-	alive := func() bool {
-		if socket != "" {
-			_, err := os.Stat(socket)
-			return err == nil
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, err := a.tmux.Run(ctx, "list-sessions")
-		return err == nil
-	}
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		interval := a.r.ScrollbackInterval(ctx)
@@ -542,16 +546,46 @@ func (a *app) scrollbackLoop() error {
 	}
 }
 
+// perServer takes the lock of one long-running process per server, named
+// name, and returns a check that the server still runs. ok is false when
+// another process holds the lock.
+func (a *app) perServer(name string) (unlock func(), alive func() bool, ok bool, err error) {
+	socket, _, _ := strings.Cut(a.getenv("TMUX"), ",")
+	h := fnv.New64a()
+	h.Write([]byte(socket))
+	unlock, ok, err = lockfile.TryLock(filepath.Join(a.r.LockDir, fmt.Sprintf("%s-%x.lock", name, h.Sum64())))
+	if err != nil || !ok {
+		return nil, nil, ok, err
+	}
+	alive = func() bool {
+		if socket != "" {
+			_, err := os.Stat(socket)
+			return err == nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, err := a.tmux.Run(ctx, "list-sessions")
+		return err == nil
+	}
+	return unlock, alive, true, nil
+}
+
 // tick is one round of the scrollback timer: a save, which also sees
 // programs started since the last tmux event and gives new panes their
 // ids, then a capture, which keeps only panes with an id.
 func (a *app) tick() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	a.saveAndCapture(ctx, "timed")
+}
+
+// saveAndCapture saves, then captures every pane's scrollback; why names
+// the occasion in the log.
+func (a *app) saveAndCapture(ctx context.Context, why string) {
 	if _, err := a.r.Save(ctx, 0); err != nil {
-		a.store.Logf(time.Now(), "timed save: %v", err)
+		a.store.Logf(time.Now(), "%s save: %v", why, err)
 	}
 	if err := a.r.Capture(ctx); err != nil {
-		a.store.Logf(time.Now(), "scrollback capture: %v", err)
+		a.store.Logf(time.Now(), "%s scrollback capture: %v", why, err)
 	}
 }
