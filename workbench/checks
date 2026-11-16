@@ -1,0 +1,2 @@
+make vet
+bash go-gate/scripts/gate.sh

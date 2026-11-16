@@ -48,7 +48,13 @@
       "Bash(go -* env * -u *)",
       "Bash(go run *@*)",
       "Bash(go -* run *@*)",
-      "Bash(go * -modfile*)"
+      "Bash(go * -modfile*)",
+      "Edit(/.claude/rules/workbench.md)",
+      "Edit(/.claude/agents/wb-reviewer.md)",
+      "Edit(/.claude/agents/wb-demo.md)",
+      "Edit(/.claude/agents/wb-judge.md)",
+      "Edit(/.claude/agents/wb-worker.md)",
+      "Edit(/.claude/hooks/workbench-review)"
     ]
   },
   "hooks": {
@@ -59,6 +65,15 @@
             "type": "command",
             "command": "bash go-gate/scripts/stop-hook.sh",
             "timeout": 600
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workbench-review",
+            "timeout": 1800
           }
         ]
       }
@@ -74,5 +89,6 @@
         ]
       }
     ]
-  }
+  },
+  "autoMemoryEnabled": false
 }
