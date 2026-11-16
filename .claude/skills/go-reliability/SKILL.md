@@ -99,6 +99,10 @@ slog.Error("user lookup failed", "error", err, "user_id", userID, "path", path)
 
 ---
 
+### When a Linter Reports Something
+
+Fix the finding. Do not write `//nolint` or `//lint:ignore`: the comment hides the finding from every later reader and review, and a project's gate may refuse it. A rule that is wrong for the whole project is turned off by name in the linter config, which the user decides. To drop an error on purpose, assign it to `_`: `_ = logger.Sync()`. To keep a cause's type out of a returned error, format its text: `fmt.Errorf("invalid JSON: %s", err.Error())`.
+
 ## Safety
 
 ### Nil Safety

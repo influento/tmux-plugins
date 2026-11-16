@@ -31,7 +31,7 @@ golangci-lint linters             # list available linters
 | Performance | perfsprint, unconvert, ineffassign, goconst | Unnecessary conversions, dead assigns |
 | Security & resources | gosec, bodyclose, sqlclosecheck, rowserrcheck, noctx, containedctx, fatcontext | Vulnerabilities, leaks (HTTP, SQL), context misuse |
 | Testing | thelper, paralleltest, testifylint, usetesting | Test hygiene |
-| Modernization | modernize, exptostd, intrange, usestdlibvars, nolintlint | Modern Go idioms, lint hygiene |
+| Modernization | modernize, exptostd, intrange, usestdlibvars | Modern Go idioms |
 
 ### Key Linters Explained
 
@@ -42,26 +42,10 @@ golangci-lint linters             # list available linters
 - **sqlclosecheck** — ensures `sql.Rows` and `sql.Stmt` are closed. It misses pgx rows entirely
 - **rowserrcheck** — ensures `sql.Rows.Err()` is checked after iteration. On pgx (`pgx.Conn` and `pgxpool.Pool`) only with `rowserrcheck.packages: [github.com/jackc/pgx/v5]`. With pgx, prefer `pgx.CollectRows` / `pgx.ForEachRow`: they close the rows and return `rows.Err()`, so neither linter is needed
 - **modernize** — detects code rewritable with newer Go features (golangci-lint v2.6.0+)
-- **nolintlint** — enforces `//nolint` directives specify linter name + justification
 
-### Suppressing Lint Warnings
+### When a Linter Reports Something
 
-```go
-//nolint:errcheck // fire-and-forget logging, error is not actionable
-_ = logger.Sync()
-```
-
-Rules:
-1. MUST specify the linter name: `//nolint:errcheck` not `//nolint`
-2. MUST include a justification comment
-3. NEVER suppress security linters without strong reason
-
-**When to fix vs suppress:**
-
-| Fix always | OK to suppress with justification |
-| --- | --- |
-| errcheck, govet, staticcheck, gosec, bodyclose, sqlclosecheck | funlen (orchestration functions), gocyclo (complex but clear) |
-| nilerr, forcetypeassert, rowserrcheck | dupl (intentional parallel structure), goconst (context-specific) |
+Fix the finding. Do not write `//nolint` or `//lint:ignore`: the comment hides the finding from every later reader and review, and a project's gate may refuse it. A rule that is wrong for the whole project is turned off by name in the linter config, which the user decides. To drop an error on purpose, assign it to `_`: `_ = logger.Sync()`. To keep a cause's type out of a returned error, format its text: `fmt.Errorf("invalid JSON: %s", err.Error())`.
 
 ### Recommended Config Thresholds
 
@@ -70,7 +54,6 @@ Key settings for `.golangci.yml`:
 - `funlen` max lines: 120, max statements: 80
 - `dupl` threshold: 100 tokens
 - `goconst` min length: 3 chars, min occurrences: 4
-- `nolintlint` with `require-explanation: true`, `require-specific: true`
 - `rowserrcheck` with `packages: [github.com/jackc/pgx/v5]` on pgx projects
 - `formatters.settings.gofumpt.extra: {group-params: true, clothe-returns: true}` (golangci-lint v2.13+; the older `extra-rules: true` is deprecated)
 
