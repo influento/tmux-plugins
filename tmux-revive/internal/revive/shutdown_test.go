@@ -4,9 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -22,7 +20,7 @@ import (
 // loginctl reads the user's state from $HOME/user-state.
 func stubLogind(t *testing.T, e *env) {
 	t.Helper()
-	e.Stub(t, "systemd-inhibit", "#!/bin/sh\n"+tmuxtest.RecordCall+`echo $$ >> "$HOME/pids"
+	e.Stub(t, "systemd-inhibit", "#!/bin/sh\necho $$ >> \"$HOME/pids\"\n"+tmuxtest.RecordCall+`
 while [ $# -gt 0 ]; do case $1 in --*) shift ;; *) break ;; esac; done
 "$@" & child=$!
 echo $child >> "$HOME/pids"
@@ -32,7 +30,7 @@ if cp -r "$XDG_STATE_HOME/tmux-revive/scrollback" "$HOME/release.tmp.$$" 2>/dev/
 fi
 exit $rc
 `)
-	e.Stub(t, "busctl", "#!/bin/sh\n"+tmuxtest.RecordCall+`echo $$ >> "$HOME/pids"
+	e.Stub(t, "busctl", "#!/bin/sh\necho $$ >> \"$HOME/pids\"\n"+tmuxtest.RecordCall+`
 take() {
   while ! mv "$HOME/$1" "$HOME/$1.$$" 2>/dev/null; do
     [ -d "$TMUXTEST_CALLS" ] || exit 1
@@ -179,20 +177,32 @@ func TestShutdownGuardEndsWithItsServer(t *testing.T) {
 	e.waitWaits(t, "PrepareForShutdown", 1)
 	e.waitWaits(t, "SessionRemoved", 1)
 	e.mustTmux(t, "kill-server")
+	data, err := os.ReadFile(filepath.Join(e.Home, "pids"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pids := strings.Fields(string(data))
+	var left []string
+	defer func() {
+		for _, pid := range left {
+			stat, _ := os.ReadFile(filepath.Join("/proc", pid, "stat")) // gone since: empty
+			t.Logf("left running: %s", stat)
+		}
+	}()
 	tmuxtest.WaitFor(t, 5*time.Second, "the guard's processes to end", func() bool {
-		data, err := os.ReadFile(filepath.Join(e.Home, "pids"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, f := range strings.Fields(string(data)) {
-			pid, err := strconv.Atoi(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if syscall.Kill(pid, 0) == nil {
-				return false
-			}
-		}
-		return true
+		left = slices.DeleteFunc(slices.Clone(pids), ended)
+		return len(left) == 0
 	})
+}
+
+// ended reports whether the process pid has exited: gone, or a zombie
+// (a container's first process may never reap the orphans it adopts).
+func ended(pid string) bool {
+	stat, err := os.ReadFile(filepath.Join("/proc", pid, "stat"))
+	if err != nil {
+		return true
+	}
+	// The state follows the command, which is in parentheses.
+	i := strings.LastIndex(string(stat), ") ")
+	return i >= 0 && strings.HasPrefix(string(stat)[i+2:], "Z")
 }
