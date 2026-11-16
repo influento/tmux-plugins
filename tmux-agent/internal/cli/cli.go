@@ -84,7 +84,7 @@ const usage = `usage:
                                        the rows pick lists in the tree: the windows whose
                                        session or window name holds every word of QUERY;
                                        --fzf takes the query, view and width from fzf
-  tmux-agent pick-key KEY [ARG]        what tab, enter or place CLIENT (the cursor to its
+  tmux-agent pick-key KEY [ARG]        what tab, resize, enter or place CLIENT (the cursor to its
                                        window) does in the panel, as fzf actions
   tmux-agent kill TARGET               kill a picker row's session, window or pane,
                                        unless it ends the last session
@@ -1087,6 +1087,11 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 	case "tab":
 		st = st.Next()
 		fmt.Fprintln(a.stdout, "change-header-label("+st.String()+")+change-header("+ui.Header(st.View, width)+")+"+list)
+	case "resize":
+		// Rows and the header have the width fzf had when they were read:
+		// a panel alone in its window (a closed window leaves it there for
+		// a moment) or zoomed is as wide as the window.
+		fmt.Fprintln(a.stdout, "change-header("+ui.Header(st.View, width)+")+"+list)
 	case "place":
 		// The row of CLIENT's window in the rows pick-rows noted last,
 		// which fzf shows. Without them the cursor stays. The window is

@@ -352,7 +352,9 @@ Rules:
   width. fzf only
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
   have two lines) and filters by session and window name, so a session's
-  name keeps all its windows; `pick-key` gives Tab's and Enter's actions.
+  name keeps all its windows; rows have the width fzf had when it read
+  them, so fzf's resize reads them again (a panel alone in its window,
+  which a closed window leaves for a moment, is as wide as the window); `pick-key` gives Tab's and Enter's actions.
   After a reload, fzf's result event, and the follow hook for a client
   moved some other way, run `pick-key place`: the cursor goes to the
   client's window, read at that moment, in the rows `pick-rows` noted.

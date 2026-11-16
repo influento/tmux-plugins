@@ -171,6 +171,7 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		fmt.Sprintf("--bind=ctrl-x:execute-silent([ -z {4} ] || %s kill {4})+reload(%s)", opts.Self, list),
 		"--bind=tab:transform:" + opts.Self + " pick-key tab",
 		"--bind=btab:transform:" + opts.Self + " pick-key tab",
+		"--bind=resize:transform:" + opts.Self + " pick-key resize",
 		"--bind=down:" + skipDown, "--bind=ctrl-j:" + skipDown, "--bind=ctrl-n:" + skipDown, "--bind=scroll-down:" + skipDown,
 		"--bind=up:" + skipUp, "--bind=ctrl-k:" + skipUp, "--bind=ctrl-p:" + skipUp, "--bind=scroll-up:" + skipUp,
 		// A new list: a search starts on its first window; a cursor on a
