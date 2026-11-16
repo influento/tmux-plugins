@@ -45,7 +45,8 @@ root `internal/`.
 - `make release V=vX.Y.Z`: on a clean `main` that matches `origin/main`, with
   a version after the last tag, runs the tests, then tags and pushes. There is
   no tag hook: every release is an explicit command. The first release with
-  three plugins is v0.2.0.
+  three plugins is v0.2.0. An agent runs it, at the user's go; ask before
+  every push to `main` and every tag.
 - CI (`ci.yml`) runs in an `archlinux:base-devel` container on amd64, as a
   non-root user, with `TMUXTEST_REQUIRE=1` so a missing tmux fails instead of
   skipping. It checks out dotfiles at the pinned `DOTFILES_REF` for the
@@ -88,6 +89,13 @@ Unit tests use synthetic data. Integration tests use `internal/tmux/tmuxtest`:
 
 Fixtures and test names use neutral names (`proj-a`, `host-b`): no real
 window, host or project names, session ids or home paths.
+
+Keep the machine's load low: one test command at a time, no `-count=N`
+loops, stress runs or parallel copies of a test (each session's go-gate
+Stop hook runs `go test` too). Check `uptime` after a run. Ask the user
+before a k-of-N run of an intermittent failure, and keep N small and
+serial. A flaky test gets its cause found and proven, never a tolerance:
+no retry, no longer timeout.
 
 ## Plugin: tmux-warp
 
@@ -284,7 +292,8 @@ Rules:
   window's PATH is the caller's (tmux takes it from a client with no
   session); its other variables come from tmux's environment. `close`
   matches window names in every session and closes the caller's own
-  window last, through the panel's kill.
+  window last, through the panel's kill. Agents run workbench, not the
+  user: tmux-agent has no keys, menus or palette for workbench commands.
 - Tasks (T1): `start --task ID --source S [--title T]` binds the new
   window's pane (`@agent_task` source/id, `@agent_task_title`) to an open
   task, `$XDG_STATE_HOME/tmux-agent/tasks/<source>/<id>.json`, opened if
@@ -591,13 +600,27 @@ tmux.conf binds: `bind s run-shell '~/.local/bin/tmux-warp.sh'`
 
 tmux.conf places `@attention_status` in the status line and
 `@attention_win_mark` in the window list; tmux-agent draws both. tmux.conf
-sets only the colours, of the flags and of the panel.
+sets only the colours, of the flags and of the panel: named Catppuccin
+Mocha colours, never blends. Propose a colour by its name and hex.
 
 At the cutover, tmux-revive takes over from tmux-resurrect, tmux-continuum
 and tmux-attach. The terminal starts `tmux-revive attach`; tmux.conf runs
 `tmux-revive tmux-init` and binds `C-r` to `tmux-revive restore` and `X` to
 `forget-session` before `kill-session`; zshrc evals
 `tmux-revive shell-init zsh`. The README has the exact lines.
+
+## Working here
+
+- Judge a proposed improvement by its tails on the user's real data
+  (transcripts, sessions): median, p90, p99 and worst. A change that helps
+  only the median is not worth building. For analytics, collect every
+  field first (`--json`), then decide with the user what the table shows.
+- A UI change (picker, panel, popup) gets a live demo before any layout
+  question: a dev build from `bin/` on a throwaway tmux server
+  (`tmux -L <name> -f <demo.conf>`, its own HOME and XDG_STATE_HOME so
+  tmux-revive never saves it) in a ghostty window opened with `swaymsg
+  exec`. Iterate from the user's screenshots. Take a screenshot only when
+  swaymsg shows the demo window focused.
 
 ## Images in tmux
 
