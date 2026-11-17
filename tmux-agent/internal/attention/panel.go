@@ -114,22 +114,75 @@ type PickRow struct {
 	Also    []string // on an item's row, its other windows ("=name:index")
 	Text    string   // line one, with colour escapes
 	Labels  []string // line two: the pane's labels; none, no line
-	indent  int      // the column line two starts at
-	width   int      // the columns of a row
-	dimText string   // the dim colour escape, for line two
+	// Key names the row across reloads, as its target does not: the
+	// panel's join renumbers its window's panes. tmux's id of the pane
+	// the row stands for, of the window for a split window's row, of the
+	// session for a fold; "" for a label. tmux takes it as a target.
+	Key string
+	// Keys also name the row: on a task's row, its other panes' keys,
+	// as the pane it stands for changes with the flags; on a window's row
+	// that stands for one pane, the window's id.
+	Keys []string
+	// Open is the cursor's row: it shows its whole name and labels.
+	Open    bool
+	whole   string // Text with the whole name, when Text cuts it; else ""
+	indent  int    // the column line two starts at
+	width   int    // the columns of a row
+	dimText string // the dim colour escape, for line two
+}
+
+// Named reports whether key names the row.
+func (r PickRow) Named(key string) bool {
+	return key != "" && (r.Key == key || slices.Contains(r.Keys, key))
 }
 
 // IsLabel reports whether the row is a label, not a place to go.
 func (r PickRow) IsLabel() bool { return r.Label != "" }
 
+// labelsIndent is how much further than the first the open row's next
+// lines of labels start.
+const labelsIndent = 2
+
 // Display is the row as the panel shows it: line one, and the labels on
-// line two when there are any.
+// line two when there are any. An open row shows its whole name and
+// labels over as many lines as they take.
 func (r PickRow) Display() string {
-	if len(r.Labels) == 0 {
-		return r.Text
+	text := r.Text
+	if r.Open && r.whole != "" {
+		text = r.whole
 	}
-	text := truncEllipsis(strings.Join(r.Labels, " · "), max(r.width-r.indent, 1))
-	return r.Text + "\n" + strings.Repeat(" ", r.indent) + r.dimText + text + "\x1b[0m"
+	if len(r.Labels) == 0 {
+		return text
+	}
+	labels, room := strings.Join(r.Labels, " · "), max(r.width-r.indent, 1)
+	pad := strings.Repeat(" ", r.indent)
+	if !r.Open || utf8.RuneCountInString(labels) <= room {
+		return text + "\n" + pad + r.dimText + truncEllipsis(labels, room) + "\x1b[0m"
+	}
+	lines := wrap(labels, room, max(room-labelsIndent, 1))
+	return text + "\n" + pad + r.dimText + strings.Join(lines, "\x1b[0m\n"+pad+strings.Repeat(" ", labelsIndent)+r.dimText) + "\x1b[0m"
+}
+
+// wrap cuts s into lines of at most first characters, then rest, each
+// broken after the last '-' or space it has; one with none is cut at its
+// width. A space at a break goes.
+func wrap(s string, first, rest int) []string {
+	r := []rune(s)
+	var out []string
+	for w := first; len(r) > w; w = rest {
+		cut := w
+		if r[w] != ' ' {
+			for i := w; i > 0; i-- {
+				if r[i-1] == '-' || r[i-1] == ' ' {
+					cut = i
+					break
+				}
+			}
+		}
+		out = append(out, strings.TrimRight(string(r[:cut]), " "))
+		r = []rune(strings.TrimLeft(string(r[cut:]), " "))
+	}
+	return append(out, string(r))
 }
 
 // shownLabels are a row's labels as line two shows them: the branch (a
@@ -429,6 +482,12 @@ func itemRow(rows []Row, title string, p Panel) PickRow {
 		}
 	}
 	row.Labels = shownLabels(r)
+	row.Key = r.Pane
+	for _, o := range rows {
+		if o.Pane != r.Pane {
+			row.Keys = append(row.Keys, o.Pane)
+		}
+	}
 	return row
 }
 
@@ -484,6 +543,16 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		row = cellOf(r, r.Window, p).render(p)
 	}
 	row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, w.target(), w.target()
+	row.Key = r.Pane
+	switch len(busy) {
+	case 0: // its window: a go keeps the pane the window has focused
+		row.Key = r.WindowID
+	case 1:
+		// The window's id too: with a second busy pane, or none, the
+		// window's row is keyed by it, and it stays the row open as a
+		// pane's flag comes or goes.
+		row.Keys = []string{r.WindowID}
+	}
 	if len(busy) < 2 {
 		row.Labels = shownLabels(r)
 		if len(w.panes) > 1 && len(busy) == 1 {
@@ -491,6 +560,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		}
 		return []PickRow{row}
 	}
+	row.Key = r.WindowID // each pane's row has the pane's
 	out := []PickRow{row}
 	panes := slices.Clone(w.panes)
 	slices.SortFunc(panes, func(a, b paneOf) int { return cmp.Compare(a.index, b.index) })
@@ -507,6 +577,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		row.Labels = shownLabels(pr)
 		target := w.target() + "." + strconv.Itoa(pn.index)
 		row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, target, target
+		row.Key = pr.Pane
 		out = append(out, row)
 	}
 	return out
@@ -524,7 +595,7 @@ func foldRow(s Session, ws []*window, more bool, p Panel) PickRow {
 	if len(ws) != 1 {
 		text += "s"
 	}
-	return PickRow{Session: s.Name, Target: "=" + s.Name + ":", Fold: s.ID,
+	return PickRow{Session: s.Name, Target: "=" + s.Name + ":", Fold: s.ID, Key: s.ID,
 		Text: ansiFg(p.Col.Dim) + "   " + text + "\x1b[0m"}
 }
 
@@ -604,6 +675,7 @@ func renderState(rows []Row, p Panel) []PickRow {
 				r := u.rows[0]
 				row := cellOf(r, r.Window, p).render(p)
 				row.Session, row.Window, row.Target, row.Kill = r.Session, r.Window, "="+r.Target, "="+r.Target
+				row.Key = r.Pane
 				row.Labels = shownLabels(r)
 				out = append(out, row)
 			}
@@ -714,27 +786,52 @@ func (c cell) render(p Panel) PickRow {
 	if c.role != "" {
 		role = " " + ansiFg(p.Col.Role) + padRight(truncEllipsis(c.role, roleW), roleW) + "\x1b[0m"
 	}
-	var b strings.Builder
+	row := PickRow{indent: c.leadLen + 1, width: p.Width, dimText: ansiFg(p.Col.Dim)}
+	colour := func(s string) string { return style + s + "\x1b[0m" }
+	shown := func(name string) string { return colour(highlight(name, p.Words)) }
 	nameLen := utf8.RuneCountInString(c.name)
 	if nameLen+tagLen <= nameArea {
-		b.WriteString(c.lead + " " + style + highlight(c.name, p.Words) + "\x1b[0m" + tag)
+		row.Text = c.lead + " " + shown(c.name) + tag
 		if role != "" || right != "" {
-			b.WriteString(strings.Repeat(" ", nameArea-nameLen-tagLen) + role + right)
+			row.Text += strings.Repeat(" ", nameArea-nameLen-tagLen) + role + right
 		}
-	} else {
-		name := truncEllipsis(c.name, max(p.Width-c.leadLen-1-tagLen, 1))
-		b.WriteString(c.lead + " " + style + highlight(name, p.Words) + "\x1b[0m" + tag)
-		if role != "" || right != "" {
-			b.WriteString("\n" + strings.Repeat(" ", c.leadLen+1))
-			if role != "" {
-				b.WriteString(strings.Repeat(" ", nameArea) + role)
-			} else {
-				b.WriteString(strings.Repeat(" ", area))
-			}
-			b.WriteString(right)
-		}
+		return row
 	}
-	return PickRow{Text: b.String(), indent: c.leadLen + 1, width: p.Width, dimText: ansiFg(p.Col.Dim)}
+	room := max(p.Width-c.leadLen-1-tagLen, 1)
+	below := ""
+	if role != "" || right != "" {
+		below = "\n" + strings.Repeat(" ", c.leadLen+1)
+		if role != "" {
+			below += strings.Repeat(" ", nameArea) + role
+		} else {
+			below += strings.Repeat(" ", area)
+		}
+		below += right
+	}
+	name := truncEllipsis(c.name, room)
+	row.Text = c.lead + " " + shown(name) + tag + below
+	if name != c.name {
+		row.whole = c.lead + " " + wrapped(c.name, room, row.indent, p.Words, colour) + tag + below
+	}
+	return row
+}
+
+// wrapped is name over lines of room characters, each in colour, the
+// lines after the first indent columns in. A match of words is
+// underlined on each line it falls on.
+func wrapped(name string, room, indent int, words []string, colour func(string) string) string {
+	lines := wrap(name, room, room)
+	runes, marked := []rune(name), matched(name, words)
+	at := 0
+	for i, l := range lines {
+		for i > 0 && at < len(runes) && runes[at] == ' ' { // the break's spaces, which wrap trims
+			at++
+		}
+		n := utf8.RuneCountInString(l)
+		lines[i] = colour(underline(runes[at:at+n], marked[at:at+n]))
+		at += n
+	}
+	return strings.Join(lines, "\n"+strings.Repeat(" ", indent))
 }
 
 // padLeft and padRight fill s with spaces to n characters.
@@ -757,10 +854,12 @@ const minName = 14
 // the name.
 func line(lead string, leadLen int, name, nameFg, right, tag string, gauge Row, p Panel) PickRow {
 	nameLen, rightLen := utf8.RuneCountInString(name), utf8.RuneCountInString(right)
+	wholeRight := right
 	room := p.Width - leadLen - 1 // after the lead and a space
 	if tag != "" {
 		room -= utf8.RuneCountInString(tag) + 1
 	}
+	nameRoom := max(room, 1) // the name's on a line of its own
 	share, shareFg := gaugeOf(gauge, p.Col)
 	if share != "" {
 		room -= utf8.RuneCountInString(share) + 1
@@ -776,27 +875,55 @@ func line(lead string, leadLen int, name, nameFg, right, tag string, gauge Row, 
 	}
 	shown := truncEllipsis(name, max(room, 1))
 	shownLen := utf8.RuneCountInString(shown)
-	var b strings.Builder
-	b.WriteString(lead + " " + nameFg + highlight(shown, p.Words))
-	if nameFg != "" {
-		b.WriteString("\x1b[0m")
-	}
-	if tag != "" {
-		b.WriteString(" " + ansiFg(p.Col.Working) + tag + "\x1b[0m")
-	}
-	if share != "" || right != "" {
-		b.WriteString(strings.Repeat(" ", max(room-shownLen, 0)+1))
-	}
-	if share != "" {
-		b.WriteString(ansiFg(shareFg) + share + "\x1b[0m")
-		if right != "" {
-			b.WriteString(" ")
+	colour := func(s string) string {
+		s = nameFg + s
+		if nameFg != "" {
+			s += "\x1b[0m"
 		}
+		return s
 	}
-	if right != "" {
-		b.WriteString(ansiFg(p.Col.Dim) + right + "\x1b[0m")
+	tagText := ""
+	if tag != "" {
+		tagText = " " + ansiFg(p.Col.Working) + tag + "\x1b[0m"
 	}
-	return PickRow{Text: b.String(), indent: leadLen + 1, width: p.Width, dimText: ansiFg(p.Col.Dim)}
+	tail := func(right string) string {
+		switch {
+		case share != "" && right != "":
+			return ansiFg(shareFg) + share + "\x1b[0m " + ansiFg(p.Col.Dim) + right + "\x1b[0m"
+		case share != "":
+			return ansiFg(shareFg) + share + "\x1b[0m"
+		case right != "":
+			return ansiFg(p.Col.Dim) + right + "\x1b[0m"
+		}
+		return ""
+	}
+	row := PickRow{indent: leadLen + 1, width: p.Width, dimText: ansiFg(p.Col.Dim)}
+	row.Text = lead + " " + colour(highlight(shown, p.Words)) + tagText
+	if share != "" || right != "" {
+		row.Text += strings.Repeat(" ", max(room-shownLen, 0)+1) + tail(right)
+	}
+	if shown == name {
+		return row
+	}
+	// Open, the share and the right part go on a line below the name, at
+	// the row's right edge.
+	row.whole = lead + " " + wrapped(name, nameRoom, row.indent, p.Words, colour) + tagText
+	if share != "" || wholeRight != "" {
+		avail := p.Width - row.indent
+		if share != "" {
+			avail -= utf8.RuneCountInString(share) + 1
+		}
+		right := truncEllipsis(wholeRight, max(avail, 0))
+		tailLen := utf8.RuneCountInString(right)
+		if share != "" {
+			tailLen += utf8.RuneCountInString(share)
+			if right != "" {
+				tailLen++
+			}
+		}
+		row.whole += "\n" + strings.Repeat(" ", max(p.Width-tailLen, row.indent)) + tail(right)
+	}
+	return row
 }
 
 // truncEllipsis cuts s to n characters, the last an ellipsis when it cuts.

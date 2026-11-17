@@ -25,6 +25,29 @@ Open bugs, features and ideas for tmux-plugins, one entry each.
   panel move, each switch the follow hook sees and each place, with the cause
   and `$FZF_ACTION`. When it happens again, note the minute and read
   `$XDG_STATE_HOME/tmux-agent/log` around it.
+- Conformance hook tests fail inside a Claude Code Stop hook (bug): the
+  Stop cases of `tmux-agent/internal/conformance` (TestHookStopFlagsDone,
+  TestHookStopWithSubagentsKeepsWorking, TestHookEnd/other) find the pane
+  "working", want "done", when `go test` runs as one of two Stop hooks of
+  a Claude Code session that start in the same second (go-gate's and
+  workbench's review). The hook runs as a child of `go test`, so its check
+  for the agent's other Stop hooks (`OtherHooksRun`) walks out of the
+  sandbox to the real Claude Code process and counts its other child. Shown
+  on 2026-11-16: a background `sleep 20` started from Claude Code just
+  before `go test -count=1 -run TestHookStopFlagsDone
+  ./tmux-agent/internal/conformance/` fails it the same way; the run alone
+  passes.
+- Panel: a split window's pane rows show no number. They show tmux's
+  pane index (".1", ".2"), which the user finds odd; in the window the
+  panel has joined they show ".2", ".3", as the panel takes index 1
+  (seen at the demo of the open row, 2026-11-16; main does the same).
+- Panel: a search's cursor goes back to its first row (bug): with a search
+  in the panel, a move to a row of another window takes the client there,
+  then the cursor jumps back to the search's first row and the client
+  follows it. The panel's join reloads the panel, and the result event
+  puts the cursor on row 2 after every reload while a query is set. The
+  same on main before the open-row item (seen 2026-11-16 on a throwaway
+  server). A move between the panes of one split window stays.
 - Panel: the cursor shows one frame on another row (bug): when rows above the
   cursor come or go in a reload, fzf can draw the cursor for one frame on
   another row before place puts it back. Minor and cosmetic. Check first

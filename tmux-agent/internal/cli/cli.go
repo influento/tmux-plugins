@@ -80,10 +80,11 @@ const usage = `usage:
                                        +|-|N (prefix n, p, 1-9), layout CLIENT NAME|next|
                                        previous (preset layouts), close CLIENT; for the
                                        hooks: follow, keep, reload
-  tmux-agent pick-rows [--fzf] [QUERY]
+  tmux-agent pick-rows [--fzf [--open=KEY]] [QUERY]
                                        the rows pick lists in the tree: the windows whose
                                        session or window name holds every word of QUERY;
-                                       --fzf takes the query, view and width from fzf
+                                       --fzf takes the query, view and width from fzf,
+                                       and --open=KEY shows that row's whole name and labels
   tmux-agent pick-key KEY [ARG]        what tab, resize, enter or place CLIENT (the cursor to its
                                        window) does in the panel, as fzf actions
   tmux-agent kill TARGET               kill a picker row's session, window or pane,
@@ -866,13 +867,20 @@ func (a *app) panelOf() attention.Panel {
 // its reloads and a look from the shell. With --fzf they are for fzf: the
 // query, the view and the open folds, and the width come from the
 // variables fzf sets, and each row ends in a NUL, as a row can have two
-// lines.
+// lines or more. The row with key KEY of --open=KEY opens, else the row
+// open in the rows fzf shows.
 func (a *app) pickRows(ctx context.Context, args []string) error {
 	p := attention.Panel{View: attention.TreeView, Width: ui.PanelWidth - 1}
 	end := "\n"
+	var open []string
 	if len(args) > 0 && args[0] == "--fzf" {
-		if len(args) > 1 {
+		switch {
+		case len(args) == 2 && strings.HasPrefix(args[1], "--open="):
+			open = []string{strings.TrimPrefix(args[1], "--open=")}
+		case len(args) > 1:
 			return errUsage
+		default:
+			open = a.openNoted()
 		}
 		p = a.panelOf()
 		end = "\x00"
@@ -884,6 +892,7 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	openKey(rows, open...)
 	for _, l := range ui.PickLines(rows) {
 		fmt.Fprint(a.stdout, l+end)
 	}
@@ -894,10 +903,57 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 	return nil
 }
 
+// openKey opens one row: the first whose own key is the first of keys
+// that is one, else the first that one of keys names. A split window's
+// row is keyed by the window's id, which also names the row of the
+// window's one busy pane.
+func openKey(rows []attention.PickRow, keys ...string) {
+	at := -1
+	for _, k := range keys {
+		if at = slices.IndexFunc(rows, func(r attention.PickRow) bool { return k != "" && r.Key == k }); at >= 0 {
+			break
+		}
+	}
+	if at < 0 {
+		at = slices.IndexFunc(rows, func(r attention.PickRow) bool { return slices.ContainsFunc(keys, r.Named) })
+	}
+	for i := range rows {
+		rows[i].Open = i == at
+	}
+}
+
+// openNoted are the keys of the row open in the rows notePlace noted
+// last, its own and the others that name it: the key it has can change
+// while it stays the row (a split window's row with one busy pane left, a
+// task's that stands for another pane); none for none.
+func (a *app) openNoted() []string {
+	for _, r := range a.noted() {
+		if r.Open {
+			return append([]string{r.Key}, r.Keys...)
+		}
+	}
+	return nil
+}
+
+// noted are the rows notePlace noted last; none when it noted none.
+func (a *app) noted() []placeRow {
+	path := a.panelSocket(a.getenv("TMUX_PANE"), ".place")
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	var rows []placeRow
+	if err != nil || json.Unmarshal(data, &rows) != nil {
+		return nil
+	}
+	return rows
+}
+
 // placeRow is what pick-key place needs of a row fzf shows.
 type placeRow struct {
-	Target, Fold, Session, Label string
-	Also                         []string `json:",omitempty"`
+	Target, Fold, Session, Label, Key string
+	Also, Keys                        []string `json:",omitempty"`
+	Open                              bool     `json:",omitempty"`
 }
 
 // notePlace keeps the rows fzf is about to show, for pick-key place: rows
@@ -911,7 +967,7 @@ func (a *app) notePlace(rows []attention.PickRow) {
 	}
 	noted := make([]placeRow, len(rows))
 	for i, r := range rows {
-		noted[i] = placeRow{r.Target, r.Fold, r.Session, r.Label, r.Also}
+		noted[i] = placeRow{Target: r.Target, Fold: r.Fold, Session: r.Session, Label: r.Label, Key: r.Key, Also: r.Also, Keys: r.Keys, Open: r.Open}
 	}
 	data, err := json.Marshal(noted)
 	if err == nil {
@@ -926,9 +982,10 @@ func (a *app) notePlace(rows []attention.PickRow) {
 // goWanted is the panel's go in the background, which its keys start
 // when none runs (the .going folder is there while one runs): it takes
 // the client to the row the keys noted last in .want, and again while
-// they note another. It notes each row it took in .gone. Before it ends
-// it removes .going, then looks once more: a key that found the folder
-// there noted its row before, and started no go.
+// they note another. It notes in .gone each row it is done with, taken
+// or given up on an error: a row in .want that is not in .gone is on its
+// way. Before it ends it removes .going, then looks once more: a key
+// that found the folder there noted its row before, and started no go.
 func (a *app) goWanted(ctx context.Context, client string) error {
 	pane := a.getenv("TMUX_PANE")
 	want, gone, going := a.panelSocket(pane, ".want"), a.panelSocket(pane, ".gone"), a.panelSocket(pane, ".going")
@@ -947,8 +1004,12 @@ func (a *app) goWanted(ctx context.Context, client string) error {
 	}()
 	for ctx.Err() == nil {
 		target, moved, err := a.side.GoWant(ctx, client, read)
-		if err == nil {
-			err = writeFileAtomic(gone, []byte(target))
+		done := target
+		if err != nil {
+			done = read()
+		}
+		if werr := writeFileAtomic(gone, []byte(done)); err == nil {
+			err = werr
 		}
 		a.debugf("sidebar go %s to %q, moved %v, FZF_ACTION %q", client, target, moved, a.getenv("FZF_ACTION"))
 		if err == nil && moved {
@@ -972,12 +1033,13 @@ func (a *app) goWanted(ctx context.Context, client string) error {
 		}
 		owned = going
 	}
+	_ = writeFileAtomic(gone, []byte(read())) // given up: ctx's error tells
 	return ctx.Err()
 }
 
 // placeRow is the row, from 1, place puts the panel's cursor on: the row
-// the keys noted last while a go to it is on its way (a go runs and
-// .gone is not that row) or the client shows its window; else the row of
+// the keys noted last while a go to it is on its way (.gone is not that
+// row) or the client shows its window; else the row of
 // the client's window, here, which the client went to some other way. A
 // fold's row stays: its go shows a window of another row. The keys then
 // note that row.
@@ -987,7 +1049,7 @@ func (a *app) placeRow(ctx context.Context, rows []attention.PickRow, here strin
 	want, gone, going := "", "", false
 	// A place that moves the cursor goes to the trace, with what it read.
 	trace := func(pos int, why string) {
-		if strconv.Itoa(pos) != a.getenv("FZF_POS") || rows[pos-1].Target != want {
+		if strconv.Itoa(pos) != a.getenv("FZF_POS") || rows[pos-1].Key != want {
 			a.tracef("place: client on %s, cursor row %s → %d %s: %s (.want %q, .gone %q, a go running %v)",
 				here, a.getenv("FZF_POS"), pos, rows[pos-1].Target, why, want, gone, going)
 		}
@@ -996,10 +1058,12 @@ func (a *app) placeRow(ctx context.Context, rows []attention.PickRow, here strin
 		want = string(data)
 		data, _ := os.ReadFile(gonePath) // none: no go took a row yet
 		gone = string(data)
-		if i := slices.IndexFunc(rows, func(r attention.PickRow) bool { return !r.IsLabel() && r.Target == want }); i >= 0 {
+		if i := slices.IndexFunc(rows, func(r attention.PickRow) bool { return !r.IsLabel() && r.Named(want) }); i >= 0 {
 			_, err := os.Stat(a.panelSocket(pane, ".going"))
 			going = err == nil
-			if going && gone != want {
+			// Not .going, which a go removes a moment before it looks
+			// at .want once more and takes it again.
+			if gone != want {
 				trace(i+1, "the row in .want, a go on its way")
 				return i + 1, nil
 			}
@@ -1022,7 +1086,7 @@ func (a *app) placeRow(ctx context.Context, rows []attention.PickRow, here strin
 		trace(pos, why)
 	}
 	if path != "" && pos <= len(rows) {
-		row := []byte(rows[pos-1].Target)
+		row := []byte(rows[pos-1].Key)
 		if err := errors.Join(writeFileAtomic(path, row), writeFileAtomic(gonePath, row)); err != nil {
 			a.logf("pick-key place: %v", err)
 		}
@@ -1101,13 +1165,8 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		if len(args) != 2 {
 			return errUsage
 		}
-		path := a.panelSocket(a.getenv("TMUX_PANE"), ".place")
-		if path == "" {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		var noted []placeRow
-		if err != nil || json.Unmarshal(data, &noted) != nil {
+		noted := a.noted()
+		if noted == nil {
 			return nil
 		}
 		_, here, err := a.where(ctx, args[1])
@@ -1116,13 +1175,19 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		}
 		rows := make([]attention.PickRow, len(noted))
 		for i, r := range noted {
-			rows[i] = attention.PickRow{Target: r.Target, Fold: r.Fold, Session: r.Session, Label: r.Label, Also: r.Also}
+			rows[i] = attention.PickRow{Target: r.Target, Fold: r.Fold, Session: r.Session, Label: r.Label, Key: r.Key, Also: r.Also, Keys: r.Keys}
 		}
 		pos, err := a.placeRow(ctx, rows, here)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.stdout, "unbind(focus)+pos(%d)+rebind(focus)\n", pos)
+		actions := fmt.Sprintf("unbind(focus)+pos(%d)+rebind(focus)", pos)
+		// The rows opened the row the cursor was on: the row it goes to
+		// opens in rows read again.
+		if pos <= len(rows) && !noted[pos-1].Open {
+			actions += "+reload(" + shell.Quote(a.self) + " pick-rows --fzf --open=" + shell.Quote(rows[pos-1].Key) + ")"
+		}
+		fmt.Fprintln(a.stdout, actions)
 	case "enter":
 		fold := ""
 		if len(args) > 1 {
@@ -1273,7 +1338,6 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	if err != nil {
 		return err
 	}
-	a.notePlace(rows) // not an older panel's in this pane
 	// The keys' files of an older panel in this pane go.
 	want, going := "", ""
 	if p := a.panelSocket(a.getenv("TMUX_PANE"), ".want"); p != "" {
@@ -1292,6 +1356,10 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 		startPane = origin
 	}
 	start := startRow(rows, startWindow)
+	if start <= len(rows) {
+		openKey(rows, rows[start-1].Key)
+	}
+	a.notePlace(rows) // not an older panel's in this pane
 	self := a.getenv("TMUX_PANE")
 	inPanel := false
 	if client != "" && self != "" {
@@ -1310,6 +1378,10 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 		if listen, err = a.listen(ctx, self); err != nil {
 			return err
 		}
+	}
+	var noted []string // outside a panel: the keys go themselves, and note the row
+	if listen == "" && want != "" {
+		noted = []string{want, a.panelSocket(self, ".gone")}
 	}
 	stopTick := func() {}
 	if listen != "" {
@@ -1333,7 +1405,7 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
 		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width,
-		Cursor: cursor, Listen: listen, Want: wantIf(listen != "", want), Going: going})
+		Cursor: cursor, Listen: listen, Want: wantIf(listen != "", want), Going: going, Noted: noted})
 	stopTick()
 	if listen != "" {
 		_ = os.Remove(listen) // fzf is gone; the panel may be too, so no tmux call

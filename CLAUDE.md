@@ -358,9 +358,19 @@ Rules:
   window lists its panes only when two or more run an agent or have a
   flag; with one, the window's row goes to that pane. A row's second line
   is its pane's labels (see below), the branch first, dim, cut to the
-  width. fzf only
+  width. The row under the cursor is open: its whole name and labels,
+  broken after a `-` or a space, its columns on the line below. fzf
+  shows a row only as it read it, so each move of the user's reads the
+  rows again: the focus event's reload opens the row by its key (fzf's
+  field 10: a pane's, window's or session's id, which the panel's join
+  does not renumber as it does a target's pane index). With no row under
+  the cursor fzf runs no command that names a field, so every other
+  reload opens the row the last rows had open (`.place`), and place,
+  when it moves the cursor, reads them again. During a search, the
+  result event's return to the first row skips a reload of the user's
+  move. fzf only
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
-  have two lines) and filters by session and window name, so a session's
+  have lines) and filters by session and window name, so a session's
   name keeps all its windows; rows have the width fzf had when it read
   them, so fzf's resize reads them again (a panel alone in its window,
   which a closed window leaves for a moment, is as wide as the window); `pick-key` gives Tab's and Enter's actions.
@@ -372,19 +382,22 @@ Rules:
   and the wheel start the go in their own binding, right after the
   move: fzf fires focus only when it draws, and a reload's result can
   come first. Each row carries the moves of up and down past the labels
-  next to it, and the row each lands on: one shell per key, and fzf
-  never draws the cursor on a label. The key writes the row to the
-  panel's `.want` file and starts `sidebar go CLIENT` in the background
-  unless one runs (the `.going` folder): one go at a time takes the
-  client, under the panel lock, to the row in `.want`, again while it
-  changes, notes each row it took in `.gone`, and looks once more after
-  it removes `.going`. A go that held up fzf's next key left a queue of
+  next to it, and the key of the row each lands on: one shell per key,
+  and fzf never draws the cursor on a label. The key writes the row's
+  key to the panel's `.want` file and starts `sidebar go CLIENT` in the
+  background unless one runs (the `.going` folder): one go at a time
+  takes the client, under the panel lock, to the row in `.want` (a
+  pane's row to its pane), again while it changes, notes each row it is done with (taken,
+  or given up on an error) in `.gone`, and looks once more after it
+  removes `.going`. A go that held up fzf's next key left a queue of
   moves that ran on for seconds after a held key; a go per key starved
   a slow machine. A go compares the client's own window, not
   `@sidebar_went`: the client can have moved some other way. Place keeps
-  the cursor on the `.want` row while a go runs that has not taken it,
+  the cursor on the `.want` row while it is not in `.gone` (not
+  `.going`, which a go removes a moment before it takes the next row),
   or its window is the client's; else it goes to the client's window
-  and writes that row to `.want` and `.gone`. A fold's go shows the
+  and writes that row to `.want` and `.gone`. Outside a panel each key
+  goes itself, then writes its row to `.want` and `.gone`. A fold's go shows the
   session's current window, which can have a row of its own. No `--track` or `track-current`: fzf
   undoes a key pressed during a reload that tracks. The focus event
   starts the go for the user's other moves (a click, a page): a

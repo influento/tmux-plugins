@@ -225,3 +225,111 @@ func TestPickCursorStyle(t *testing.T) {
 		t.Errorf("fzf arguments lack the cursor row's colours:\n%s", got)
 	}
 }
+
+// The picker run in a window with no agent starts on its session's fold;
+// up then moves the cursor, with the client, from row to row.
+func TestPickMovesFromFold(t *testing.T) {
+	tmuxtest.Require(t, "tmux", "fzf")
+	sb := tmuxtest.NewSandbox(t)
+	selftest.Install(t, sb)
+	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	origin := s.Display(t, "=proj-a:0", "#{pane_id}")
+	s.Attach(t, "proj-a", 120, 31)
+	for _, name := range []string{"agent-one", "agent-two"} {
+		p := s.MustTmux(t, "new-window", "-d", "-t", "=proj-a:", "-n", name, "-P", "-F", "#{pane_id}")
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+	}
+	picker := s.MustTmux(t, "new-window", "-t", "=proj-a:", "-n", "w-shell", "-P", "-F", "#{pane_id}", "tmux-agent pick")
+	s.WaitForContent(t, picker, "agent-two")
+	time.Sleep(time.Second) // a user's first key, after the picker's start placed its cursor
+	window := func() string { return s.MustTmux(t, "list-clients", "-F", "#{window_name}") }
+	for _, want := range []string{"agent-two", "agent-one"} {
+		s.MustTmux(t, "send-keys", "-t", picker, "Up")
+		on := func() bool {
+			return window() == want && strings.Contains(s.MustTmux(t, "capture-pane", "-p", "-t", picker), "▌ ●    "+want)
+		}
+		tmuxtest.WaitFor(t, 5*time.Second, "the client and the cursor on "+want, on)
+		time.Sleep(time.Second) // the place after the move: the cursor stays
+		if !on() {
+			t.Fatalf("the cursor left %s; client on %s:\n%s", want, window(), s.MustTmux(t, "capture-pane", "-p", "-t", picker))
+		}
+	}
+}
+
+// pickIn runs `tmux-agent pick CLIENT` in a new window of proj-a, outside
+// the panel, once setup made the other windows.
+func pickIn(t *testing.T, setup func(s *tmuxtest.Server, origin string)) (s *tmuxtest.Server, picker string) {
+	t.Helper()
+	tmuxtest.Require(t, "tmux", "fzf")
+	sb := tmuxtest.NewSandbox(t)
+	selftest.Install(t, sb)
+	s = tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	origin := s.Display(t, "=proj-a:0", "#{pane_id}")
+	s.Attach(t, "proj-a", 120, 31)
+	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
+	setup(s, origin)
+	picker = s.MustTmux(t, "new-window", "-t", "=proj-a:", "-n", "w-pick", "-P", "-F", "#{pane_id}", "tmux-agent pick "+shell.Quote(client))
+	s.WaitForContent(t, picker, "proj-a")
+	time.Sleep(time.Second) // a user's first key, after the picker's start placed its cursor
+	return s, picker
+}
+
+// moveTo presses key in the picker and waits until the cursor's row
+// holds row, then a second more: the place after the move keeps it.
+func moveTo(t *testing.T, s *tmuxtest.Server, picker, key, row string) {
+	t.Helper()
+	s.MustTmux(t, "send-keys", "-t", picker, key)
+	on := func() bool {
+		for l := range strings.SplitSeq(s.MustTmux(t, "capture-pane", "-p", "-t", picker), "\n") {
+			if strings.HasPrefix(l, "▌") && strings.Contains(l, row) {
+				return true
+			}
+		}
+		return false
+	}
+	tmuxtest.WaitFor(t, 5*time.Second, "the cursor on "+row, on)
+	time.Sleep(time.Second)
+	if !on() {
+		t.Fatalf("the cursor left %s:\n%s", row, s.MustTmux(t, "capture-pane", "-p", "-t", picker))
+	}
+}
+
+// Outside the panel the cursor stays on a session's fold, and Enter opens it.
+func TestPickStaysOnFold(t *testing.T) {
+	s, picker := pickIn(t, func(s *tmuxtest.Server, origin string) {
+		for _, name := range []string{"agent-one", "agent-two"} {
+			p := s.MustTmux(t, "new-window", "-d", "-t", "=proj-a:", "-n", name, "-P", "-F", "#{pane_id}")
+			if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+				t.Fatalf("flag: %v: %s", err, out)
+			}
+		}
+		s.MustTmux(t, "new-window", "-d", "-t", "=proj-a:", "-n", "plain-two")
+	})
+	moveTo(t, s, picker, "Up", "agent-two")
+	moveTo(t, s, picker, "Down", "more windows")
+	s.MustTmux(t, "send-keys", "-t", picker, "Enter")
+	s.WaitForContent(t, picker, "plain-two")
+}
+
+// Outside the panel the cursor reaches a split window's pane rows, and
+// Enter takes the client to that pane.
+func TestPickReachesPaneRow(t *testing.T) {
+	var first string
+	s, picker := pickIn(t, func(s *tmuxtest.Server, origin string) {
+		first = s.MustTmux(t, "new-window", "-d", "-t", "=proj-a:", "-n", "w-split", "-P", "-F", "#{pane_id}")
+		second := s.MustTmux(t, "split-window", "-d", "-t", first, "-P", "-F", "#{pane_id}")
+		for _, args := range [][]string{{"working", "--pane", first}, {"needs-you", "--pane", second}} {
+			if out, err := s.Command(t, origin, "tmux-agent", append([]string{"flag"}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("flag: %v: %s", err, out)
+			}
+		}
+	})
+	moveTo(t, s, picker, "Up", "? .1")
+	moveTo(t, s, picker, "Up", "● .0")
+	s.MustTmux(t, "send-keys", "-t", picker, "Enter")
+	tmuxtest.WaitFor(t, 5*time.Second, "the client on "+first, func() bool {
+		return s.MustTmux(t, "list-clients", "-F", "#{pane_id}") == first
+	})
+}

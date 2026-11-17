@@ -83,6 +83,8 @@ type Row struct {
 	// title.
 	Task      string `json:"task,omitempty"`
 	TaskTitle string `json:"task_title,omitempty"`
+	// WindowID is tmux's id of the pane's window.
+	WindowID string `json:"-"`
 }
 
 // RoleRun is a nested run that runs as a role, and when it started.
@@ -210,6 +212,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 		"#{" + OptLabels + "}", "#{" + sidebar.OptClient + "}", "#{" + OptSubagents + "}",
 		"#{" + OptNested + "}", "#{" + OptContext + "}",
 		"#{" + OptRole + "}", "#{" + OptNestedRoles + "}", "#{" + OptTask + "}", "#{" + OptTaskTitle + "}",
+		"#{window_id}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -218,7 +221,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 22)
+		f := split(l, 23)
 		if skip(f[0]) || f[14] != "" { // the panel is no row of its own
 			continue
 		}
@@ -229,6 +232,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 			Labels: ParseLabels(f[13], now), Subagents: len(strings.Fields(f[15])),
 			Nested: strings.Fields(f[16]),
 			Role:   f[18], Runs: parseRuns(f[19], now), Task: f[20], TaskTitle: f[21],
+			WindowID: f[22],
 		}
 		r.At, _ = strconv.ParseInt(f[6], 10, 64) // unset or garbled: no age
 		r.Context, _ = strconv.Atoi(f[17])       // unset or garbled: unknown
@@ -453,8 +457,13 @@ func highlight(s string, words []string) string {
 	if s == "" || len(words) == 0 {
 		return s
 	}
-	runes, lower := []rune(s), lowerRunes(s)
-	marked := make([]bool, len(runes))
+	return underline([]rune(s), matched(s, words))
+}
+
+// matched marks each rune of s that a match of one of words covers.
+func matched(s string, words []string) []bool {
+	lower := lowerRunes(s)
+	marked := make([]bool, len(lower))
 	for _, w := range words {
 		word := lowerRunes(w)
 		for i := matchAt(lower, word, 0); i >= 0; i = matchAt(lower, word, i+len(word)) {
@@ -463,6 +472,11 @@ func highlight(s string, words []string) string {
 			}
 		}
 	}
+	return marked
+}
+
+// underline is runes with each marked run underlined.
+func underline(runes []rune, marked []bool) string {
 	var b strings.Builder
 	on := false
 	for i, r := range runes {

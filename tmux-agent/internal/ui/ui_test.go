@@ -26,23 +26,23 @@ func TestCursorColors(t *testing.T) {
 }
 
 // Up and down step past the labels next to a row in one move, and do not
-// move at the list's ends; each names the row it lands on.
+// move at the list's ends; each names the row it lands on by its key.
 func TestPickLinesSteps(t *testing.T) {
 	rows := []attention.PickRow{
 		{Label: "proj-a", Target: "=proj-a:"},
-		{Target: "=proj-a:1"},
+		{Target: "=proj-a:1", Key: "%1"},
 		{Label: "repo-x", Target: "=proj-a:"},
 		{Label: "proj-b", Target: "=proj-b:"},
-		{Target: "=proj-b:2"},
-		{Target: "=proj-b:", Fold: "$2"},
+		{Target: "=proj-b:2", Key: "%2"},
+		{Target: "=proj-b:", Fold: "$2", Key: "$2"},
 	}
 	want := [][4]string{
 		{"up", "", "down", ""},
-		{"ignore", "=proj-a:1", "down+down+down", "=proj-b:2"},
+		{"ignore", "%1", "down+down+down", "%2"},
 		{"up", "", "down", ""},
 		{"up", "", "down", ""},
-		{"up+up+up", "=proj-a:1", "down", "=proj-b:"},
-		{"up", "=proj-b:2", "ignore", "=proj-b:"},
+		{"up+up+up", "%1", "down", "$2"},
+		{"up", "%2", "ignore", "$2"},
 	}
 	for i, l := range ui.PickLines(rows) {
 		f := strings.Split(l, "\t")

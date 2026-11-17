@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 var escape = regexp.MustCompile("\x1b\\[[0-9;]*m")
@@ -367,4 +368,143 @@ func TestParseRuns(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("parseRuns = %+v, want %+v", got, want)
 	}
+}
+
+// openRows renders rows with the row whose key is key open.
+func openRows(rows []Row, key string) []string {
+	var out []string
+	for _, r := range RenderPickRows(rows, []Session{{ID: "$1", Name: "proj-a"}}, Panel{View: TreeView, Width: 39, Marks: testMarks}) {
+		r.Open = r.Key == key
+		out = append(out, escape.ReplaceAllString(r.Display(), ""))
+	}
+	return out
+}
+
+// The cursor's row shows its whole name, broken after a '-' where the
+// name has one, its columns on the line below; its labels whole, the
+// lines after the first two columns further in. A row whose name and
+// labels fit looks as it does closed; a closed row cuts them.
+func TestOpenRow(t *testing.T) {
+	rows := []Row{
+		{Target: "proj-a:1.0", Pane: "%1", WindowID: "@1", Session: "proj-a", Window: "a-popup-closed-by-its-hotkey-leaves-the-client",
+			State: "working", Rank: 2, Age: "3m", Command: "agent-a", IsAgent: true,
+			Labels: []Label{{Source: "git", Text: "⎇ f-a-popup-closed-by-its-hotkey-leaves-the-client wt"}}},
+		{Target: "proj-a:2.0", Pane: "%2", WindowID: "@2", Session: "proj-a", Window: "short-one",
+			State: "working", Rank: 2, Age: "3m", Command: "agent-a", IsAgent: true,
+			Labels: []Label{{Source: "git", Text: "⎇ main"}}},
+	}
+	long := []string{
+		"proj-a",
+		" ● ✳  a-popup-closed-by-its-hotkey-\n" +
+			"      leaves-the-client\n" +
+			strings.Repeat(" ", 35) + "3m\n" +
+			"      ⎇ f-a-popup-closed-by-its-hotkey-\n" +
+			"        leaves-the-client wt",
+		" ● ✳  short-one                    3m\n      ⎇ main",
+	}
+	check(t, openRows(rows, "%1"), long)
+	closed := []string{
+		"proj-a",
+		" ● ✳  a-popup-closed-by-its-hotkey-lea…\n" +
+			strings.Repeat(" ", 35) + "3m\n" +
+			"      ⎇ f-a-popup-closed-by-its-hotkey…",
+		" ● ✳  short-one                    3m\n      ⎇ main",
+	}
+	check(t, openRows(rows, ""), closed)
+	check(t, openRows(rows, "%2"), closed)
+}
+
+// A window without an agent opens too: its name whole, its command on
+// the line below at the row's right edge.
+func TestOpenRowWithoutAgent(t *testing.T) {
+	rows := []Row{{Target: "proj-a:1.0", Pane: "%1", WindowID: "@1", Session: "proj-a", Window: "a-very-long-window-name-for-a-shell-here",
+		Rank: 4, Age: "-", Command: "zsh"}}
+	p := Panel{View: TreeView, Width: 39, Marks: testMarks, Open: []string{"$1"}}
+	got := RenderPickRows(rows, []Session{{ID: "$1", Name: "proj-a"}}, p)[1]
+	if want := "      a-very-long-window-name-for-… zsh"; escape.ReplaceAllString(got.Display(), "") != want {
+		t.Errorf("closed: %q, want %q", escape.ReplaceAllString(got.Display(), ""), want)
+	}
+	got.Open = true
+	want := "      a-very-long-window-name-for-a-\n      shell-here\n" + strings.Repeat(" ", 36) + "zsh"
+	if escape.ReplaceAllString(got.Display(), "") != want {
+		t.Errorf("open: %q, want %q", escape.ReplaceAllString(got.Display(), ""), want)
+	}
+}
+
+// Each row has a key of its own that the panel's join leaves as it is: a
+// pane's row its pane's id, a split window's row its window's id.
+func TestRowKeys(t *testing.T) {
+	rows := []Row{
+		{Target: "proj-a:1.1", Pane: "%5", WindowID: "@3", Session: "proj-a", Window: "work", State: "working", Rank: 2, Age: "1m", Command: "agent-a", IsAgent: true},
+		{Target: "proj-a:1.2", Pane: "%6", WindowID: "@3", Session: "proj-a", Window: "work", State: "working", Rank: 2, Age: "1m", Command: "agent-a", IsAgent: true},
+		{Target: "proj-a:2.0", Pane: "%7", WindowID: "@4", Session: "proj-a", Window: "solo", State: "done", Rank: 1, Age: "1m", Command: "agent-a", IsAgent: true},
+	}
+	var got []string
+	for _, r := range RenderPickRows(rows, []Session{{ID: "$1", Name: "proj-a"}}, Panel{View: TreeView, Width: 39}) {
+		got = append(got, r.Target+"|"+r.Key)
+	}
+	check(t, got, []string{"=proj-a:|", "=proj-a:1|@3", "=proj-a:1.1|%5", "=proj-a:1.2|%6", "=proj-a:2|%7"})
+}
+
+// A task's row is keyed by the pane it stands for, the one that needs
+// the user; its other panes' keys name it too.
+func TestTaskRowKeys(t *testing.T) {
+	rows := []Row{
+		{Target: "proj-a:1.0", Pane: "%1", WindowID: "@1", Session: "proj-a", Window: "task-a", State: "working", Rank: 2, Age: "1m", Command: "agent-a", IsAgent: true, Task: "wb/t1"},
+		{Target: "proj-a:2.0", Pane: "%2", WindowID: "@2", Session: "proj-a", Window: "task-b", State: "needs-you", Rank: 0, Age: "1m", Command: "agent-a", IsAgent: true, Task: "wb/t1"},
+	}
+	SortRows(rows)
+	row := RenderPickRows(rows, []Session{{ID: "$1", Name: "proj-a"}}, Panel{View: TreeView, Width: 39})[1]
+	if row.Key != "%2" || !row.Named("%1") || !row.Named("%2") || row.Named("") {
+		t.Errorf("task row Key %q, Keys %q; want %%2 and %%1", row.Key, row.Keys)
+	}
+}
+
+// A search word that the open row's name breaks across lines is
+// underlined on each line it falls on, as on a cut row.
+func TestOpenRowUnderlinesAcrossBreak(t *testing.T) {
+	for _, c := range []struct {
+		row  Row
+		word string
+	}{
+		{Row{Target: "proj-a:1.0", Pane: "%1", WindowID: "@1", Session: "proj-a", Window: "a-popup-closed-by-its-hotkey-leaves-the-client",
+			State: "working", Rank: 2, Age: "3m", Command: "agent-a", IsAgent: true}, "hotkey-leaves"},
+		{Row{Target: "proj-a:1.0", Pane: "%1", WindowID: "@1", Session: "proj-a", Window: "a-very-long-window-name-for-a-shell-here",
+			Rank: 4, Age: "-", Command: "zsh"}, "window-name-for-a-shell"},
+	} {
+		p := Panel{View: TreeView, Width: 39, Marks: testMarks, Open: []string{"$1"}, Words: []string{c.word}}
+		got := RenderPickRows([]Row{c.row}, []Session{{ID: "$1", Name: "proj-a"}}, p)[1]
+		got.Open = true
+		d := got.Display()
+		if strings.Contains(escape.ReplaceAllString(d, ""), c.word) {
+			t.Fatalf("%q is on one line of the open row:\n%s", c.word, escape.ReplaceAllString(d, ""))
+		}
+		if u := underlined(d); u != c.word {
+			t.Errorf("open row underlines %q, want %q:\n%q", u, c.word, d)
+		}
+	}
+}
+
+// underlined is the text of s between an underline's start and its end.
+func underlined(s string) string {
+	var b strings.Builder
+	on := false
+	for len(s) > 0 {
+		if m := escape.FindStringIndex(s); m != nil && m[0] == 0 {
+			switch code := s[:m[1]]; {
+			case code == "\x1b[4m":
+				on = true
+			case code == "\x1b[24m" || strings.HasPrefix(code, "\x1b[0"):
+				on = false
+			}
+			s = s[m[1]:]
+			continue
+		}
+		r, n := utf8.DecodeRuneInString(s)
+		if on {
+			b.WriteRune(r)
+		}
+		s = s[n:]
+	}
+	return b.String()
 }

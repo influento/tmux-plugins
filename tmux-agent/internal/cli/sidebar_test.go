@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -103,6 +104,19 @@ func TestSidebarEndToEnd(t *testing.T) {
 // panel, and returns the server, the pane it opened from, and the panel.
 func openPanel(t *testing.T, before ...[]string) (s *tmuxtest.Server, origin, panel string) {
 	t.Helper()
+	s, origin, panel = openPanelAfter(t, func(s *tmuxtest.Server, _ string) {
+		for _, args := range before {
+			s.MustTmux(t, args...)
+		}
+	})
+	s.WaitForContent(t, panel, "1 window") // the fold that holds w-one
+	return s, origin, panel
+}
+
+// openPanelAfter is openPanel with setup run on the server, and the pane
+// the panel opens from, before the panel opens.
+func openPanelAfter(t *testing.T, setup func(s *tmuxtest.Server, origin string)) (s *tmuxtest.Server, origin, panel string) {
+	t.Helper()
 	tmuxtest.Require(t, "tmux", "fzf")
 	sb := tmuxtest.NewSandbox(t)
 	selftest.Install(t, sb)
@@ -120,9 +134,7 @@ func openPanel(t *testing.T, before ...[]string) (s *tmuxtest.Server, origin, pa
 	s.MustTmux(t, "rename-window", "-t", "=proj-a:0", "w-one")
 	s.Attach(t, "proj-a", 120, 31)
 	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
-	for _, args := range before {
-		s.MustTmux(t, args...)
-	}
+	setup(s, origin)
 	for _, args := range [][]string{{"tmux-init"}, {"popup", client}} {
 		if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
 			t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
@@ -132,7 +144,7 @@ func openPanel(t *testing.T, before ...[]string) (s *tmuxtest.Server, origin, pa
 		panel = strings.TrimSpace(s.MustTmux(t, "list-panes", "-a", "-F", "#{?#{"+sidebar.OptClient+"},#{pane_id},}"))
 		return panel != ""
 	})
-	s.WaitForContent(t, panel, "1 window") // the fold that holds w-one
+	s.WaitForContent(t, panel, "proj-a")
 	return s, origin, panel
 }
 
@@ -592,4 +604,315 @@ func TestPanelTracesMoves(t *testing.T) {
 	if after := strings.Count(log(), "place: "); after != before {
 		t.Errorf("%d place lines while nothing moved:\n%s", after-before, log())
 	}
+}
+
+// openPanelRows opens the panel over three agent windows: proj-a:1 and
+// proj-a:2 with names the panel cuts, proj-a:2 split with a shell (so its
+// row's target names the agent's pane, which the panel's join renumbers),
+// and proj-a:3 with a name that fits. The cursor is on the fold of w-one,
+// where the client is.
+func openPanelRows(t *testing.T) (s *tmuxtest.Server, origin, panel, socket string, panes []string) {
+	t.Helper()
+	s, origin, panel = openPanel(t)
+	for _, n := range []string{"a-popup-closed-by-its-hotkey-leaves-the-client", "a-split-window-with-an-agent-and-a-shell", "short-one"} {
+		p := s.MustTmux(t, "new-window", "-d", "-n", n, "-P", "-F", "#{pane_id}")
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+		panes = append(panes, p)
+	}
+	s.MustTmux(t, "split-window", "-d", "-t", panes[1])
+	s.WaitForContent(t, panel, "short-one")
+	return s, origin, panel, s.Display(t, panel, "#{"+sidebar.OptListen+"}"), panes
+}
+
+// The rows' names as the panel shows them: open, whole, or cut.
+const (
+	popupCut   = "hotkey-lea…"
+	popupWhole = "hotkey-\n"
+	splitCut   = "agent-and…"
+	splitWhole = "agent-and-\n"
+)
+
+// The row under the panel's cursor shows its whole name; the row it left
+// is cut again. It stays open while the panel reloads: as the panel joins
+// its window (the join renumbers the window's panes), as an age ticks and
+// a flag changes.
+func TestPanelOpensCursorRow(t *testing.T) {
+	s, origin, panel, socket, panes := openPanelRows(t)
+	screen := func() string { return s.MustTmux(t, "capture-pane", "-p", "-t", panel) }
+	if sc := screen(); !strings.Contains(sc, popupCut) || !strings.Contains(sc, splitCut) {
+		t.Fatalf("rows not cut with the cursor elsewhere:\n%s", sc)
+	}
+	s.MustTmux(t, "send-keys", "-t", panel, "Up") // to short-one
+	tmuxtest.WaitFor(t, 5*time.Second, "the cursor on short-one", func() bool { return panelCursor(t, socket) == "=proj-a:3" })
+	s.MustTmux(t, "send-keys", "-t", panel, "Up") // to the split window
+	opened := time.Time{}
+	reloaded := false
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		sc := screen()
+		if opened.IsZero() {
+			if strings.Contains(sc, splitWhole) {
+				opened = time.Now()
+			}
+			continue
+		}
+		if !strings.Contains(sc, splitWhole) || strings.Contains(sc, splitCut) {
+			t.Fatalf("the open row closed after %v:\n%s", time.Since(opened), sc)
+		}
+		if !reloaded && time.Since(opened) > 300*time.Millisecond {
+			if out, err := s.Command(t, origin, "tmux-agent", "flag", "needs-you", "--pane", panes[2]).CombinedOutput(); err != nil {
+				t.Fatalf("flag: %v: %s", err, out)
+			}
+			reloaded = true
+		}
+		if time.Since(opened) > 2500*time.Millisecond { // an age's tick, and the flag's reload
+			break
+		}
+	}
+	if opened.IsZero() {
+		t.Fatalf("the split window's row never opened:\n%s", screen())
+	}
+	if got := s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}"); got != "=proj-a:2" {
+		t.Errorf("client on %s, want =proj-a:2", got)
+	}
+
+	s.MustTmux(t, "send-keys", "-t", panel, "Up")
+	tmuxtest.WaitFor(t, 5*time.Second, "the first row open, the split one cut", func() bool {
+		sc := screen()
+		return strings.Contains(sc, popupWhole) && strings.Contains(sc, "leaves-the-client") && strings.Contains(sc, splitCut)
+	})
+}
+
+// A search that matches no row, cleared, brings the rows back, the
+// client's open: with no row under the cursor fzf runs no command that
+// names a field. The flag is two hours old: no age ticks, so no reload
+// but the search's comes.
+func TestPanelSearchWithoutMatch(t *testing.T) {
+	s, _, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
+		s.MustTmux(t, "rename-window", "-t", origin, "a-popup-closed-by-its-hotkey-leaves-the-client")
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", origin).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+		s.MustTmux(t, "set-option", "-p", "-t", origin, "@attention_at", strconv.FormatInt(time.Now().Add(-2*time.Hour).Unix(), 10))
+	})
+	screen := func() string { return s.MustTmux(t, "capture-pane", "-p", "-t", panel) }
+	s.WaitForContent(t, panel, popupWhole)
+	s.MustTmux(t, "send-keys", "-t", panel, "-l", "zzzq")
+	tmuxtest.WaitFor(t, 5*time.Second, "no rows for the search", func() bool { return !strings.Contains(screen(), "hotkey") })
+	s.MustTmux(t, "send-keys", "-t", panel, "C-u")
+	tmuxtest.WaitFor(t, 5*time.Second, "the rows back, the client's row open", func() bool { return strings.Contains(screen(), popupWhole) })
+}
+
+// A click and the wheel open the row they put the cursor on, as the
+// arrows do. After a held key the cursor and the client stop together
+// on one row, which is open.
+func TestPanelOpensRowOnMouseAndHeldKey(t *testing.T) {
+	s, _, panel, socket, _ := openPanelRows(t)
+	screen := func() string { return s.MustTmux(t, "capture-pane", "-p", "-t", panel) }
+	// The panel's line of a row's text, from 1, for fzf's mouse.
+	lineOf := func(text string) int {
+		for i, l := range strings.Split(screen(), "\n") {
+			if strings.Contains(l, text) {
+				return i + 1
+			}
+		}
+		t.Fatalf("no %q in the panel:\n%s", text, screen())
+		return 0
+	}
+	y := lineOf("a-popup-closed")
+	s.MustTmux(t, "send-keys", "-t", panel, "-l", fmt.Sprintf("\x1b[<0;10;%dM", y))
+	s.MustTmux(t, "send-keys", "-t", panel, "-l", fmt.Sprintf("\x1b[<0;10;%dm", y))
+	tmuxtest.WaitFor(t, 5*time.Second, "the clicked row open", func() bool {
+		sc := screen()
+		return panelCursor(t, socket) == "=proj-a:1" && strings.Contains(sc, popupWhole) && strings.Contains(sc, splitCut)
+	})
+	s.MustTmux(t, "send-keys", "-t", panel, "-l", fmt.Sprintf("\x1b[<65;10;%dM", lineOf("a-split-window")))
+	tmuxtest.WaitFor(t, 5*time.Second, "the row the wheel went to open", func() bool {
+		sc := screen()
+		return strings.HasPrefix(panelCursor(t, socket), "=proj-a:2") && strings.Contains(sc, splitWhole) && strings.Contains(sc, popupCut)
+	})
+
+	for _, k := range []string{"Down", "Up", "Up", "Down", "Up", "Down", "Down", "Up", "Up"} {
+		s.MustTmux(t, "send-keys", "-t", panel, k)
+		time.Sleep(30 * time.Millisecond) // a held key's repeat
+	}
+	tmuxtest.WaitFor(t, 5*time.Second, "the cursor and the client on the first row, open", func() bool {
+		client := s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}")
+		sc := screen()
+		return panelCursor(t, socket) == "=proj-a:1" && client == "=proj-a:1" && strings.Contains(sc, popupWhole) && strings.Contains(sc, splitCut)
+	})
+}
+
+// In a window split into two agent panes, only the row of the cursor's
+// pane opens, also on a move between the two rows, which takes the
+// client nowhere: the panel opens in that window, on the window's row.
+// The flags are two hours old: no age ticks, so no reload but the
+// move's own comes.
+func TestPanelOpensPaneRow(t *testing.T) {
+	var panes [2]string // by pane index
+	s, _, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
+		second := s.MustTmux(t, "split-window", "-d", "-t", origin, "-P", "-F", "#{pane_id}")
+		panes = [2]string{origin, second}
+		old := strconv.FormatInt(time.Now().Add(-2*time.Hour).Unix(), 10)
+		for i, p := range panes {
+			for _, args := range [][]string{{"flag", "working", "--pane", p}, {"report", "--source", "git", "--text", "⎇ a-long-branch-name-for-the-pane-" + strconv.Itoa(i) + "-here", "--pane", p}} {
+				if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+					t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+				}
+			}
+			s.MustTmux(t, "set-option", "-p", "-t", p, "@attention_at", old)
+		}
+	})
+	screen := func() string { return s.MustTmux(t, "capture-pane", "-p", "-t", panel) }
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("panel:\n%s", screen())
+		}
+	})
+	s.WaitForContent(t, panel, "2h")
+	if sc := screen(); strings.Contains(sc, "-pane-0-here") || strings.Contains(sc, "-pane-1-here") {
+		t.Fatalf("a pane's row open with the cursor on the window's:\n%s", sc)
+	}
+	open := func(want, not string) func() bool {
+		return func() bool { sc := screen(); return strings.Contains(sc, want) && !strings.Contains(sc, not) }
+	}
+	s.MustTmux(t, "send-keys", "-t", panel, "Down") // from the window's row to its first pane's
+	tmuxtest.WaitFor(t, 5*time.Second, "the first pane's row open, the second cut", open("-pane-0-here", "-pane-1-here"))
+	s.MustTmux(t, "send-keys", "-t", panel, "Down")
+	tmuxtest.WaitFor(t, 5*time.Second, "the second pane's row open, the first cut", open("-pane-1-here", "-pane-0-here"))
+}
+
+// A task's row takes the client to the window of the pane it stands for:
+// the one that needs the user.
+func TestPanelTaskRowGoesToWaitingPane(t *testing.T) {
+	s, _, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
+		for _, args := range [][]string{
+			{"start", "--session", "proj-a", "--name", "task-one-a", "--task", "t1", "--source", "wb", "--title", "t1-title", "--", "sleep", "99999"},
+			{"start", "--session", "proj-a", "--name", "task-one-b", "--task", "t1", "--source", "wb", "--", "sleep", "99999"},
+		} {
+			if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+				t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+			}
+		}
+		for name, args := range map[string][]string{
+			"task-one-a": {"flag", "working"},
+			"task-one-b": {"flag", "needs-you", "--reason", "permission"},
+		} {
+			p := s.Display(t, "=proj-a:"+name, "#{pane_id}")
+			if out, err := s.Command(t, origin, "tmux-agent", append(args, "--pane", p)...).CombinedOutput(); err != nil {
+				t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+			}
+		}
+	})
+	s.WaitForContent(t, panel, "t1-title")
+	s.MustTmux(t, "send-keys", "-t", panel, "Up") // from the fold to the task's row
+	tmuxtest.WaitFor(t, 5*time.Second, "the client in task-one-b", func() bool {
+		return s.MustTmux(t, "list-clients", "-F", "#{window_name}") == "task-one-b"
+	})
+}
+
+// A split window's open row stays open when one of its two flagged panes
+// loses its flag: the row then stands for the other pane, and shows
+// whole the whole time.
+func TestPanelSplitRowStaysOpen(t *testing.T) {
+	var panes [2]string
+	s, origin, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
+		s.MustTmux(t, "rename-window", "-t", origin, "split-window-with-two-agents-in-its-panes")
+		second := s.MustTmux(t, "split-window", "-d", "-t", origin, "-P", "-F", "#{pane_id}")
+		panes = [2]string{origin, second}
+		for _, p := range panes {
+			if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+				t.Fatalf("flag: %v: %s", err, out)
+			}
+		}
+	})
+	screen := func() string { return s.MustTmux(t, "capture-pane", "-p", "-t", panel) }
+	const whole, cut = "agents-in-\n", "agents-in-…"
+	s.WaitForContent(t, panel, "its-panes")
+	if out, err := s.Command(t, origin, "tmux-agent", "flag", "clear", "--pane", panes[1]).CombinedOutput(); err != nil {
+		t.Fatalf("flag: %v: %s", err, out)
+	}
+	for end := time.Now().Add(1500 * time.Millisecond); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if sc := screen(); strings.Contains(sc, cut) || !strings.Contains(sc, whole) {
+			t.Fatalf("the open row showed cut:\n%s", sc)
+		}
+	}
+}
+
+// When the split beside a window's one agent pane gets a flag, the window's
+// row becomes a header over a row per pane; only the cursor's row is open,
+// and it never shows cut.
+func TestPanelOneRowOpensAsWindowSplits(t *testing.T) {
+	var second string
+	s, origin, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
+		s.MustTmux(t, "rename-window", "-t", origin, "a-split-window-whose-name-is-cut-in-the-panel")
+		second = s.MustTmux(t, "split-window", "-d", "-h", "-t", origin, "-P", "-F", "#{pane_id}")
+		for _, args := range [][]string{
+			{"flag", "working", "--pane", origin},
+			{"report", "--source", "git", "--text", "⎇ a-long-branch-name-for-the-first-pane-here", "--pane", origin},
+		} {
+			if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+				t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+			}
+		}
+	})
+	s.WaitForContent(t, panel, "first-pane-here")
+	if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", second).CombinedOutput(); err != nil {
+		t.Fatalf("flag: %v: %s", err, out)
+	}
+	for end := time.Now().Add(1500 * time.Millisecond); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		sc := s.MustTmux(t, "capture-pane", "-p", "-t", panel)
+		for _, l := range strings.Split(sc, "\n") {
+			cursor := strings.HasPrefix(l, "▌")
+			if (!cursor && strings.Contains(l, "cut-in-the-panel")) || (cursor && strings.Contains(l, "…")) {
+				t.Fatalf("a row other than the cursor's open, or the cursor's cut:\n%s", sc)
+			}
+		}
+	}
+}
+
+// The panel's cursor on an agent pane's row takes the client to that
+// pane, in a window where another pane has the focus: the README's split
+// keys, pressed in the panel, then split the agent's pane.
+func TestPanelGoesToRowPane(t *testing.T) {
+	var agent string
+	s, _, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
+		shellPane := s.MustTmux(t, "new-window", "-d", "-t", "=proj-a:", "-n", "w-split", "-P", "-F", "#{pane_id}")
+		agent = s.MustTmux(t, "split-window", "-d", "-h", "-t", shellPane, "-P", "-F", "#{pane_id}")
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", agent).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+	})
+	s.MustTmux(t, "send-keys", "-t", panel, "Up") // from the fold to w-split's row
+	tmuxtest.WaitFor(t, 5*time.Second, "the client on "+agent, func() bool {
+		return s.MustTmux(t, "show-options", "-wqv", "-t", "=proj-a:w-split", sidebar.OptLast) == agent
+	})
+}
+
+// The panel's cursor on the row of a window with no agent, in an opened
+// fold, keeps the pane that window had focused: the README's split keys
+// then split that pane.
+func TestPanelKeepsFocusedPaneOfPlainWindow(t *testing.T) {
+	var focused string
+	s, _, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
+		p := s.MustTmux(t, "new-window", "-t", "=proj-a:", "-n", "agent-one", "-P", "-F", "#{pane_id}")
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+		left := s.MustTmux(t, "new-window", "-d", "-t", "=proj-a:", "-n", "w-two", "-P", "-F", "#{pane_id}")
+		focused = s.MustTmux(t, "split-window", "-d", "-h", "-t", left, "-P", "-F", "#{pane_id}")
+		s.MustTmux(t, "select-pane", "-t", focused)
+	})
+	s.MustTmux(t, "send-keys", "-t", panel, "Down") // onto the fold
+	tmuxtest.WaitFor(t, 5*time.Second, "the cursor on the fold", func() bool {
+		return strings.Contains(s.MustTmux(t, "capture-pane", "-p", "-t", panel), "▌   2 more windows")
+	})
+	s.MustTmux(t, "send-keys", "-t", panel, "Enter")
+	s.WaitForContent(t, panel, "w-two")
+	s.MustTmux(t, "send-keys", "-t", panel, "Down", "Down") // onto w-two's row
+	tmuxtest.WaitFor(t, 5*time.Second, "the client on w-two's "+focused, func() bool {
+		return s.MustTmux(t, "list-clients", "-F", "#{window_name}") == "w-two" &&
+			s.MustTmux(t, "show-options", "-wqv", "-t", "=proj-a:w-two", sidebar.OptLast) == focused
+	})
 }
