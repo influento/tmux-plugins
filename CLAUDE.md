@@ -304,7 +304,8 @@ Rules:
   prompt the agent took (an event with `Submitted`) writes
   `@agent_prompt_got`, its time in ms and the text's `PromptKey` (a hash
   without white space). Prompt waits 10 s for a receipt newer than its
-  claim: none gives the claim back (the flag goes, as at an Esc), one of
+  claim: none gives the claim back (the flag goes, as at an Esc), also
+  when `--timeout` or a signal ends the wait first (exit 1 or 130), one of
   other text means a draft in the input box joined it; both exit 6, set
   the pane's `prompt` label (it shows in the panel for an hour, until a
   prompt is taken) and log. The receipt's time is the turn's start: the

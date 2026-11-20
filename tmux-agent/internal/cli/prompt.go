@@ -281,18 +281,19 @@ func (a *app) receipt(ctx context.Context, p agent.AgentPane, text string, claim
 		select {
 		case <-rctx.Done():
 			a.dropWait(ctx, p.Pane, channel)
-			if ctx.Err() != nil {
-				return time.Time{}, ctx.Err()
+			if ctx.Err() != nil { // --timeout or a signal came first: no receipt all the same
+				return time.Time{}, a.noReceipt(ctx, p, claimed, time.Since(claimed).Round(time.Second), 1)
 			}
-			return time.Time{}, a.noReceipt(ctx, p, claimed)
+			return time.Time{}, a.noReceipt(ctx, p, claimed, receiptWait, exitNoTurn)
 		case <-time.After(answerPoll):
 		}
 	}
 }
 
-// noReceipt ends a prompt the agent did not take: the claim goes back, the
-// pane gets a label, and the error shows the end of the pane's screen.
-func (a *app) noReceipt(ctx context.Context, p agent.AgentPane, claimed time.Time) error {
+// noReceipt ends a prompt that got no receipt in waited: the claim goes
+// back, the pane gets a label, and the error, with code, shows the end of
+// the pane's screen. Only a full receiptWait tells that no turn started.
+func (a *app) noReceipt(ctx context.Context, p agent.AgentPane, claimed time.Time, waited time.Duration, code int) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
 	defer cancel()
 	released, err := a.env.ReleasePrompt(ctx, p.Pane, claimed)
@@ -300,15 +301,19 @@ func (a *app) noReceipt(ctx context.Context, p agent.AgentPane, claimed time.Tim
 		return err
 	}
 	if !released { // the receipt came at the last moment
-		return exitWith(exitNoTurn, "%s took the prompt only after %s", p.WindowName, receiptWait)
+		return exitWith(code, "%s took the prompt only after %s", p.WindowName, waited)
 	}
 	a.promptLabel(ctx, p.Pane, "⚠ prompt not submitted")
-	a.logf("prompt %s (%s): not submitted, no receipt in %s", p.Pane, p.WindowName, receiptWait)
+	a.logf("prompt %s (%s): not submitted, no receipt in %s", p.Pane, p.WindowName, waited)
 	screen, _ := a.tmux.Output(ctx, "capture-pane", "-p", "-t", p.Pane)
 	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
 	lines = lines[max(0, len(lines)-screenTail):]
-	return exitWith(exitNoTurn, "%s started no turn (no receipt in %s); its screen ends:\n%s",
-		p.WindowName, receiptWait, strings.Join(lines, "\n"))
+	what := "started no turn"
+	if code != exitNoTurn {
+		what = "gave no receipt yet"
+	}
+	return exitWith(code, "%s %s (no receipt in %s); its screen ends:\n%s",
+		p.WindowName, what, waited, strings.Join(lines, "\n"))
 }
 
 // promptLabel sets the pane's prompt label to text, or clears it for "".

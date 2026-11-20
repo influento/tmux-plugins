@@ -376,6 +376,49 @@ func TestPromptNotSubmitted(t *testing.T) {
 	}
 }
 
+// A --timeout or a signal that ends the wait for the receipt ends it as no
+// receipt does: the pane gets its flag back and the label, and the channel
+// goes. The exit is the timeout's (1) or the signal's (130).
+func TestPromptEndedBeforeReceipt(t *testing.T) {
+	e := newEnv(t)
+	paneA := e.startChat(t, "agent-a", sessionA)
+	paneB := e.startChat(t, "agent-b", sessionB)
+	want := func(t *testing.T, pane string) {
+		t.Helper()
+		if flag := e.paneOpt(t, pane, "@attention"); flag != "" {
+			t.Errorf("flag %q after, want none", flag)
+		}
+		if l := e.promptLabel(t, pane); !strings.Contains(l, "not submitted") {
+			t.Errorf("label %q, want one that says not submitted", l)
+		}
+		if w := e.paneOpt(t, pane, "@attention_wait"); w != "" {
+			t.Errorf("@attention_wait = %q after, want none", w)
+		}
+	}
+	t.Run("timeout", func(t *testing.T) {
+		_, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "--raw", "--wait", "--timeout", "2s", "agent-a", "/clear")
+		if code != 1 || !strings.Contains(stderr, "no receipt") {
+			t.Errorf("exit %d, %q; want 1 and no receipt", code, stderr)
+		}
+		want(t, paneA)
+	})
+	t.Run("signal", func(t *testing.T) {
+		cmd := e.Command(t, e.pane, "tmux-agent", "prompt", "--raw", "--wait", "agent-b", "/compact")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		tmuxtest.WaitFor(t, 10*time.Second, "the prompt typed", func() bool { return e.paneOpt(t, paneB, "@attention_wait") != "" })
+		if err := cmd.Process.Signal(os.Interrupt); err != nil {
+			t.Fatal(err)
+		}
+		err := cmd.Wait()
+		if ee, ok := errors.AsType[*exec.ExitError](err); !ok || ee.ExitCode() != 130 {
+			t.Errorf("prompt: %v; want exit 130", err)
+		}
+		want(t, paneB)
+	})
+}
+
 // Text half typed in the agent's input box joins the prompt: the agent
 // gets other text than was sent, and prompt says so (exit 6).
 func TestPromptMergedWithDraft(t *testing.T) {
