@@ -166,7 +166,7 @@ func TestWatch(t *testing.T) {
 	var hooksRun atomic.Bool // the agent's other turn-end hooks
 	e := &Env{
 		Tmux: s.Client, Core: &attention.Core{Tmux: s.Client}, Registry: NewRegistry(a), Pane: pane,
-		OtherHooks: func([]string) bool { return hooksRun.Load() },
+		OtherHooks: func([]string, int) bool { return hooksRun.Load() },
 		Store:      &store.Store{Dir: s.StateHome},
 		LockPath:   filepath.Join(s.RuntimeDir, "lock"),
 		Getenv:     getenv,

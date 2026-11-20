@@ -40,8 +40,9 @@ type Env struct {
 	// the nearest agent process above the hook when nil.
 	AgentArgs func(names []string, run int) ([]string, bool)
 	// OtherHooks reports whether hooks the agent started with the calling
-	// one, for the same event, still run. OtherHooksRun when nil.
-	OtherHooks func(names []string) bool
+	// one, for the same event, still run, for the pane whose first process
+	// is panePid. OtherHooksRun when nil.
+	OtherHooks func(names []string, panePid int) bool
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 	// Git reads a folder's checkout; git.HeadOf when nil.
@@ -548,7 +549,7 @@ func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session st
 	if err := e.syncSubagents(ctx, a, ev, l, session); err != nil {
 		return err
 	}
-	if len(ev.Subagents) == 0 && e.otherHooks(a) {
+	if len(ev.Subagents) == 0 && e.otherHooks(a, l.panePid) {
 		// The agent's other turn-end hooks still run (a review that
 		// runs an agent of its own, say), and one can take the turn on:
 		// the turn ends when the agent goes idle (wentIdle).
@@ -596,7 +597,7 @@ const (
 // otherHooks reports whether hooks of agent a for the calling hook's event
 // still run beside it. Only an agent that tells when it went idle can
 // be held by them: nothing else would tell when they ended the turn.
-func (e *Env) otherHooks(a Agent) bool {
+func (e *Env) otherHooks(a Agent, panePid int) bool {
 	if _, ok := a.(Idler); !ok {
 		return false
 	}
@@ -604,7 +605,7 @@ func (e *Env) otherHooks(a Agent) bool {
 	if other == nil {
 		other = OtherHooksRun
 	}
-	return other(e.Registry.ProcessNames())
+	return other(e.Registry.ProcessNames(), panePid)
 }
 
 // markTurnEnd sets the flag a turn end leaves.

@@ -225,7 +225,9 @@ func fakeStarts(t *testing.T, starts map[int]int) {
 // hooks; a shell that runs in the background since earlier is none.
 func TestOtherHooks(t *testing.T) {
 	names := []string{"claude"}
+	const pane = 10 // the pane's shell
 	table := map[int][]string{
+		10: {"1", "S", "zsh", "zsh"},
 		11: {"10", "S", "tmux-agent", "claude", "run", "claude"},
 		12: {"11", "S", "claude", "claude"},
 		20: {"12", "S", "sh", "sh", "-c", "tmux-agent hook claude"},
@@ -236,7 +238,20 @@ func TestOtherHooks(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		fakeProcs(t, table)
 		fakeStarts(t, starts)
-		if got := otherHooks(20, names); len(got) != 0 {
+		if got := otherHooks(20, names, pane); len(got) != 0 {
+			t.Errorf("otherHooks = %v, want none", got)
+		}
+	})
+	// A hook run outside the agent's pane (a test's, under a Stop hook of
+	// a real agent) counts none of that agent's hooks.
+	t.Run("an agent outside the pane", func(t *testing.T) {
+		table := maps.Clone(table)
+		table[21] = []string{"12", "S", "bash", "bash", ".claude/hooks/review"}
+		fakeProcs(t, table)
+		starts := maps.Clone(starts)
+		starts[21] = 5001
+		fakeStarts(t, starts)
+		if got := otherHooks(20, names, 40); len(got) != 0 {
 			t.Errorf("otherHooks = %v, want none", got)
 		}
 	})
@@ -248,7 +263,7 @@ func TestOtherHooks(t *testing.T) {
 		starts := maps.Clone(starts)
 		starts[21], starts[30] = 5001, 5100
 		fakeStarts(t, starts)
-		if got := otherHooks(20, names); !slices.Equal(got, []int{21}) {
+		if got := otherHooks(20, names, pane); !slices.Equal(got, []int{21}) {
 			t.Errorf("otherHooks = %v, want [21]", got)
 		}
 	})

@@ -272,14 +272,17 @@ const hookSpread = clockTicks
 // process that started within hookSpread of the calling hook's own. Claude
 // Code ends a turn only after its last Stop hook, and one can take the
 // turn on. A background shell that started that close to the turn's end
-// counts too; it is rare, and costs only a later done.
-func OtherHooksRun(names []string) bool {
-	return len(otherHooks(os.Getppid(), names)) > 0
+// counts too; it is rare, and costs only a later done. An agent that does
+// not run in the pane whose first process is panePid has none: a hook run
+// below some other agent (a test's, under that agent's Stop hook) is not
+// one of its hooks.
+func OtherHooksRun(names []string, panePid int) bool {
+	return len(otherHooks(os.Getppid(), names, panePid)) > 0
 }
 
 // otherHooks is OtherHooksRun for a hook whose parent is pid: the pids of
 // the other hooks.
-func otherHooks(pid int, names []string) []int {
+func otherHooks(pid int, names []string, panePid int) []int {
 	var own proc // the child of the agent the calling hook runs in
 	for pid > 1 {
 		p, err := readProc(pid)
@@ -297,7 +300,7 @@ func otherHooks(pid int, names []string) []int {
 		pid = p.ppid
 	}
 	started, err := strconv.ParseInt(own.start, 10, 64)
-	if own.pid == 0 || err != nil {
+	if own.pid == 0 || err != nil || !isBelow(own.ppid, panePid) {
 		return nil
 	}
 	var out []int
@@ -309,6 +312,21 @@ func otherHooks(pid int, names []string) []int {
 		out = append(out, c.pid)
 	}
 	return out
+}
+
+// isBelow reports whether process pid is top or runs below it.
+func isBelow(pid, top int) bool {
+	for pid > 1 {
+		if pid == top {
+			return true
+		}
+		p, err := readProc(pid)
+		if err != nil {
+			return false
+		}
+		pid = p.ppid
+	}
+	return false
 }
 
 // nestedFrom is NestedHook for a hook whose parent is pid.
