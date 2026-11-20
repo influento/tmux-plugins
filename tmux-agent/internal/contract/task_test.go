@@ -124,12 +124,24 @@ func TestTask(t *testing.T) {
 		t.Errorf("roles = %v", roles)
 	}
 
-	before := e.windowNames(t)
+	// By id: the caller's window keeps its automatic name, which follows
+	// its program (sh, then bash) while the test runs.
+	windows := func() []string {
+		return strings.Split(e.MustTmux(t, "list-windows", "-a", "-F", "#{window_id} #{window_name}"), "\n")
+	}
+	ids := func(ws []string) []string {
+		out := make([]string, len(ws))
+		for i, w := range ws {
+			out[i], _, _ = strings.Cut(w, " ")
+		}
+		return out
+	}
+	before := windows()
 	if _, stderr, code := e.tmuxAgent(t, "task", "end", "item-9", "--source", "tool-a", "--close"); code != 4 || !strings.Contains(stderr, "no open task") {
 		t.Errorf("an unknown task: exit %d, %q; want 4", code, stderr)
 	}
-	if names := e.windowNames(t); !slices.Equal(names, before) {
-		t.Errorf("an unknown task closed windows: %q, were %q", names, before)
+	if now := windows(); !slices.Equal(ids(now), ids(before)) {
+		t.Errorf("an unknown task closed windows: %q, were %q", now, before)
 	}
 
 	// The caller is the item's own window, as merge runs in it.
