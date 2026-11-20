@@ -83,8 +83,12 @@ type Row struct {
 	// title.
 	Task      string `json:"task,omitempty"`
 	TaskTitle string `json:"task_title,omitempty"`
-	// WindowID is tmux's id of the pane's window.
-	WindowID string `json:"-"`
+	// WindowID is tmux's id of the pane's window, SessionID of its
+	// session; Linked: the window is in another session too (linked, or
+	// in a group of sessions).
+	WindowID  string `json:"-"`
+	SessionID string `json:"-"`
+	Linked    bool   `json:"-"`
 }
 
 // RoleRun is a nested run that runs as a role, and when it started.
@@ -212,7 +216,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 		"#{" + OptLabels + "}", "#{" + sidebar.OptClient + "}", "#{" + OptSubagents + "}",
 		"#{" + OptNested + "}", "#{" + OptContext + "}",
 		"#{" + OptRole + "}", "#{" + OptNestedRoles + "}", "#{" + OptTask + "}", "#{" + OptTaskTitle + "}",
-		"#{window_id}",
+		"#{window_id}", "#{session_id}", "#{window_linked}",
 	}, sep)
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -221,7 +225,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 	now := c.now().Unix()
 	var rows []Row
 	for _, l := range lines(out) {
-		f := split(l, 23)
+		f := split(l, 25)
 		if skip(f[0]) || f[14] != "" { // the panel is no row of its own
 			continue
 		}
@@ -232,7 +236,7 @@ func (c *Core) list(ctx context.Context) ([]Row, int64, error) {
 			Labels: ParseLabels(f[13], now), Subagents: len(strings.Fields(f[15])),
 			Nested: strings.Fields(f[16]),
 			Role:   f[18], Runs: parseRuns(f[19], now), Task: f[20], TaskTitle: f[21],
-			WindowID: f[22],
+			WindowID: f[22], SessionID: f[23], Linked: f[24] == "1",
 		}
 		r.At, _ = strconv.ParseInt(f[6], 10, 64) // unset or garbled: no age
 		r.Context, _ = strconv.Atoi(f[17])       // unset or garbled: unknown

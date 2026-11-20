@@ -896,3 +896,69 @@ func TestPanelKeepsFocusedPaneOfPlainWindow(t *testing.T) {
 			s.MustTmux(t, "show-options", "-wqv", "-t", "=proj-a:w-two", sidebar.OptLast) == focused
 	})
 }
+
+// A window in two sessions (a group of sessions, or link-window) has a
+// row in each, and place keeps the panel's cursor on the row of the
+// client's session: the two rows had one key, and place put the cursor
+// on the first. The rows: proj-a, its w-one, proj-b, its w-one.
+func TestPanelPlacesSharedWindowInClientsSession(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		share  [][]string
+		window string
+	}{
+		{"group", [][]string{{"new-session", "-d", "-t", "proj-a", "-s", "proj-b"}}, "=proj-b:0"},
+		{"link", [][]string{{"new-session", "-d", "-s", "proj-b"}, {"link-window", "-s", "=proj-a:0", "-t", "=proj-b:5"}}, "=proj-b:5"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tmuxtest.Require(t, "tmux", "fzf")
+			sb := tmuxtest.NewSandbox(t)
+			selftest.Install(t, sb)
+			sb.Setenv("TMUX_AGENT_DEBUG", "1")
+			t.Cleanup(func() {
+				if t.Failed() {
+					data, err := os.ReadFile(filepath.Join(sb.StateHome, "tmux-agent", "log"))
+					t.Logf("tmux-agent log (%v):\n%s", err, data)
+				}
+			})
+			s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+			origin := s.Display(t, "=proj-a:0", "#{pane_id}")
+			s.MustTmux(t, "rename-window", "-t", "=proj-a:0", "w-one")
+			for _, args := range c.share {
+				s.MustTmux(t, args...)
+			}
+			s.Attach(t, "proj-b", 120, 31)
+			s.MustTmux(t, "select-window", "-t", c.window)
+			client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
+			for _, args := range [][]string{{"flag", "needs-you", "--pane", origin}, {"tmux-init"}, {"popup", client}} {
+				if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+					t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+				}
+			}
+			var panel string
+			tmuxtest.WaitFor(t, 5*time.Second, "the panel", func() bool {
+				// Once for each session that holds its window.
+				if ps := strings.Fields(s.MustTmux(t, "list-panes", "-a", "-F", "#{?#{"+sidebar.OptClient+"},#{pane_id},}")); len(ps) > 0 {
+					panel = ps[0]
+				}
+				return panel != ""
+			})
+			s.WaitForContent(t, panel, "proj-b")
+			place := func() string {
+				out, err := s.Command(t, panel, "tmux-agent", "pick-key", "place", client).CombinedOutput()
+				if err != nil {
+					t.Fatalf("pick-key place: %v: %s", err, out)
+				}
+				return string(out)
+			}
+			var first string
+			tmuxtest.WaitFor(t, 5*time.Second, "the rows noted", func() bool { first = place(); return first != "" })
+			// The second reads the row the first, or the panel's own, noted.
+			for _, got := range []string{first, place()} {
+				if !strings.Contains(got, "pos(4)") {
+					t.Errorf("place = %q, want the cursor on proj-b's w-one, pos(4)", got)
+				}
+			}
+		})
+	}
+}

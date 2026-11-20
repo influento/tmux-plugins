@@ -117,7 +117,9 @@ type PickRow struct {
 	// Key names the row across reloads, as its target does not: the
 	// panel's join renumbers its window's panes. tmux's id of the pane
 	// the row stands for, of the window for a split window's row, of the
-	// session for a fold; "" for a label. tmux takes it as a target.
+	// session for a fold; "" for a label. A window in two sessions or
+	// more has a row in each: its keys then start with the session's id
+	// ("$1:@2", "$1:@2.%3"). tmux takes it as a target.
 	Key string
 	// Keys also name the row: on a task's row, its other panes' keys,
 	// as the pane it stands for changes with the flags; on a window's row
@@ -134,6 +136,22 @@ type PickRow struct {
 // Named reports whether key names the row.
 func (r PickRow) Named(key string) bool {
 	return key != "" && (r.Key == key || slices.Contains(r.Keys, key))
+}
+
+// paneKey is the key of the row that stands for r's pane, windowKey of
+// the row of its window (see PickRow.Key).
+func (r Row) paneKey() string {
+	if r.Linked {
+		return r.windowKey() + "." + r.Pane
+	}
+	return r.Pane
+}
+
+func (r Row) windowKey() string {
+	if r.Linked {
+		return r.SessionID + ":" + r.WindowID
+	}
+	return r.WindowID
 }
 
 // IsLabel reports whether the row is a label, not a place to go.
@@ -482,10 +500,10 @@ func itemRow(rows []Row, title string, p Panel) PickRow {
 		}
 	}
 	row.Labels = shownLabels(r)
-	row.Key = r.Pane
+	row.Key = r.paneKey()
 	for _, o := range rows {
 		if o.Pane != r.Pane {
-			row.Keys = append(row.Keys, o.Pane)
+			row.Keys = append(row.Keys, o.paneKey())
 		}
 	}
 	return row
@@ -543,15 +561,15 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		row = cellOf(r, r.Window, p).render(p)
 	}
 	row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, w.target(), w.target()
-	row.Key = r.Pane
+	row.Key = r.paneKey()
 	switch len(busy) {
 	case 0: // its window: a go keeps the pane the window has focused
-		row.Key = r.WindowID
+		row.Key = r.windowKey()
 	case 1:
 		// The window's id too: with a second busy pane, or none, the
 		// window's row is keyed by it, and it stays the row open as a
 		// pane's flag comes or goes.
-		row.Keys = []string{r.WindowID}
+		row.Keys = []string{r.windowKey()}
 	}
 	if len(busy) < 2 {
 		row.Labels = shownLabels(r)
@@ -560,7 +578,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		}
 		return []PickRow{row}
 	}
-	row.Key = r.WindowID // each pane's row has the pane's
+	row.Key = r.windowKey() // each pane's row has the pane's
 	out := []PickRow{row}
 	panes := slices.Clone(w.panes)
 	slices.SortFunc(panes, func(a, b paneOf) int { return cmp.Compare(a.index, b.index) })
@@ -577,7 +595,7 @@ func windowRows(w *window, agent bool, p Panel) []PickRow {
 		row.Labels = shownLabels(pr)
 		target := w.target() + "." + strconv.Itoa(pn.index)
 		row.Session, row.Window, row.Target, row.Kill = w.session, r.Window, target, target
-		row.Key = pr.Pane
+		row.Key = pr.paneKey()
 		out = append(out, row)
 	}
 	return out
@@ -675,7 +693,7 @@ func renderState(rows []Row, p Panel) []PickRow {
 				r := u.rows[0]
 				row := cellOf(r, r.Window, p).render(p)
 				row.Session, row.Window, row.Target, row.Kill = r.Session, r.Window, "="+r.Target, "="+r.Target
-				row.Key = r.Pane
+				row.Key = r.paneKey()
 				row.Labels = shownLabels(r)
 				out = append(out, row)
 			}

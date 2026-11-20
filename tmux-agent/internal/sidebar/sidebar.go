@@ -482,8 +482,9 @@ func (s *Sidebar) GoFocus(ctx context.Context, clientName, target string) (moved
 // held key starts, the first to get the lock takes the client to the row
 // noted last, and the others find it there. A client with no panel (it
 // closed meanwhile) stays where it is, as does one already there. want
-// names the row by its key, a pane's, window's or session's id: the
-// client goes to that pane, or the window's or session's current one.
+// names the row by its key, a pane's, window's or session's id (in a
+// window that is in two sessions, after the session's): the client goes
+// to that pane, or the window's or session's current one.
 func (s *Sidebar) GoWant(ctx context.Context, clientName string, want func() string) (target string, moved bool, err error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
@@ -519,7 +520,7 @@ func (s *Sidebar) GoWant(ctx context.Context, clientName string, want func() str
 	// join renumbers a window's panes. A pane in a split window by its
 	// index, as the client goes to that pane, not the window's active one.
 	format := "=#{session_name}:#{window_index}"
-	if strings.HasPrefix(target, "%") {
+	if strings.Contains(target, "%") { // a pane's key, maybe after its session and window
 		format += "#{?#{==:#{window_panes},1},,.#{pane_index}}"
 	}
 	at, err := s.Tmux.Output(ctx, "display-message", "-p", "-t", target, format)

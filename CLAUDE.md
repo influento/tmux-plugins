@@ -364,7 +364,9 @@ Rules:
   shows a row only as it read it, so each move of the user's reads the
   rows again: the focus event's reload opens the row by its key (fzf's
   field 10: a pane's, window's or session's id, which the panel's join
-  does not renumber as it does a target's pane index). With no row under
+  does not renumber as it does a target's pane index; in a window that
+  is in two sessions, grouped or linked, after the session's id, as each
+  session has a row for it). With no row under
   the cursor fzf runs no command that names a field, so every other
   reload opens the row the last rows had open (`.place`), and place,
   when it moves the cursor, reads them again. During a search, the
