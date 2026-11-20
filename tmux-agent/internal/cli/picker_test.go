@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,36 @@ import (
 	"github.com/influento/tmux-plugins/tmux-agent/internal/selftest"
 )
 
-func TestMain(m *testing.M) { selftest.Main(m) }
+// slowRowsEnv, set in a sandbox, makes the test binary as tmux-agent
+// hold a move's rows after the first (pick-rows --fzf --open=KEY) for
+// slowRowsDelay, as a busy machine does.
+const (
+	slowRowsEnv   = "TMUX_AGENT_TEST_SLOW_ROWS"
+	slowRowsDelay = 500 * time.Millisecond
+)
+
+func TestMain(m *testing.M) {
+	if a := os.Args; os.Getenv(slowRowsEnv) == "1" && len(a) == 4 && a[1] == "pick-rows" && strings.HasPrefix(a[3], "--open=") {
+		os.Exit(cli.Main("selftest", a, os.Stdin, &slowRows{w: os.Stdout}, os.Stderr))
+	}
+	selftest.Main(m)
+}
+
+// slowRows waits slowRowsDelay after its first write: pick-rows writes
+// one row per write.
+type slowRows struct {
+	w     io.Writer
+	wrote bool
+}
+
+func (s *slowRows) Write(p []byte) (int, error) {
+	n, err := s.w.Write(p)
+	if !s.wrote {
+		s.wrote = true
+		time.Sleep(slowRowsDelay)
+	}
+	return n, err
+}
 
 // gatedFzf puts an fzf into the sandbox that stays open until the test
 // creates the file gate, as a user who takes their time. Then it picks the
@@ -152,6 +182,20 @@ func TestPickEscGoesBack(t *testing.T) {
 func TestPanelSkipsSessionLines(t *testing.T) {
 	tmuxtest.Require(t, "tmux", "fzf")
 	sb := tmuxtest.NewSandbox(t)
+	panelSkipsSessionLines(t, sb)
+}
+
+// On a busy machine a move's rows come one at a time: the cursor still
+// steps over the session lines, and Enter on a fold opens it.
+func TestPanelSkipsSessionLinesWithSlowRows(t *testing.T) {
+	tmuxtest.Require(t, "tmux", "fzf")
+	sb := tmuxtest.NewSandbox(t)
+	sb.Setenv(slowRowsEnv, "1")
+	panelSkipsSessionLines(t, sb)
+}
+
+func panelSkipsSessionLines(t *testing.T, sb *tmuxtest.Sandbox) {
+	t.Helper()
 	selftest.Install(t, sb)
 	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
 	s.MustTmux(t, "new-session", "-d", "-s", "proj-b", "-n", "w-one", ";", "new-window", "-d", "-t", "=proj-b:1", "-n", "w-two")

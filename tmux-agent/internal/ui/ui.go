@@ -132,13 +132,16 @@ func stepFrom(rows []attention.PickRow, i, dir int, action string) (string, stri
 // open. Only a move has it: with no row under the cursor (a search that matches
 // none) fzf runs no command that names a field, and the other reloads
 // keep the row that was open, or the one the key in the file open names
-// ("" for none).
+// ("" for none). A move's reload and place's are reload-sync: fzf keeps
+// the old rows until it has read all the new ones. A plain reload shows
+// the rows as they come, and the cursor falls on the first, a session's
+// label, where Enter does nothing.
 func openRow(self, open string) string {
 	note := ""
 	if open != "" {
 		note = "printf %s {10} >" + shell.Quote(open) + "; "
 	}
-	return note + `printf "reload(%s'%s')" ` + shell.Quote(self+" pick-rows --fzf --open=") + " {10}"
+	return note + `printf "reload-sync(%s'%s')" ` + shell.Quote(self+" pick-rows --fzf --open=") + " {10}"
 }
 
 // Pick lets the user choose a session, a window or a pane with fzf and
@@ -208,6 +211,8 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		"--info=hidden", "--no-scrollbar", "--no-separator", "--highlight-line",
 		"--pointer=▌", "--marker=", "--gutter= ", "--ellipsis=…",
 		"--prompt= ", "--ghost=search",
+		// A plain reload: the killed row goes at once. With reload-sync
+		// it stays until the new rows are read, and Enter could choose it.
 		fmt.Sprintf("--bind=ctrl-x:execute-silent([ -z {4} ] || %s kill {4})+reload(%s)", opts.Self, list),
 		"--bind=tab:transform:" + opts.Self + " pick-key tab",
 		"--bind=btab:transform:" + opts.Self + " pick-key tab",

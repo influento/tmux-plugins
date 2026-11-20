@@ -1231,7 +1231,7 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		// opens in rows read again.
 		if pos <= len(rows) && !noted[pos-1].Open {
 			a.noteOpen(rows[pos-1].Key)
-			actions += "+reload(" + shell.Quote(a.self) + " pick-rows --fzf --open=" + shell.Quote(rows[pos-1].Key) + ")"
+			actions += "+reload-sync(" + shell.Quote(a.self) + " pick-rows --fzf --open=" + shell.Quote(rows[pos-1].Key) + ")"
 		}
 		fmt.Fprintln(a.stdout, actions)
 	case "enter":
