@@ -13,6 +13,10 @@ import (
 
 // fakeProcs points procRoot at a process table of its own for one test.
 // Each process is pid: {ppid, state, comm, argv...}.
+// fixtureServer plays the tmux server in the fixtures: their panes' first
+// processes hang under pid 1.
+const fixtureServer = 1
+
 func fakeProcs(t *testing.T, procs map[int][]string) {
 	t.Helper()
 	root := t.TempDir()
@@ -135,13 +139,13 @@ func TestAgentArgsAndBelow(t *testing.T) {
 		{"npm script under node", 22, []string{"--resume", "x"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := nearestAgentArgs(c.from, names, 0)
+			got, ok := nearestAgentArgs(c.from, names, 0, fixtureServer)
 			if !ok || !slices.Equal(got, c.want) {
 				t.Errorf("nearestAgentArgs(%d) = %q, %v; want %q", c.from, got, ok, c.want)
 			}
 		})
 	}
-	if _, ok := nearestAgentArgs(41, names, 0); ok {
+	if _, ok := nearestAgentArgs(41, names, 0, fixtureServer); ok {
 		t.Error("nearestAgentArgs found an agent above vim")
 	}
 	tree := processTree()
@@ -191,7 +195,7 @@ func TestNestedFrom(t *testing.T) {
 		{"nested, no launcher", 15, 0, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := nestedFrom(c.from, names, c.run); got != c.want {
+			if got := nestedFrom(c.from, names, c.run, fixtureServer); got != c.want {
 				t.Errorf("nestedFrom(%d, run %d) = %v, want %v", c.from, c.run, got, c.want)
 			}
 		})
@@ -225,7 +229,6 @@ func fakeStarts(t *testing.T, starts map[int]int) {
 // hooks; a shell that runs in the background since earlier is none.
 func TestOtherHooks(t *testing.T) {
 	names := []string{"claude"}
-	const pane = 10 // the pane's shell
 	table := map[int][]string{
 		10: {"1", "S", "zsh", "zsh"},
 		11: {"10", "S", "tmux-agent", "claude", "run", "claude"},
@@ -238,7 +241,7 @@ func TestOtherHooks(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		fakeProcs(t, table)
 		fakeStarts(t, starts)
-		if got := otherHooks(20, names, pane); len(got) != 0 {
+		if got := otherHooks(20, names, fixtureServer); len(got) != 0 {
 			t.Errorf("otherHooks = %v, want none", got)
 		}
 	})
@@ -251,7 +254,7 @@ func TestOtherHooks(t *testing.T) {
 		starts := maps.Clone(starts)
 		starts[21] = 5001
 		fakeStarts(t, starts)
-		if got := otherHooks(20, names, 40); len(got) != 0 {
+		if got := otherHooks(20, names, 40); len(got) != 0 { // no pane of server 40 runs them
 			t.Errorf("otherHooks = %v, want none", got)
 		}
 	})
@@ -263,8 +266,51 @@ func TestOtherHooks(t *testing.T) {
 		starts := maps.Clone(starts)
 		starts[21], starts[30] = 5001, 5100
 		fakeStarts(t, starts)
-		if got := otherHooks(20, names, pane); !slices.Equal(got, []int{21}) {
+		if got := otherHooks(20, names, fixtureServer); !slices.Equal(got, []int{21}) {
 			t.Errorf("otherHooks = %v, want [21]", got)
+		}
+	})
+}
+
+// A hook finds its agents only in a pane of its server: one sent from
+// outside every pane (a test's, run by a claude -p of a review inside an
+// agent's session) has none, however many agents run above it.
+func TestHookOutsideItsPane(t *testing.T) {
+	const server = 5
+	fakeProcs(t, map[int][]string{
+		5:  {"1", "S", "tmux", "tmux"},
+		10: {"5", "S", "zsh", "zsh"},
+		11: {"10", "S", "claude", "claude", "--agent", "role-w"},
+		12: {"11", "S", "sh", "sh", "-c", "tmux-agent hook claude"},
+		60: {"1", "S", "claude", "claude"},
+		61: {"60", "S", "python3", "python3", "review"},
+		62: {"61", "S", "claude", "claude", "-p", "review", "--agent", "role-r"},
+		63: {"62", "S", "go", "go", "test"},
+		64: {"63", "S", "conformance.test", "conformance.test"},
+	})
+	names := []string{"claude"}
+	t.Run("nested", func(t *testing.T) {
+		if nestedFrom(12, names, 0, server) {
+			t.Error("the pane's agent's hook is nested")
+		}
+		if nestedFrom(64, names, 0, server) {
+			t.Error("a hook outside the pane is nested")
+		}
+	})
+	t.Run("arguments", func(t *testing.T) {
+		if got, ok := nearestAgentArgs(12, names, 0, server); !ok || !slices.Equal(got, []string{"--agent", "role-w"}) {
+			t.Errorf("the pane's agent's arguments = %q, %v; want [--agent role-w]", got, ok)
+		}
+		if got, ok := nearestAgentArgs(64, names, 0, server); ok {
+			t.Errorf("a hook outside the pane has an agent with arguments %q", got)
+		}
+	})
+	t.Run("pid", func(t *testing.T) {
+		if got := nearestAgentPid(12, names, server); got != 11 {
+			t.Errorf("the pane's agent = %d, want 11", got)
+		}
+		if got := nearestAgentPid(64, names, server); got != 0 {
+			t.Errorf("a hook outside the pane has agent %d, want none", got)
 		}
 	})
 }

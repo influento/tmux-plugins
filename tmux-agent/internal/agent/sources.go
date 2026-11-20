@@ -258,3 +258,14 @@ func listenWakes(path string) (conn *net.UnixConn, close func(), err error) {
 		unlock()
 	}, nil
 }
+
+// server is the pid of the tmux server the calling process runs under,
+// from $TMUX (socket,pid,session); 0 outside tmux. Every pane's first
+// process is its child.
+func (e *Env) server() int {
+	f := strings.Split(e.getenv("TMUX"), ",")
+	if len(f) < 2 {
+		return 0
+	}
+	return atoi(f[1])
+}

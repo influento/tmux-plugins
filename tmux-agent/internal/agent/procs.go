@@ -87,19 +87,38 @@ func agentArgs(p proc, names []string) []string {
 	return nil
 }
 
-// nearestAgentArgs returns the arguments of the nearest agent process from
-// pid up to, not including, stop (0 for none). ok is false when there is
-// none.
-func nearestAgentArgs(pid int, names []string, stop int) (args []string, ok bool) {
-	for pid > 1 && pid != stop {
+// inPane is process pid and the processes above it up to its pane's first
+// process, a child of the tmux server; nil when pid runs in no pane of
+// server, or the walk cannot read a process. Only these are a hook's: one
+// run outside every pane (a test's, under the agent that runs the test)
+// must not take an agent above it for its own.
+func inPane(pid, server int) []proc {
+	var chain []proc
+	for pid > 1 && server > 0 {
 		p, err := readProc(pid)
 		if err != nil {
-			return nil, false
+			return nil
+		}
+		chain = append(chain, p)
+		if p.ppid == server {
+			return chain
+		}
+		pid = p.ppid
+	}
+	return nil
+}
+
+// nearestAgentArgs returns the arguments of the nearest agent process from
+// pid up to, not including, stop (0 for none), in pid's pane of server. ok
+// is false when there is none.
+func nearestAgentArgs(pid int, names []string, stop, server int) (args []string, ok bool) {
+	for _, p := range inPane(pid, server) {
+		if p.pid == stop {
+			break
 		}
 		if isAgentProc(p, names) {
 			return agentArgs(p, names), true
 		}
-		pid = p.ppid
 	}
 	return nil, false
 }
@@ -194,18 +213,13 @@ func firstAgentBelow(pid int, names []string, tree map[int][]proc) int {
 	return 0
 }
 
-// nearestAgentPid is the pid of the nearest agent process from pid up to
-// init; 0 for none.
-func nearestAgentPid(pid int, names []string) int {
-	for pid > 1 {
-		p, err := readProc(pid)
-		if err != nil {
-			return 0
-		}
+// nearestAgentPid is the pid of the nearest agent process from pid up, in
+// pid's pane of server; 0 for none.
+func nearestAgentPid(pid int, names []string, server int) int {
+	for _, p := range inPane(pid, server) {
 		if isAgentProc(p, names) {
-			return pid
+			return p.pid
 		}
-		pid = p.ppid
 	}
 	return 0
 }
@@ -251,16 +265,16 @@ func agentAncestors(pid int, names []string, stop, max int) int {
 // started inside another one, such as a `claude -p` run as a tool: it
 // inherits the outer pane and run, and its hooks would take them over. A
 // hook counts for a run only when its nearest agent process is the run's
-// own, so two agent processes between the hook and the launcher (or init)
-// mean nested. So does a run (the launcher) not above the hook at all: an
-// agent the run started outlived the process between them, as a Stop
-// hook's run does when the hook's timeout kills its process group, and
-// sends its last hooks from under init.
-func NestedHook(names []string, run int) bool {
+// own, so two agent processes between the hook and the launcher (or its
+// pane's first process) mean nested. So does a run (the launcher) not
+// above the hook at all: an agent the run started outlived the process
+// between them, as a Stop hook's run does when the hook's timeout kills
+// its process group, and sends its last hooks from under init.
+func NestedHook(names []string, run, server int) bool {
 	if len(names) == 0 {
 		return false
 	}
-	return nestedFrom(os.Getppid(), names, run)
+	return nestedFrom(os.Getppid(), names, run, server)
 }
 
 // hookSpread is how far apart, in clock ticks (USER_HZ, 100 a second on
@@ -272,35 +286,26 @@ const hookSpread = clockTicks
 // process that started within hookSpread of the calling hook's own. Claude
 // Code ends a turn only after its last Stop hook, and one can take the
 // turn on. A background shell that started that close to the turn's end
-// counts too; it is rare, and costs only a later done. An agent that does
-// not run in the pane whose first process is panePid has none: a hook run
-// below some other agent (a test's, under that agent's Stop hook) is not
-// one of its hooks.
-func OtherHooksRun(names []string, panePid int) bool {
-	return len(otherHooks(os.Getppid(), names, panePid)) > 0
+// counts too; it is rare, and costs only a later done. Only an agent in
+// the hook's pane of server has them: a hook run below some other agent
+// (a test's, under that agent's Stop hook) is not one of its hooks.
+func OtherHooksRun(names []string, server int) bool {
+	return len(otherHooks(os.Getppid(), names, server)) > 0
 }
 
 // otherHooks is OtherHooksRun for a hook whose parent is pid: the pids of
 // the other hooks.
-func otherHooks(pid int, names []string, panePid int) []int {
+func otherHooks(pid int, names []string, server int) []int {
 	var own proc // the child of the agent the calling hook runs in
-	for pid > 1 {
-		p, err := readProc(pid)
-		if err != nil {
-			return nil
-		}
-		parent, err := readProc(p.ppid)
-		if err != nil {
-			return nil
-		}
-		if isAgentProc(parent, names) {
-			own = p
+	chain := inPane(pid, server)
+	for i := 0; i+1 < len(chain); i++ {
+		if isAgentProc(chain[i+1], names) {
+			own = chain[i]
 			break
 		}
-		pid = p.ppid
 	}
 	started, err := strconv.ParseInt(own.start, 10, 64)
-	if own.pid == 0 || err != nil || !isBelow(own.ppid, panePid) {
+	if own.pid == 0 || err != nil {
 		return nil
 	}
 	var out []int
@@ -314,48 +319,28 @@ func otherHooks(pid int, names []string, panePid int) []int {
 	return out
 }
 
-// isBelow reports whether process pid is top or runs below it.
-func isBelow(pid, top int) bool {
-	for pid > 1 {
-		if pid == top {
-			return true
-		}
-		p, err := readProc(pid)
-		if err != nil {
-			return false
-		}
-		pid = p.ppid
-	}
-	return false
-}
-
 // nestedFrom is NestedHook for a hook whose parent is pid.
-func nestedFrom(pid int, names []string, run int) bool {
+func nestedFrom(pid int, names []string, run, server int) bool {
 	n := 0
-	for pid > 1 {
-		if pid == run {
+	for _, p := range inPane(pid, server) {
+		if p.pid == run {
 			return n >= 2
-		}
-		p, err := readProc(pid)
-		if err != nil {
-			break
 		}
 		if isAgentProc(p, names) {
 			n++
 		}
-		pid = p.ppid
 	}
 	return n >= 2 || run > 0
 }
 
 // OneShotHook reports whether the hook process runs under a one-turn run
 // of agent a, such as claude -p started without the launcher.
-func OneShotHook(a Agent, names []string, run int) bool {
+func OneShotHook(a Agent, names []string, run, server int) bool {
 	o, ok := a.(OneShotter)
 	if !ok || len(names) == 0 {
 		return false
 	}
-	args, ok := nearestAgentArgs(os.Getppid(), names, run)
+	args, ok := nearestAgentArgs(os.Getppid(), names, run, server)
 	return ok && o.OneShot(args)
 }
 

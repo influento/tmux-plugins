@@ -228,7 +228,11 @@ Rules:
 - A hook counts for a run only when its nearest agent process is the run's
   own and the run is above it (a Stop hook's timeout kills its process
   group: a `claude -p` it ran sends its last hooks from under init); a
-  launcher started inside an agent runs the agent in its place.
+  launcher started inside an agent runs the agent in its place. A hook's
+  agent processes are only those up to its pane's first process, the
+  child of the server in `$TMUX`: a hook sent from outside every pane (a
+  test's, under the `claude -p` of a review) has none, and is neither
+  nested nor one-shot.
 - A turn that ends while the agent's other Stop hooks run (workbench's
   review runs `claude -p` in one) stays working, held (`@agent_held`
   `hook`): Claude Code ends the turn after its last Stop hook, and one can

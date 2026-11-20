@@ -40,9 +40,9 @@ type Env struct {
 	// the nearest agent process above the hook when nil.
 	AgentArgs func(names []string, run int) ([]string, bool)
 	// OtherHooks reports whether hooks the agent started with the calling
-	// one, for the same event, still run, for the pane whose first process
-	// is panePid. OtherHooksRun when nil.
-	OtherHooks func(names []string, panePid int) bool
+	// one, for the same event, still run, in the hook's pane of server.
+	// OtherHooksRun when nil.
+	OtherHooks func(names []string, server int) bool
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 	// Git reads a folder's checkout; git.HeadOf when nil.
@@ -81,7 +81,7 @@ func (e *Env) now() time.Time {
 // or "" for none: a one-turn run never runs again.
 func (e *Env) revive(a Agent, session string) string {
 	cmd, ok := ReviveCommand(a, session)
-	if !ok || OneShotHook(a, e.Registry.ProcessNames(), e.Run) {
+	if !ok || OneShotHook(a, e.Registry.ProcessNames(), e.Run, e.server()) {
 		return ""
 	}
 	return cmd
@@ -258,7 +258,7 @@ func (e *Env) Hook(ctx context.Context, a Agent, payload []byte) error {
 	}
 	nested := e.Nested
 	if nested == nil {
-		nested = NestedHook
+		nested = func(names []string, run int) bool { return NestedHook(names, run, e.server()) }
 	}
 	names := e.Registry.ProcessNames()
 	self, parent := e.lineage(names)
@@ -298,10 +298,10 @@ func (e *Env) keepWatched(a Agent, ev Event) {
 		return
 	}
 	names := e.Registry.ProcessNames()
-	if OneShotHook(a, names, e.Run) {
+	if OneShotHook(a, names, e.Run, e.server()) {
 		return
 	}
-	if pid := nearestAgentPid(os.Getppid(), names); pid > 0 {
+	if pid := nearestAgentPid(os.Getppid(), names, e.server()); pid > 0 {
 		e.Watcher(a, e.Pane, pid)
 	}
 }
@@ -549,7 +549,7 @@ func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session st
 	if err := e.syncSubagents(ctx, a, ev, l, session); err != nil {
 		return err
 	}
-	if len(ev.Subagents) == 0 && e.otherHooks(a, l.panePid) {
+	if len(ev.Subagents) == 0 && e.otherHooks(a) {
 		// The agent's other turn-end hooks still run (a review that
 		// runs an agent of its own, say), and one can take the turn on:
 		// the turn ends when the agent goes idle (wentIdle).
@@ -597,7 +597,7 @@ const (
 // otherHooks reports whether hooks of agent a for the calling hook's event
 // still run beside it. Only an agent that tells when it went idle can
 // be held by them: nothing else would tell when they ended the turn.
-func (e *Env) otherHooks(a Agent, panePid int) bool {
+func (e *Env) otherHooks(a Agent) bool {
 	if _, ok := a.(Idler); !ok {
 		return false
 	}
@@ -605,7 +605,7 @@ func (e *Env) otherHooks(a Agent, panePid int) bool {
 	if other == nil {
 		other = OtherHooksRun
 	}
-	return other(e.Registry.ProcessNames(), panePid)
+	return other(e.Registry.ProcessNames(), e.server())
 }
 
 // markTurnEnd sets the flag a turn end leaves.

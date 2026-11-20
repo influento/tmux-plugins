@@ -170,7 +170,7 @@ func TestProcLineage(t *testing.T) {
 	old := procRoot
 	procRoot = root
 	t.Cleanup(func() { procRoot = old })
-	got, up := lineageFrom(self, []string{"fakeagent"})
+	got, up := lineageFrom(self, []string{"fakeagent"}, fixtureServer)
 	if got != "70-333" || up != "50-111" {
 		t.Errorf("lineage = %q, %q; want 70-333, 50-111", got, up)
 	}

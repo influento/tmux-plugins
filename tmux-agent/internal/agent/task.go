@@ -27,7 +27,9 @@ func (e *Env) roleOf(a Agent) string {
 	}
 	args := e.AgentArgs
 	if args == nil {
-		args = func(names []string, run int) ([]string, bool) { return nearestAgentArgs(os.Getppid(), names, run) }
+		args = func(names []string, run int) ([]string, bool) {
+			return nearestAgentArgs(os.Getppid(), names, run, e.server())
+		}
 	}
 	got, ok := args(e.Registry.ProcessNames(), e.Run)
 	if !ok {

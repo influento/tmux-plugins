@@ -20,13 +20,13 @@ import (
 // procLineage is the nearest agent process above the calling process and
 // the nearest agent process above that one, each as pid-start; "" for
 // none.
-func procLineage(names []string) (self, parent string) {
-	return lineageFrom(os.Getppid(), names)
+func procLineage(names []string, server int) (self, parent string) {
+	return lineageFrom(os.Getppid(), names, server)
 }
 
 // lineageFrom is procLineage from process pid up.
-func lineageFrom(pid int, names []string) (self, parent string) {
-	pid = nearestAgentPid(pid, names)
+func lineageFrom(pid int, names []string, server int) (self, parent string) {
+	pid = nearestAgentPid(pid, names, server)
 	if pid <= 0 {
 		return "", ""
 	}
@@ -35,7 +35,7 @@ func lineageFrom(pid int, names []string) (self, parent string) {
 		return "", ""
 	}
 	self = procKey(p)
-	if up := nearestAgentPid(p.ppid, names); up > 0 {
+	if up := nearestAgentPid(p.ppid, names, server); up > 0 {
 		if q, err := readProc(up); err == nil {
 			parent = procKey(q)
 		}
@@ -58,7 +58,7 @@ func (e *Env) lineage(names []string) (self, parent string) {
 	if e.Lineage != nil {
 		return e.Lineage(names)
 	}
-	return procLineage(names)
+	return procLineage(names, e.server())
 }
 
 // noteSession notes that agent process self runs session.
