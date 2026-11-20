@@ -49,13 +49,17 @@ const usage = `usage:
                    [--task ID --source S [--title T]]
                                        bind the window to a task, opened if new (a
                                        window NAME open already joins it too)
-  tmux-agent prompt [--wait] [--timeout D] [--json] TARGET [TEXT]
+  tmux-agent prompt [--wait] [--timeout D] [--json] [--raw] TARGET [TEXT]
                                        type TEXT (else stdin) into the agent in TARGET (a
-                                       pane, a window name, or SESSION:WINDOW) and press
-                                       Enter; --wait prints its answer, the text of the
-                                       turn's last message, once the turn ends. Exit 3:
-                                       the agent works or waits on the user; 4: no agent
-                                       in TARGET; 5: the turn ended without an answer
+                                       pane, a window name, or SESSION:WINDOW), press
+                                       Enter and wait for the agent to take it as its
+                                       prompt; --wait prints its answer, the text of the
+                                       turn's last message, once the turn ends. Text the
+                                       input box takes as a command (/, !) needs --raw.
+                                       Exit 3: the agent works or waits on the user; 4: no
+                                       agent runs in TARGET; 5: the turn ended without an
+                                       answer; 6: the agent took no prompt, or other
+                                       text; 130: interrupted
   tmux-agent read [--last N] [--json] TARGET
                                        the agent's last N answers (1), oldest first
   tmux-agent task end ID --source S [--close] [--json]

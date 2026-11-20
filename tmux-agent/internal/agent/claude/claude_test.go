@@ -45,7 +45,7 @@ func TestReadHook(t *testing.T) {
 			true, agent.Event{Kind: agent.SessionEnd, End: agent.EndUnknown}},
 		{"end exit", map[string]any{"hook_event_name": "SessionEnd", "reason": "prompt_input_exit"},
 			true, agent.Event{Kind: agent.SessionEnd, End: agent.EndExited}},
-		{"prompt", map[string]any{"hook_event_name": "UserPromptSubmit", "prompt": "go"}, true, agent.Event{Kind: agent.Working}},
+		{"prompt", map[string]any{"hook_event_name": "UserPromptSubmit", "prompt": "go"}, true, agent.Event{Kind: agent.Working, Submitted: true, Prompt: "go"}},
 		{"notification dropped", map[string]any{"hook_event_name": "Notification", "notification_type": "idle_prompt"}, false, agent.Event{}},
 		{"notification long", map[string]any{"hook_event_name": "Notification", "notification_type": "agent_needs_input", "message": strings.Repeat("y", 80)},
 			true, agent.Event{Kind: agent.NeedsInput, Reason: strings.Repeat("y", 64)}},
@@ -320,5 +320,30 @@ func TestRole(t *testing.T) {
 		if got := (Claude{}).Role(c.args); got != c.want {
 			t.Errorf("Role(%q) = %q, want %q", c.args, got, c.want)
 		}
+	}
+}
+
+// Claude Code hands a long paste to its hooks in a pasted_content block:
+// the prompt the hook reads is the text that was pasted. Text typed before
+// the paste stays, and makes it other text.
+func TestPastedPrompt(t *testing.T) {
+	sent := "line 1\twith a tab\nline 2\nReply with the number of lines."
+	block := "\n\n<pasted_content id=\"cc1f\">\n" + sent + "\n</pasted_content id=\"cc1f\">\n"
+	for _, c := range []struct {
+		name, prompt string
+		same         bool
+	}{
+		{"one pasted block", block, true},
+		{"a draft before the block", "a draft " + block, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ev, ok, err := (Claude{}).ReadHook(payload(t, map[string]any{"hook_event_name": "UserPromptSubmit", "prompt": c.prompt}))
+			if err != nil || !ok {
+				t.Fatalf("ReadHook: %v, %v", ok, err)
+			}
+			if same := agent.PromptKey(ev.Prompt) == agent.PromptKey(sent); same != c.same {
+				t.Errorf("the prompt %q reads as the sent text: %v, want %v", ev.Prompt, same, c.same)
+			}
+		})
 	}
 }

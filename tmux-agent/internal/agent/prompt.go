@@ -3,10 +3,13 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 )
@@ -20,25 +23,36 @@ type AgentPane struct {
 	// Wait is the channel of a prompt that waits on the pane, or "".
 	Wait string
 	Pid  int // the pane's first process
+	// PromptGot is the receipt of the last prompt the agent took: when,
+	// and its PromptKey ("-" when the agent did not tell the text).
+	PromptGot    time.Time
+	PromptGotKey string
 }
 
 var agentPaneFormat = strings.Join([]string{
 	"#{pane_id}", "#{window_id}", "#{window_name}", "#{session_name}",
 	"#{" + optAgent + "}", "#{" + optSession + "}", "#{" + optTranscript + "}",
 	"#{@attention}", "#{@attention_reason}", "#{" + attention.OptWait + "}", "#{pane_pid}",
+	"#{" + optPromptGot + "}",
 }, "\x1f")
 
 func parseAgentPane(line string) AgentPane {
-	f := strings.SplitN(line, "\x1f", 11)
-	for len(f) < 11 {
+	f := strings.SplitN(line, "\x1f", 12)
+	for len(f) < 12 {
 		f = append(f, "")
 	}
 	pid, _ := strconv.Atoi(f[10]) // 0 for a dead pane: no process
-	return AgentPane{
+	p := AgentPane{
 		Pane: f[0], Window: f[1], WindowName: f[2], TmuxSession: f[3],
 		Agent: f[4], Session: f[5], Transcript: f[6],
 		Flag: attention.State(f[7]), Reason: f[8], Wait: f[9], Pid: pid,
 	}
+	if ms, key, ok := strings.Cut(f[11], " "); ok {
+		if n, err := strconv.ParseInt(ms, 10, 64); err == nil {
+			p.PromptGot, p.PromptGotKey = time.UnixMilli(n), key
+		}
+	}
+	return p
 }
 
 // AgentPanes lists every pane of the server whose agent has a session.
@@ -103,4 +117,29 @@ func (e *Env) ClaimForPrompt(ctx context.Context, pane string) (p AgentPane, cla
 	pe := *e
 	pe.Pane = pane
 	return p, true, pe.markWorking(ctx, e.Registry.Get(p.Agent), p.Session)
+}
+
+// PromptKey names a prompt's text for its receipt: a hash of the text
+// without its white space, which an input box may change ("-" for none).
+func PromptKey(text string) string {
+	text = strings.Join(strings.FieldsFunc(text, unicode.IsSpace), "")
+	if text == "" {
+		return "-"
+	}
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:8])
+}
+
+// ReleasePrompt gives back the claim of a prompt that got no receipt since
+// claimed: the working flag the claim set goes, as an Esc before the first
+// token would end it. A receipt that came meanwhile keeps it; released is
+// then false.
+func (e *Env) ReleasePrompt(ctx context.Context, pane string, claimed time.Time) (released bool, err error) {
+	defer e.lock(ctx)()
+	p, ok, err := e.PaneNow(ctx, pane)
+	if err != nil || !ok || !p.PromptGot.Before(claimed) {
+		return false, err
+	}
+	now := e.now()
+	return true, e.endTurnAt(ctx, pane, e.Registry.Get(p.Agent), p.Session, func() (time.Time, bool) { return now, true }, attention.Working)
 }

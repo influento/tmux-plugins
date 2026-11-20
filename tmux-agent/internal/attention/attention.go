@@ -164,6 +164,11 @@ func lines(out string) []string {
 	return strings.Split(out, "\n")
 }
 
+// OptAtMs is when the pane's flag was set, unix milliseconds: beside
+// @attention_at, whole seconds, which an end in the flag's second before
+// it cannot be told from.
+const OptAtMs = "@attention_at_ms"
+
 // OptWait holds, on a pane, the tmux wait-for channel of a program that
 // waits for the pane's turn to end (tmux-agent prompt --wait). The flag's
 // next change to anything but working signals it, once.
@@ -286,11 +291,12 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 		c.changed(ctx)
 		return cur, false, c.Status(ctx)
 	}
-	at := strconv.FormatInt(c.now().Unix(), 10)
+	now := c.now()
 	args := []string{
 		"set-option", "-p", "-t", pane, "@attention", string(f.State), ";",
 		"set-option", "-p", "-t", pane, "@attention_reason", f.Reason, ";",
-		"set-option", "-p", "-t", pane, "@attention_at", at, ";",
+		"set-option", "-p", "-t", pane, "@attention_at", strconv.FormatInt(now.Unix(), 10), ";",
+		"set-option", "-p", "-t", pane, OptAtMs, strconv.FormatInt(now.UnixMilli(), 10), ";",
 		"set-option", "-pu", "-t", pane, "@attention_gone", ";",
 	}
 	col := c.colours(ctx)
@@ -323,7 +329,7 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 // stays in @attention_idle_at: for a done flag, when the turn ended.
 func unflagArgs(pane string) []string {
 	args := []string{"set-option", "-pF", "-t", pane, "@attention_idle_at", "#{@attention_at}", ";"}
-	for _, o := range []string{"@attention", "@attention_reason", "@attention_at", "@attention_owner", "@attention_failed", "@attention_mark"} {
+	for _, o := range []string{"@attention", "@attention_reason", "@attention_at", OptAtMs, "@attention_owner", "@attention_failed", "@attention_mark"} {
 		args = append(args, "set-option", "-pu", "-t", pane, o, ";")
 	}
 	return args

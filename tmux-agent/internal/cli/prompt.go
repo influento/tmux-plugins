@@ -7,7 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/influento/tmux-plugins/tmux-agent/internal/agent"
@@ -19,7 +22,24 @@ const (
 	exitBusy     = 3 // the agent works, or waits on the user
 	exitNoAgent  = 4 // no agent in the target
 	exitNoAnswer = 5 // the turn ended without an answer: cut short, or the agent ended
+	exitNoTurn   = 6 // no receipt: the agent took no prompt, or other text than was sent
+	exitSignal   = 130
 )
+
+// receiptWait is how long prompt waits for the receipt, the agent's submit
+// hook noting the prompt it took. Claude Code runs the hook as the turn
+// starts.
+const receiptWait = 10 * time.Second
+
+// promptSource is the label source prompt reports a failed delivery on,
+// on the agent's pane; promptLabelTTL is how long such a label shows.
+const (
+	promptSource   = "prompt"
+	promptLabelTTL = time.Hour
+)
+
+// screenTail is how many of a pane's last lines a failed delivery shows.
+const screenTail = 6
 
 // waitSlice is how long a wait waits on its channel before it checks
 // that the pane and its agent are still there: a closed pane signals
@@ -95,10 +115,11 @@ func (a *app) runCode(cmd string, fn func() error) int {
 
 // promptCommand types a prompt into an agent's pane; with --wait it
 // prints the answer once the turn ends.
-func (a *app) promptCommand(args []string, stdin io.Reader) error {
+func (a *app) promptCommand(args []string, stdin io.Reader) (err error) {
 	fs := flag.NewFlagSet("prompt", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	wait := fs.Bool("wait", false, "")
+	raw := fs.Bool("raw", false, "")
 	timeout := fs.Duration("timeout", 0, "")
 	asJSON := fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() < 1 || fs.NArg() > 2 || *timeout < 0 {
@@ -128,6 +149,17 @@ func (a *app) promptCommand(args []string, stdin io.Reader) error {
 	if p.Pane == a.getenv("TMUX_PANE") {
 		return exitWith(2, "%s is the caller's own pane", p.Pane)
 	}
+	defer func() {
+		end := "ok"
+		if err != nil {
+			end = "failed: " + strings.ReplaceAll(err.Error(), "\n", " | ")
+		}
+		a.logf("prompt %s (%s): wait %v, %s", p.Pane, p.WindowName, *wait, end)
+	}()
+	if ic, ok := a.reg.Get(p.Agent).(agent.InputCommander); ok && !*raw && ic.InputCommand(text) {
+		return exitWith(2, "%s's input box takes this text as a command, not a prompt: --raw sends it anyway", fs.Arg(0))
+	}
+	claimedAt := time.Now()
 	now, claimed, err := a.env.ClaimForPrompt(ctx, p.Pane)
 	switch {
 	case errors.Is(err, agent.ErrNoAgentRuns):
@@ -143,8 +175,23 @@ func (a *app) promptCommand(args []string, stdin io.Reader) error {
 	if *wait {
 		channel = agent.NewPromptChannel()
 	}
-	sent := time.Now()
 	if err := a.typePrompt(ctx, p.Pane, text, channel); err != nil {
+		return err
+	}
+	// A signal ends the wait, and the pane's channel with it.
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+	waitCtx := sigCtx
+	if *timeout > 0 {
+		var cancelWait context.CancelFunc
+		waitCtx, cancelWait = context.WithTimeout(waitCtx, *timeout)
+		defer cancelWait()
+	}
+	took, err := a.receipt(waitCtx, p, text, claimedAt, channel)
+	if err != nil {
+		if sigCtx.Err() != nil {
+			return exitWith(exitSignal, "interrupted")
+		}
 		return err
 	}
 	out := promptedJSON{
@@ -152,14 +199,11 @@ func (a *app) promptCommand(args []string, stdin io.Reader) error {
 		Name: p.WindowName, AgentSession: p.Session,
 	}
 	if *wait {
-		waitCtx := context.Background()
-		if *timeout > 0 {
-			var cancelWait context.CancelFunc
-			waitCtx, cancelWait = context.WithTimeout(waitCtx, *timeout)
-			defer cancelWait()
-		}
 		end, err := a.waitTurn(waitCtx, p, channel)
 		if err != nil {
+			if sigCtx.Err() != nil {
+				return exitWith(exitSignal, "interrupted")
+			}
 			return err
 		}
 		out.State, out.Reason = end.Flag.String(), end.Reason
@@ -171,7 +215,7 @@ func (a *app) promptCommand(args []string, stdin io.Reader) error {
 			}
 			return exitWith(exitBusy, "%s waits on the user: %s", fs.Arg(0), end.Reason)
 		}
-		ans, ok := a.answerSince(p, sent)
+		ans, ok := a.answerSince(p, took)
 		if !ok {
 			return exitWith(exitNoAnswer, "the turn in %s ended without an answer", p.Pane)
 		}
@@ -204,6 +248,78 @@ func (a *app) typePrompt(ctx context.Context, pane, text, channel string) error 
 		"send-keys", "-t", pane, "Enter")
 	_, err := a.tmux.Run(ctx, args...)
 	return err
+}
+
+// receipt waits for the agent's receipt of the prompt claimed at claimed,
+// and returns when the agent took it. With no receipt it gives the claim
+// back; with none, or one of other text (a draft in the input box joined
+// it), it labels the pane, logs, and ends with exitNoTurn. A wait that
+// ends, by ctx or by an error, takes channel off the pane.
+func (a *app) receipt(ctx context.Context, p agent.AgentPane, text string, claimed time.Time, channel string) (time.Time, error) {
+	rctx, cancel := context.WithTimeout(ctx, receiptWait)
+	defer cancel()
+	for {
+		readCtx, cancelRead := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
+		now, ok, err := a.env.PaneNow(readCtx, p.Pane)
+		cancelRead()
+		switch {
+		case err != nil:
+			a.dropWait(ctx, p.Pane, channel)
+			return time.Time{}, err
+		case !ok:
+			return time.Time{}, exitWith(exitNoAnswer, "%s closed", p.Pane)
+		case !now.PromptGot.Before(claimed) && (now.PromptGotKey == "-" || now.PromptGotKey == agent.PromptKey(text)):
+			a.promptLabel(ctx, p.Pane, "")
+			a.logf("prompt %s (%s): taken", p.Pane, p.WindowName)
+			return now.PromptGot, nil
+		case !now.PromptGot.Before(claimed):
+			a.dropWait(ctx, p.Pane, channel)
+			a.promptLabel(ctx, p.Pane, "⚠ prompt: the agent got other text")
+			a.logf("prompt %s (%s): the agent got other text than was sent", p.Pane, p.WindowName)
+			return time.Time{}, exitWith(exitNoTurn, "%s got other text than was sent: text in its input box joined it?", p.WindowName)
+		}
+		select {
+		case <-rctx.Done():
+			a.dropWait(ctx, p.Pane, channel)
+			if ctx.Err() != nil {
+				return time.Time{}, ctx.Err()
+			}
+			return time.Time{}, a.noReceipt(ctx, p, claimed)
+		case <-time.After(answerPoll):
+		}
+	}
+}
+
+// noReceipt ends a prompt the agent did not take: the claim goes back, the
+// pane gets a label, and the error shows the end of the pane's screen.
+func (a *app) noReceipt(ctx context.Context, p agent.AgentPane, claimed time.Time) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
+	defer cancel()
+	released, err := a.env.ReleasePrompt(ctx, p.Pane, claimed)
+	if err != nil {
+		return err
+	}
+	if !released { // the receipt came at the last moment
+		return exitWith(exitNoTurn, "%s took the prompt only after %s", p.WindowName, receiptWait)
+	}
+	a.promptLabel(ctx, p.Pane, "⚠ prompt not submitted")
+	a.logf("prompt %s (%s): not submitted, no receipt in %s", p.Pane, p.WindowName, receiptWait)
+	screen, _ := a.tmux.Output(ctx, "capture-pane", "-p", "-t", p.Pane)
+	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
+	lines = lines[max(0, len(lines)-screenTail):]
+	return exitWith(exitNoTurn, "%s started no turn (no receipt in %s); its screen ends:\n%s",
+		p.WindowName, receiptWait, strings.Join(lines, "\n"))
+}
+
+// promptLabel sets the pane's prompt label to text, or clears it for "".
+func (a *app) promptLabel(ctx context.Context, pane, text string) {
+	l := attention.Label{Source: promptSource, Text: text}
+	if text != "" {
+		l.Until = time.Now().Add(promptLabelTTL).Unix()
+	}
+	if err := a.env.Report(ctx, pane, l); err != nil {
+		a.logf("prompt %s: label: %v", pane, err)
+	}
 }
 
 // waitTurn waits until the core signals channel, and returns the pane as
@@ -247,7 +363,8 @@ func (a *app) dropWait(ctx context.Context, pane, channel string) {
 	_, _ = a.tmux.Run(ctx, "set-option", "-pu", "-t", pane, attention.OptWait) // the pane may be gone
 }
 
-// answerSince is the last answer the pane's agent wrote at or after since.
+// answerSince is the last answer the pane's agent wrote at or after since,
+// when the agent took the prompt.
 // The turn's end can come before the transcript has its last message, so
 // it looks for a while.
 func (a *app) answerSince(p agent.AgentPane, since time.Time) (agent.Answer, bool) {

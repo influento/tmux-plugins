@@ -178,13 +178,11 @@ func (e *Env) wasKilled(agent, session string) bool {
 // SweepTurns clears the flag of each pane whose agent's last turn the user
 // cut short after the flag was set: a declined permission or Esc sends no
 // hook, so a working or needs-you flag would stay until the next prompt.
-// Only agents that can tell (Interrupter) take part. Flag times are whole
-// seconds, so an interrupt and a new prompt within one second can clear the
-// new turn's flag; its next hook sets it again.
+// Only agents that can tell (Interrupter) take part.
 func (e *Env) SweepTurns(ctx context.Context) error {
 	format := strings.Join([]string{
 		"#{pane_id}", "#{" + optAgent + "}", "#{" + optSession + "}", "#{" + optTranscript + "}",
-		"#{@attention}", "#{@attention_at}",
+		"#{@attention}", "#{@attention_at}", "#{" + attention.OptAtMs + "}",
 	}, "\x1f")
 	out, err := e.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
@@ -193,22 +191,22 @@ func (e *Env) SweepTurns(ctx context.Context) error {
 	type pane struct{ id, agent, session, transcript string }
 	var cut []pane
 	for _, l := range strings.Split(out, "\n") {
-		f := strings.SplitN(l, "\x1f", 6)
-		if len(f) < 6 || f[1] == "" || f[3] == "" {
+		f := strings.SplitN(l, "\x1f", 7)
+		if len(f) < 7 || f[1] == "" || f[3] == "" {
 			continue
 		}
 		if st := attention.State(f[4]); st != attention.Working && st != attention.NeedsYou {
 			continue
 		}
-		since, err := strconv.ParseInt(f[5], 10, 64)
-		if err != nil {
+		since, ok := flagTime(f[5], f[6])
+		if !ok {
 			continue
 		}
 		ir, ok := e.Registry.Get(f[1]).(Interrupter)
 		if !ok {
 			continue
 		}
-		if at, ok := ir.Interrupted(f[3]); ok && at.Unix() >= since {
+		if at, ok := ir.Interrupted(f[3]); ok && at.After(since) {
 			cut = append(cut, pane{id: f[0], agent: f[1], session: f[2], transcript: f[3]})
 		}
 	}
@@ -237,9 +235,7 @@ func (e *Env) cutShort(ctx context.Context, pane string, a Agent, session, trans
 }
 
 // endTurnAt clears the pane's flag, when it is one of states, if the turn
-// ended (when) at or after the flag was set. Flag times are whole seconds,
-// so an end and a new prompt within one second can clear the new turn's
-// flag; its next hook sets it again. The caller holds the lock.
+// ended (when) after the flag was set. The caller holds the lock.
 func (e *Env) endTurnAt(ctx context.Context, pane string, a Agent, session string, when func() (time.Time, bool), states ...attention.State) error {
 	if ended, err := e.endedSinceFlag(ctx, pane, when, states); err != nil || !ended {
 		return err
@@ -255,22 +251,37 @@ func (e *Env) endTurnAt(ctx context.Context, pane string, a Agent, session strin
 }
 
 // endedSinceFlag reports whether the pane's flag is one of states and the
-// turn ended (when) at or after the flag was set.
+// turn ended (when) after the flag was set.
 func (e *Env) endedSinceFlag(ctx context.Context, pane string, when func() (time.Time, bool), states []attention.State) (bool, error) {
-	now, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{@attention}\x1f#{@attention_at}")
+	now, err := e.Tmux.Output(ctx, "display-message", "-p", "-t", pane, "#{@attention}\x1f#{@attention_at}\x1f#{"+attention.OptAtMs+"}")
 	if err != nil {
 		return false, err
 	}
-	state, at, _ := strings.Cut(now, "\x1f")
-	if !slices.Contains(states, attention.State(state)) {
+	f := strings.SplitN(now, "\x1f", 3)
+	if len(f) < 3 || !slices.Contains(states, attention.State(f[0])) {
 		return false, nil
 	}
-	since, err := strconv.ParseInt(at, 10, 64)
-	if err != nil {
+	since, ok := flagTime(f[1], f[2])
+	if !ok {
 		return false, nil
 	}
 	ended, ok := when()
-	return ok && ended.Unix() >= since, nil
+	return ok && ended.After(since), nil
+}
+
+// flagTime is when a flag was set, from @attention_at (seconds) and
+// @attention_at_ms. A flag set by a tmux-agent before milliseconds, or by
+// hand, has no milliseconds of its second: it counts from the second's
+// start.
+func flagTime(at, atMs string) (time.Time, bool) {
+	s, err := strconv.ParseInt(at, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if ms, err := strconv.ParseInt(atMs, 10, 64); err == nil && ms/1000 == s {
+		return time.UnixMilli(ms), true
+	}
+	return time.Unix(s, 0), true
 }
 
 // endHooksHeld ends a turn held by the agent's turn-end hooks, as its turn

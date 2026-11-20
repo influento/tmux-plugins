@@ -52,10 +52,15 @@ var agents = []string{"claude", "fakeagent"}
 //	        each pasted prompt that Enter sends: save prompt N in
 //	        $STUB_DIR/$tag.promptN, then answer "answer N" in the transcript
 //	        and end the turn; for "ask" ask for a permission instead; for
-//	        "bye" end. A prompt that starts with "gate" waits for
+//	        "bye" end; for "mute" end the turn with no answer; for "late"
+//	        end the turn, then write the answer once $STUB_DIR/$tag.answerN
+//	        exists. A prompt that starts with "gate" waits for
 //	        $STUB_DIR/$tag.submitN before it is submitted, one that starts
 //	        with "hold" for $STUB_DIR/$tag.answerN before its answer;
-//	        $STUB_DIR/$tag.submittedN tells that its submit hook ran.
+//	        $STUB_DIR/$tag.submittedN tells that its submit hook ran. Text
+//	        typed before a paste joins it, and the submit hook carries the
+//	        prompt; a prompt that starts with "/" is a command of the input
+//	        box: no turn, only $STUB_DIR/$tag.commandN.
 //
 // It waits on a FIFO, not with sleep, so the terminal's signals reach no
 // child of its own.
@@ -128,32 +133,58 @@ case ${STUB_MODE:-exit} in
     hook() {
       tmux-agent hook claude <<< "{\"hook_event_name\":\"$1\",\"session_id\":\"$STUB_SESSION\",\"transcript_path\":\"$t\",\"cwd\":\"$d\"${2-}}"
     }
+    json_str() {
+      local s=$1
+      s=${s//\\/\\\\}
+      s=${s//\"/\\\"}
+      s=${s//$'\n'/\\n}
+      s=${s//$'\t'/\\t}
+      s=${s//$'\r'/\\r}
+      s=${s//$'\e'/\\u001b}
+      printf '"%s"' "$s"
+    }
+    wait_file() {
+      until [[ -e $1 ]]; do read -r -t 0.02 -u "$nap" _ || true; done
+    }
+    answer() {
+      printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_%s","stop_reason":"end_turn","content":[{"type":"text","text":"answer %s"}]}}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$1" "$1" >> "$t"
+    }
     hook SessionStart ',"source":"startup"'
     printf '\e[?2004h'
     n=0 text=
     while IFS= read -r line; do
       text+=${text:+$'\n'}$line
       [[ $text == *$'\e[201~' ]] || continue
-      text=${text#$'\e[200~'}
-      text=${text%$'\e[201~'}
+      # What was typed before the paste joins it, as in an input box.
+      text=${text//$'\e[200~'/}
+      text=${text//$'\e[201~'/}
       n=$((n + 1))
       printf '%s' "$text" > "$d/$tag.prompt$n"
-      text=
-      p=$(cat "$d/$tag.prompt$n")
-      if [[ $p == gate* ]]; then
-        until [[ -e $d/$tag.submit$n ]]; do read -r -t 0.02 -u "$nap" _ || true; done
+      p=$text text=
+      if [[ $p == /* ]]; then
+        : > "$d/$tag.command$n" # a command of the input box: no turn
+        continue
       fi
-      hook UserPromptSubmit
+      if [[ $p == gate* ]]; then
+        wait_file "$d/$tag.submit$n"
+      fi
+      hook UserPromptSubmit ",\"prompt\":$(json_str "$p")"
       : > "$d/$tag.submitted$n"
       case $p in
         ask) hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"ls"}' ;;
         bye) break ;;
+        mute) hook Stop ;;
+        late)
+          hook Stop
+          wait_file "$d/$tag.answer$n"
+          answer "$n"
+          ;;
         *)
           if [[ $p == hold* ]]; then
-            until [[ -e $d/$tag.answer$n ]]; do read -r -t 0.02 -u "$nap" _ || true; done
+            wait_file "$d/$tag.answer$n"
           fi
-          printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_%s","stop_reason":"end_turn","content":[{"type":"text","text":"answer %s"}]}}\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$n" "$n" >> "$t"
+          answer "$n"
           hook Stop
           ;;
       esac

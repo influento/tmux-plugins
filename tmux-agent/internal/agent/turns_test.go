@@ -37,23 +37,25 @@ func agentWindow(t *testing.T, s *tmuxtest.Server) string {
 func TestSweepTurnsClearsCutTurns(t *testing.T) {
 	t0 := time.Date(2026, 11, 6, 20, 0, 0, 0, time.UTC)
 	cases := []struct {
-		name string
-		flag attention.State
-		cut  time.Time
-		want attention.State
+		name   string
+		flag   attention.State
+		cut    time.Time
+		want   attention.State
+		flagAt time.Duration // after t0
 	}{
-		{"declined permission", attention.NeedsYou, t0.Add(2 * time.Second), attention.Idle},
-		{"esc while working", attention.Working, t0.Add(500 * time.Millisecond), attention.Idle},
-		{"interrupt before the flag", attention.NeedsYou, t0.Add(-10 * time.Second), attention.NeedsYou},
-		{"done stays", attention.Done, t0.Add(2 * time.Second), attention.Done},
-		{"never interrupted", attention.Working, time.Time{}, attention.Working},
+		{"declined permission", attention.NeedsYou, t0.Add(2 * time.Second), attention.Idle, 0},
+		{"esc while working", attention.Working, t0.Add(500 * time.Millisecond), attention.Idle, 0},
+		{"interrupt before the flag", attention.NeedsYou, t0.Add(-10 * time.Second), attention.NeedsYou, 0},
+		{"done stays", attention.Done, t0.Add(2 * time.Second), attention.Done, 0},
+		{"never interrupted", attention.Working, time.Time{}, attention.Working, 0},
+		{"interrupt in the flag's second, before it", attention.Working, t0.Add(200 * time.Millisecond), attention.Working, 600 * time.Millisecond},
 	}
 	s := tmuxtest.Start(t, tmuxtest.Options{Session: "proj-a"})
 	ctx := context.Background()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			pane := agentWindow(t, s)
-			core := &attention.Core{Tmux: s.Client, Now: func() time.Time { return t0 }}
+			core := &attention.Core{Tmux: s.Client, Now: func() time.Time { return t0.Add(c.flagAt) }}
 			e := &Env{Tmux: s.Client, Core: core, Registry: NewRegistry(fakeAgent{cut: c.cut}), Pane: pane}
 			s.MustTmux(t, "set-option", "-p", "-t", pane, optAgent, "fakeagent", ";",
 				"set-option", "-p", "-t", pane, optTranscript, "/proj-a/t.jsonl", ";",

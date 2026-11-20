@@ -64,6 +64,12 @@ type Titler interface {
 	Title(transcript string) (title string, sure bool)
 }
 
+// InputCommander tells text that the agent's input box takes as a command
+// of its own, not as a prompt: typed in, it starts no turn.
+type InputCommander interface {
+	InputCommand(text string) bool
+}
+
 // Interrupter reads from the agent's transcript when the user last cut a
 // turn short (declined a permission, pressed Esc). The agent sends no hook
 // for that, so without it a working or needs-you flag stays until the next
@@ -307,6 +313,10 @@ type Event struct {
 	Subagents []string
 	// End is how a SessionEnd ended.
 	End End
+	// Submitted marks the Working event of a prompt the agent took, and
+	// Prompt is its text when the agent tells it.
+	Submitted bool
+	Prompt    string
 	// Subagent is what the event tells about a subagent: the one a
 	// SubagentStart or SubagentEnd is about, or on a Working event one that
 	// the agent's tool call started, with its prompt. nil for none.

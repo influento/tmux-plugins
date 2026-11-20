@@ -135,6 +135,7 @@ const (
 	optResume     = "@agent_resume"     // the session the run resumes
 	optStarted    = "@agent_started"    // when the run started, unix seconds
 	optHeld       = "@agent_held"       // the turn ended, but heldRuns or heldHooks still run
+	optPromptGot  = "@agent_prompt_got" // the last prompt the agent took: unix ms, then its PromptKey
 	// OptTitle is the window option that holds the title an agent gave
 	// the window.
 	OptTitle = "@agent_title"
@@ -493,6 +494,12 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 // working: a turn or a tool started, or a tool finished. A pending decision
 // stays unless the event ends it.
 func (e *Env) working(ctx context.Context, a Agent, ev Event, l live, session string) error {
+	if ev.Submitted && ev.By == "" {
+		// The receipt that prompt waits for.
+		if err := e.paneOpts(ctx, map[string]string{optPromptGot: strconv.FormatInt(e.now().UnixMilli(), 10) + " " + PromptKey(ev.Prompt)}); err != nil {
+			return err
+		}
+	}
 	if ev.Subagent != nil {
 		e.rememberSubagent(a, session, *ev.Subagent)
 	}

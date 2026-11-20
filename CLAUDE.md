@@ -213,6 +213,10 @@ Rules:
   ends however it ends (the launcher releases it too); a session whose
   transcript is gone starts nothing, and gives the window its automatic
   name back.
+- A flag's time is `@attention_at` in seconds (conformance reads it) and
+  `@attention_at_ms`. A turn end that only a time tells (the interrupt
+  line, the agent's idle status file) counts when it is after the flag in
+  ms: an end in the flag's second, before it, is the previous turn's.
 - `seen`, `status` and `sweep` end the session of a pane whose agent is
   gone without a word (killed, crashed, outside the launcher): no agent
   process left below the pane's shell (a stopped one counts). The resume
@@ -292,10 +296,21 @@ Rules:
   for a resume (exit 4: the shell would run the text), and one that works
   or waits on the user (exit 3); else it sees a done flag and flags the
   pane working as the agent's prompt hook does, so a second prompt before
-  that hook sees it working. Then it takes the pane out of copy mode or
-  any mode (a mode takes the keys), pastes the text (`load-buffer` from
-  stdin, `paste-buffer -p`: a newline does not send it) and presses
-  Enter. `--wait` keeps a `wait-for`
+  that hook sees it working. Text the adapter's input box takes as a
+  command (`InputCommander`: `/`, `!`) needs `--raw`. Then it takes the
+  pane out of copy mode or any mode (a mode takes the keys), pastes the
+  text (`load-buffer` from stdin, `paste-buffer -p`: a newline does not
+  send it) and presses Enter. Delivery has a receipt: the hook of a
+  prompt the agent took (an event with `Submitted`) writes
+  `@agent_prompt_got`, its time in ms and the text's `PromptKey` (a hash
+  without white space). Prompt waits 10 s for a receipt newer than its
+  claim: none gives the claim back (the flag goes, as at an Esc), one of
+  other text means a draft in the input box joined it; both exit 6, set
+  the pane's `prompt` label (it shows in the panel for an hour, until a
+  prompt is taken) and log. The receipt's time is the turn's start: the
+  answer is at or after it, so an earlier turn's late answer is not.
+  SIGINT, SIGTERM and SIGHUP take the channel off the pane (exit 130).
+  `--wait` keeps a `wait-for`
   channel in the pane's `@attention_wait`; the core signals and unsets it
   at the flag's next change to anything but working (`Set`, `Clear`,
   `Sweep`), so a held turn or running subagents keep it waiting, and a
@@ -303,8 +318,9 @@ Rules:
   session signals nothing: the wait looks every 2 s (exit 5). The answer
   is the adapter's (`Answerer`): for Claude Code the text of the last
   message that stops for anything but a tool call, at or after the
-  prompt, looked for up to 5 s (exit 5 without one). Both hold only for a
-  hook handled by a tmux-agent that knows `@attention_wait`: a demo of a
+  receipt, looked for up to 5 s (exit 5 without one). The receipt and the
+  wait hold only for a hook handled by a tmux-agent that knows
+  `@agent_prompt_got` and `@attention_wait`: a demo of a
   dev build sets the agent's PATH in the window's command, as the default
   shell rebuilds it from /etc/profile.
 - `start` and `close` (step 5) are the contract for tools such as

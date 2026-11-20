@@ -318,3 +318,114 @@ func TestPromptInStartWindow(t *testing.T) {
 		t.Errorf("the first prompt: exit %d, %q, %q; want 0 and \"answer 1\"", r.code, r.out, r.stderr)
 	}
 }
+
+// promptLabel is what the pane's labels say from source prompt, or "".
+func (e *env) promptLabel(t *testing.T, pane string) string {
+	t.Helper()
+	var labels []struct{ Source, Text string }
+	if raw := e.paneOpt(t, pane, "@labels"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+			t.Fatalf("@labels %q: %v", raw, err)
+		}
+	}
+	for _, l := range labels {
+		if l.Source == "prompt" {
+			return l.Text
+		}
+	}
+	return ""
+}
+
+// Text that the agent's input box takes as a command of its own is
+// refused (exit 2) unless --raw sends it.
+func TestPromptCommandText(t *testing.T) {
+	e := newEnv(t)
+	e.startChat(t, "agent-a", sessionA)
+	if _, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "agent-a", "/clear"); code != 2 || !strings.Contains(stderr, "--raw") {
+		t.Errorf("exit %d, %q; want 2 and a word on --raw", code, stderr)
+	}
+	if out, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "--wait", "--timeout", "20s", "agent-a", "first"); code != 0 || out != "answer 1" {
+		t.Errorf("the next prompt: exit %d, %q, %q; want the first answer", code, out, stderr)
+	}
+}
+
+// Text that starts no turn gets no receipt: prompt says so (exit 6), with
+// or without --wait, gives the pane its flag back and labels it.
+func TestPromptNotSubmitted(t *testing.T) {
+	e := newEnv(t)
+	pane := e.startChat(t, "agent-a", sessionA)
+	for _, args := range [][]string{{"--raw", "agent-a", "/clear"}, {"--raw", "--wait", "--timeout", "30s", "agent-a", "/compact"}} {
+		t.Run(args[len(args)-1], func(t *testing.T) {
+			_, stderr, code := e.tmuxAgentIn(t, e.pane, "", append([]string{"prompt"}, args...)...)
+			if code != 6 || !strings.Contains(stderr, "no turn") {
+				t.Errorf("exit %d, %q; want 6", code, stderr)
+			}
+			if flag := e.paneOpt(t, pane, "@attention"); flag != "" {
+				t.Errorf("flag %q after, want none", flag)
+			}
+			if l := e.promptLabel(t, pane); !strings.Contains(l, "not submitted") {
+				t.Errorf("label %q, want one that says not submitted", l)
+			}
+		})
+	}
+	if out, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "--wait", "--timeout", "20s", "agent-a", "hello"); code != 0 || out != "answer 3" {
+		t.Errorf("a prompt after: exit %d, %q, %q; want answer 3", code, out, stderr)
+	}
+	if l := e.promptLabel(t, pane); l != "" {
+		t.Errorf("label %q after a prompt that worked, want none", l)
+	}
+}
+
+// Text half typed in the agent's input box joins the prompt: the agent
+// gets other text than was sent, and prompt says so (exit 6).
+func TestPromptMergedWithDraft(t *testing.T) {
+	e := newEnv(t)
+	pane := e.startChat(t, "agent-a", sessionA)
+	e.MustTmux(t, "send-keys", "-t", pane, "-l", "a draft ")
+	_, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "--wait", "--timeout", "20s", "agent-a", "hello")
+	if code != 6 || !strings.Contains(stderr, "other text") {
+		t.Errorf("exit %d, %q; want 6", code, stderr)
+	}
+	if l := e.promptLabel(t, pane); !strings.Contains(l, "other text") {
+		t.Errorf("label %q, want one that says other text", l)
+	}
+}
+
+// The answer is the prompt's own turn's: an earlier turn's answer that
+// Claude Code writes after the prompt was typed is not it.
+func TestPromptAnswerOfItsOwnTurn(t *testing.T) {
+	e := newEnv(t)
+	pane := e.startChat(t, "agent-a", sessionA)
+	if _, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "agent-a", "late"); code != 0 {
+		t.Fatalf("the first prompt: exit %d, %q", code, stderr)
+	}
+	tmuxtest.WaitFor(t, 10*time.Second, "the first turn's end", func() bool { return e.paneOpt(t, pane, "@attention") == "done" })
+	second := e.promptBackground(t, "--wait", "--timeout", "20s", "agent-a", "mute")
+	tmuxtest.WaitFor(t, 10*time.Second, "the second prompt typed", func() bool { return e.paneOpt(t, pane, "@attention_wait") != "" })
+	e.touch(t, "agent-a.answer1")
+	if r := <-second; r.code != 5 {
+		t.Errorf("the second prompt: exit %d, %q, %q; want 5, no answer", r.code, r.out, r.stderr)
+	}
+}
+
+// A wait that is interrupted takes its channel off the pane.
+func TestPromptInterruptedWait(t *testing.T) {
+	e := newEnv(t)
+	pane := e.startChat(t, "agent-a", sessionA)
+	cmd := e.Command(t, e.pane, "tmux-agent", "prompt", "--wait", "agent-a", "hold")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	e.waitExists(t, "agent-a.submitted1")
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Wait()
+	if ee, ok := errors.AsType[*exec.ExitError](err); !ok || ee.ExitCode() != 130 {
+		t.Errorf("prompt: %v; want exit 130", err)
+	}
+	if w := e.paneOpt(t, pane, "@attention_wait"); w != "" {
+		t.Errorf("@attention_wait = %q after the interrupt, want none", w)
+	}
+	e.touch(t, "agent-a.answer1")
+}

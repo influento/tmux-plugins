@@ -73,6 +73,25 @@ func (Claude) Command() string { return "claude" }
 // runs as node and sets its process name to claude.
 func (Claude) ProcessNames() []string { return []string{"claude"} }
 
+// pastedBlock is how Claude Code hands its hooks a prompt that is one long
+// paste: the pasted text between tags that carry one id.
+var pastedBlock = regexp.MustCompile(`(?s)^\s*<pasted_content id="([^"]*)">(.*)</pasted_content id="([^"]*)">\s*$`)
+
+// unpasted is the text of a prompt that is one pasted block, else the
+// prompt as it is: text typed beside a paste is part of the prompt.
+func unpasted(prompt string) string {
+	if m := pastedBlock.FindStringSubmatch(prompt); m != nil && m[1] == m[3] {
+		return m[2]
+	}
+	return prompt
+}
+
+// InputCommand: Claude Code's input box takes "/" as a slash command and
+// "!" as a shell command.
+func (Claude) InputCommand(text string) bool {
+	return strings.HasPrefix(text, "/") || strings.HasPrefix(text, "!")
+}
+
 // Mark is Claude Code's mark in the panel: its spinner's star, in its colour.
 func (Claude) Mark() (glyph, colour string) { return "✳", "#d97757" }
 
@@ -191,7 +210,7 @@ func (Claude) ReadHook(payload []byte) (agent.Event, bool, error) {
 			ev.End = agent.EndUnknown
 		}
 	case "UserPromptSubmit":
-		ev.Kind = agent.Working
+		ev.Kind, ev.Submitted, ev.Prompt = agent.Working, true, unpasted(f.str("prompt"))
 	case "PreToolUse":
 		ev.Tool = toolKey(f)
 		if f.str("tool_name") == "AskUserQuestion" {
