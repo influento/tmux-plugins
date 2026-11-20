@@ -44,7 +44,7 @@ func TestPickLinesSteps(t *testing.T) {
 		{"up+up+up", "%1", "down", "$2"},
 		{"up", "%2", "ignore", "$2"},
 	}
-	for i, l := range ui.PickLines(rows) {
+	for i, l := range ui.PickLines(rows, "") {
 		f := strings.Split(l, "\t")
 		if got := [4]string{f[5], f[6], f[7], f[8]}; got != want[i] {
 			t.Errorf("row %d: %q, want %q", i, got, want[i])

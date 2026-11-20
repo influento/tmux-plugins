@@ -369,9 +369,14 @@ Rules:
   session has a row for it). With no row under
   the cursor fzf runs no command that names a field, so every other
   reload opens the row the last rows had open (`.place`), and place,
-  when it moves the cursor, reads them again. During a search, the
-  result event's return to the first row skips a reload of the user's
-  move. fzf only
+  when it moves the cursor, reads them again. A change of the query
+  puts the cursor on the first row once: the change sets fzf's input
+  label (shown nowhere), and the result event of the first rows read
+  for that query (each row's last field) clears it, unless the user
+  moved meanwhile. fzf's own result for the rows it shows comes first,
+  with the new query; every later reload places as without a search,
+  or the client, moved some other way or by the panel, went back to
+  the first row. fzf only
   displays: `pick-rows --fzf` builds the rows (NUL-separated, a row can
   have lines) and filters by session and window name, so a session's
   name keeps all its windows; rows have the width fzf had when it read

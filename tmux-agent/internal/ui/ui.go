@@ -60,6 +60,11 @@ type PickOptions struct {
 // user's moves in the panel, a shell case pattern.
 const moveActions = "up|down|click|mouse|page-up|page-down|half-page-up|half-page-down"
 
+// queryChanged is fzf's input label, which shows nowhere (no input
+// border), from a change of the query until the result event of the
+// rows read for it.
+const queryChanged = "changed"
+
 var hexColour = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
 // CursorColors turns a tmux style into fzf's colours for the cursor row:
@@ -89,13 +94,15 @@ func CursorColors(style string) string {
 // what ctrl-x kills, the session id a fold row opens, then the action of
 // up and the key of the row it lands on, and the same of down: past the
 // labels next to the row in one step, so fzf never draws the cursor on
-// one, and no move at the list's ends. Last, the row's key.
-func PickLines(rows []attention.PickRow) []string {
+// one, and no move at the list's ends. Then the row's key, and last the
+// query the rows were read for: fzf filters the rows it shows again for
+// each new query, before the rows of that query come.
+func PickLines(rows []attention.PickRow, query string) []string {
 	out := make([]string, len(rows))
 	for i, r := range rows {
 		up, upTo := stepFrom(rows, i, -1, "up")
 		down, downTo := stepFrom(rows, i, 1, "down")
-		out[i] = strings.Join([]string{r.Label, r.Target, r.Display(), r.Kill, r.Fold, up, upTo, down, downTo, r.Key}, "\t")
+		out[i] = strings.Join([]string{r.Label, r.Target, r.Display(), r.Kill, r.Fold, up, upTo, down, downTo, r.Key, query}, "\t")
 	}
 	return out
 }
@@ -140,7 +147,7 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		return "", errors.New("fzf is not installed")
 	}
 	var in strings.Builder
-	for _, l := range PickLines(rows) {
+	for _, l := range PickLines(rows, "") {
 		in.WriteString(l + "\x00")
 	}
 	show := opts.Self + " sidebar go " + shell.Quote(opts.Client)
@@ -168,7 +175,7 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		skipUp = "transform(" + noteAndGo(opts.Want, opts.Going, goCmd, "{7}") + "; echo {6})"
 		skipDown = "transform(" + noteAndGo(opts.Want, opts.Going, goCmd, "{9}") + "; echo {8})"
 	}
-	change := "reload-sync(" + list + ")"
+	change := "change-input-label(" + queryChanged + ")+reload-sync(" + list + ")"
 	focusGo := goNow
 	if opts.Want != "" {
 		focusGo = "[ -n {1} ] || " + noteAndGo(opts.Want, opts.Going, opts.Self+" sidebar go "+shell.Quote(opts.Client), "{10}")
@@ -198,13 +205,16 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		"--bind=resize:transform:" + opts.Self + " pick-key resize",
 		"--bind=down:" + skipDown, "--bind=ctrl-j:" + skipDown, "--bind=ctrl-n:" + skipDown, "--bind=scroll-down:" + skipDown,
 		"--bind=up:" + skipUp, "--bind=ctrl-k:" + skipUp, "--bind=ctrl-p:" + skipUp, "--bind=scroll-up:" + skipUp,
-		// A new list: a search starts on its first window; a cursor on a
-		// session line leaves it; otherwise the cursor goes to the
-		// client's window, as place reads it then: the cursor's row may be
-		// gone, or the client moved some other way.
-		// A search's own move to a row (a key, a click) reads the rows
-		// again, to open the row: the search does not start again.
-		`--bind=result:transform:if [ -n {q} ]; then case "$FZF_ACTION" in ` + moveActions + `) ;; *) echo 'pos(2)' ;; esac; ` +
+		// A new list: the first rows of a changed query (field 11) start
+		// on its first window, unless the user moved meanwhile; rows read
+		// before the change wait for them. A cursor on a session line
+		// leaves it; otherwise the cursor goes to the client's window, as
+		// place reads it then: the cursor's row may be gone, or the
+		// client moved some other way. Every other reload during a search
+		// (a tick, the panel's join, a move's open row) put the cursor
+		// back on the first window, and the client followed it.
+		`--bind=result:transform:if [ -n {q} ] && [ -n "$FZF_INPUT_LABEL" ]; then case "$FZF_ACTION" in ` + moveActions +
+			`) echo 'change-input-label()' ;; *) [ {s11} != {q} ] || echo 'change-input-label()+pos(2)' ;; esac; ` +
 			`elif [ -n {1} ]; then echo down; else ` + place + `; fi`,
 		"--bind=enter:transform:[ -n {1} ] || " + opts.Self + " pick-key enter {5}",
 		// Only the user's moves take the client along: the other moves (a

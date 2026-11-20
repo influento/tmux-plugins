@@ -546,6 +546,76 @@ func TestPanelFollowsSwitchAfterGo(t *testing.T) {
 	}
 }
 
+// openPanelSearch opens the panel over w-one to w-ten, moves the client
+// to w-ten with the panel, and types the search w-t: its rows are w-two
+// (proj-a:1), w-three (proj-a:2) and w-ten (proj-a:3). The cursor goes to
+// the first match, not the client's row, and the client follows it. It
+// returns w-three's pane, and settle, which waits until the reloads begun
+// before it are done, and returns where the cursor and the client are.
+func openPanelSearch(t *testing.T) (s *tmuxtest.Server, panel, three string, settle func() (cursor, client string)) {
+	t.Helper()
+	s, origin, panel := openPanel(t)
+	panes := map[string]string{}
+	for _, n := range []string{"w-two", "w-three", "w-ten"} {
+		panes[n] = s.MustTmux(t, "new-window", "-d", "-n", n, "-P", "-F", "#{pane_id}")
+		if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", panes[n]).CombinedOutput(); err != nil {
+			t.Fatalf("flag: %v: %s", err, out)
+		}
+	}
+	s.WaitForContent(t, panel, "w-ten")
+	socket := s.Display(t, panel, "#{"+sidebar.OptListen+"}")
+	client := func() string {
+		return s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}")
+	}
+	s.MustTmux(t, "send-keys", "-t", panel, "Up") // from the fold to w-ten
+	tmuxtest.WaitFor(t, 5*time.Second, "the client on w-ten", func() bool { return client() == "=proj-a:3" })
+	s.MustTmux(t, "send-keys", "-t", panel, "-l", "w-t")
+	tmuxtest.WaitFor(t, 5*time.Second, "the cursor and the client on the first match", func() bool {
+		return panelCursor(t, socket) == "=proj-a:1" && client() == "=proj-a:1"
+	})
+	n := 0
+	settle = func() (string, string) {
+		t.Helper()
+		// Each report reloads the panel; once the last shows, the reloads
+		// before it are done, with all they ran.
+		for range 3 {
+			n++
+			text := fmt.Sprintf("probe-%d", n)
+			if out, err := s.Command(t, origin, "tmux-agent", "report", "--source", "probe", "--text", text, "--pane", panes["w-three"]).CombinedOutput(); err != nil {
+				t.Fatalf("report: %v: %s", err, out)
+			}
+			s.WaitForContent(t, panel, text)
+		}
+		return panelCursor(t, socket), client()
+	}
+	return s, panel, panes["w-three"], settle
+}
+
+// During a search, a switch some other way (prefix n, a click) moves
+// the cursor to the client's row, and the client stays there while the
+// panel reloads. The result event of every reload put the cursor back on
+// the search's first row, and the client followed it.
+func TestPanelSearchFollowsSwitch(t *testing.T) {
+	s, _, three, settle := openPanelSearch(t)
+	s.MustTmux(t, "switch-client", "-c", s.MustTmux(t, "list-clients", "-F", "#{client_name}"), "-t", three)
+	if cursor, client := settle(); cursor != "=proj-a:2" || client != "=proj-a:2" {
+		t.Errorf("cursor on %s, client on %s after the switch to w-three; want both on =proj-a:2", cursor, client)
+	}
+}
+
+// During a search, a move in the panel to another row takes the client
+// there, and both stay while the panel reloads (its join, a label).
+func TestPanelSearchKeepsMove(t *testing.T) {
+	s, panel, _, settle := openPanelSearch(t)
+	s.MustTmux(t, "send-keys", "-t", panel, "Down")
+	tmuxtest.WaitFor(t, 5*time.Second, "the client on w-three", func() bool {
+		return s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}") == "=proj-a:2"
+	})
+	if cursor, client := settle(); cursor != "=proj-a:2" || client != "=proj-a:2" {
+		t.Errorf("cursor on %s, client on %s after Down to w-three; want both on =proj-a:2", cursor, client)
+	}
+}
+
 // The log tells each move of the client and why, and each switch the panel's follow hook sees, whoever made it.
 // A panel that only ticks writes nothing: the log stays readable for the
 // day a switch nobody asked for needs explaining.

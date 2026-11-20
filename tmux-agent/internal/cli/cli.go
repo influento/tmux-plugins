@@ -873,6 +873,7 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 	p := attention.Panel{View: attention.TreeView, Width: ui.PanelWidth - 1}
 	end := "\n"
 	var open []string
+	query := strings.Join(args, " ")
 	if len(args) > 0 && args[0] == "--fzf" {
 		switch {
 		case len(args) == 2 && strings.HasPrefix(args[1], "--open="):
@@ -883,9 +884,10 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 			open = a.openNoted()
 		}
 		p = a.panelOf()
+		query = a.getenv("FZF_QUERY")
 		end = "\x00"
 	} else {
-		p.Words = attention.QueryWords(strings.Join(args, " "))
+		p.Words = attention.QueryWords(query)
 	}
 	a.core.Changed = nil // see pickKey
 	rows, next, err := a.core.PickRowsNext(ctx, p)
@@ -893,7 +895,7 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 		return err
 	}
 	openKey(rows, open...)
-	for _, l := range ui.PickLines(rows) {
+	for _, l := range ui.PickLines(rows, query) {
 		fmt.Fprint(a.stdout, l+end)
 	}
 	if end == "\x00" {
