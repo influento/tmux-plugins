@@ -83,12 +83,22 @@ type Row struct {
 	// title.
 	Task      string `json:"task,omitempty"`
 	TaskTitle string `json:"task_title,omitempty"`
+	// Native is the pane's agent's address in that agent's own channel
+	// between its sessions; nil for none. The core does not fill it.
+	Native *Native `json:"native,omitempty"`
 	// WindowID is tmux's id of the pane's window, SessionID of its
 	// session; Linked: the window is in another session too (linked, or
 	// in a group of sessions).
 	WindowID  string `json:"-"`
 	SessionID string `json:"-"`
 	Linked    bool   `json:"-"`
+}
+
+// Native is an address in an agent's own channel: the channel (Via) and
+// the session's address in it (To).
+type Native struct {
+	Via string `json:"via"`
+	To  string `json:"to"`
 }
 
 // RoleRun is a nested run that runs as a role, and when it started.

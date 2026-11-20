@@ -89,6 +89,14 @@ type Idler interface {
 	StatusFile(pid int, getenv func(string) string) string
 }
 
+// Peer is an agent's own channel between two of its sessions, beside
+// tmux-agent prompt: Claude Code's SendMessage. PeerAddress gives the
+// channel's name (via) and the address in it (to) of session, which the
+// agent process pid runs; ok is false when the agent does not tell it.
+type Peer interface {
+	PeerAddress(pid int, session string, getenv func(string) string) (via, to string, ok bool)
+}
+
 // Answerer reads the agent's answers from its transcript: the text of each
 // turn's last message, oldest first, at most the last n.
 type Answerer interface {

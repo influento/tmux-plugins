@@ -47,3 +47,44 @@ func TestIdleSince(t *testing.T) {
 		t.Errorf("StatusFile = %q, want %q", got, want)
 	}
 }
+
+// A session's SendMessage address is the name in its process's file;
+// another session, no name or no file give none.
+func TestPeerAddress(t *testing.T) {
+	home := t.TempDir()
+	getenv := func(k string) string { return map[string]string{"HOME": home}[k] }
+	dir := filepath.Join(home, ".claude", "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const session = "11111111-1111-1111-1111-111111111111"
+	tests := []struct {
+		name, body string
+		to         string
+	}{
+		{"named", `{"pid":42,"sessionId":"` + session + `","name":"proj-a-1f","status":"busy"}`, "proj-a-1f"},
+		{"another session", `{"pid":42,"sessionId":"22222222-2222-2222-2222-222222222222","name":"proj-a-1f"}`, ""},
+		{"no name", `{"pid":42,"sessionId":"` + session + `","status":"idle"}`, ""},
+		{"half written", `{"pid":42,"sessionId":"` + session, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(dir, "42.json"), []byte(tt.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			via, to, ok := Claude{}.PeerAddress(42, session, getenv)
+			if tt.to == "" {
+				if ok {
+					t.Errorf("PeerAddress = %q, %q; want none", via, to)
+				}
+				return
+			}
+			if !ok || via != "SendMessage" || to != tt.to {
+				t.Errorf("PeerAddress = %q, %q, %v; want SendMessage, %q", via, to, ok, tt.to)
+			}
+		})
+	}
+	if _, _, ok := (Claude{}).PeerAddress(43, session, getenv); ok {
+		t.Error("PeerAddress of a process with no file: ok")
+	}
+}

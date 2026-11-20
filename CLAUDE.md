@@ -323,6 +323,14 @@ Rules:
   `@agent_prompt_got` and `@attention_wait`: a demo of a
   dev build sets the agent's PATH in the window's command, as the default
   shell rebuilds it from /etc/profile.
+- An agent's own channel between its sessions (Claude Code's
+  `SendMessage`) is the other way agents talk; `prompt` is the one for
+  any agent and any caller. Each adapter that has one gives its address
+  (`Peer`); `list --json` puts it on the pane's row as `native` (`via`,
+  `to`), and a sender uses it only for a row of its own agent type.
+  For Claude Code the address is the session's `name` in the file it
+  keeps for the agent process (`sessions/<pid>.json`), of the pane's
+  session only.
 - `start` and `close` (step 5) are the contract for tools such as
   workbench, which then call no tmux for agent windows; their JSON has
   `version` (`contractVersion`). `start` opens a window that runs

@@ -847,6 +847,15 @@ func (a *app) list(ctx context.Context, args []string) error {
 		if rows == nil {
 			rows = []attention.Row{}
 		}
+		natives, err := a.env.Natives(ctx)
+		if err != nil {
+			return err
+		}
+		for i, r := range rows {
+			if n, ok := natives[r.Pane]; ok {
+				rows[i].Native = &n
+			}
+		}
 		enc := json.NewEncoder(a.stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(rows)
