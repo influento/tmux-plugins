@@ -20,7 +20,6 @@ import (
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/selftest"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/sidebar"
-	"github.com/influento/tmux-plugins/tmux-agent/internal/ui"
 )
 
 // The panel end to end, with tmux-init's hooks and the real fzf: prefix f
@@ -757,24 +756,28 @@ func TestPanelSearchWithoutMatch(t *testing.T) {
 }
 
 // A reload that lands while a move's reload runs (an age's tick, a flag,
-// the resize of the panel's join) opens the row the cursor moved to: fzf
-// kills the move's reload for the new one, which opened the row the
-// cursor had left, and during a search nothing opened the cursor's row
-// again. The tmux server stopped holds the move's reload until the next
-// one starts. The flags are two hours old: no age ticks. The client is on
-// the search's first row from the start, and the moves are fzf's own,
-// not the keys': no switch, whose follow hook would place the cursor.
+// the resize of the panel's join, a key of the search) opens the row the
+// cursor moved to: fzf kills the move's reload for the new one, which
+// opened the row the cursor had left. Here the new reload is the first of
+// a search typed at once, whose cursor stays on its first row: a move
+// within a window switches no window, so no place opens the cursor's row
+// later. The tmux server stopped holds the move's reload until the search
+// starts; the move and the search go to fzf's socket, and the move's own
+// go would take the client nowhere. The flags are two hours old: no age
+// ticks.
 func TestPanelReloadDuringMoveOpensCursorRow(t *testing.T) {
 	s, _, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
+		s.MustTmux(t, "rename-window", "-t", origin, "a-split-window-whose-name-is-cut-in-the-panel")
+		second := s.MustTmux(t, "split-window", "-d", "-t", origin, "-P", "-F", "#{pane_id}")
 		old := strconv.FormatInt(time.Now().Add(-2*time.Hour).Unix(), 10)
-		for _, n := range []string{"a-popup-closed-by-its-hotkey-leaves-the-client", "a-split-window-with-an-agent-and-a-shell"} {
-			p := s.MustTmux(t, "new-window", "-d", "-n", n, "-P", "-F", "#{pane_id}")
-			if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", p).CombinedOutput(); err != nil {
-				t.Fatalf("flag: %v: %s", err, out)
+		for i, p := range []string{origin, second} {
+			for _, args := range [][]string{{"flag", "working", "--pane", p}, {"report", "--source", "git", "--text", "⎇ a-long-branch-name-for-the-pane-" + strconv.Itoa(i) + "-here", "--pane", p}} {
+				if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
+					t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
+				}
 			}
 			s.MustTmux(t, "set-option", "-p", "-t", p, "@attention_at", old)
 		}
-		s.MustTmux(t, "select-window", "-t", "=proj-a:1")
 	})
 	screen := func() string { return s.MustTmux(t, "capture-pane", "-p", "-t", panel) }
 	t.Cleanup(func() {
@@ -783,19 +786,23 @@ func TestPanelReloadDuringMoveOpensCursorRow(t *testing.T) {
 		}
 	})
 	socket := s.Display(t, panel, "#{"+sidebar.OptListen+"}")
-	open := func(cursor, whole, cut string) func() bool {
+	// The only open row is the cursor's, whose lines have want.
+	open := func(want string) func() bool {
 		return func() bool {
-			sc := screen()
-			return panelCursor(t, socket) == cursor && strings.Contains(sc, whole) && strings.Contains(sc, cut)
+			n := 0
+			for _, l := range strings.Split(screen(), "\n") {
+				if strings.Contains(l, "in-the-panel") || strings.Contains(l, "-pane-0-here") || strings.Contains(l, "-pane-1-here") {
+					if n++; !strings.HasPrefix(l, "▌") || !strings.Contains(l, want) {
+						return false
+					}
+				}
+			}
+			return n == 1
 		}
 	}
-	tmuxtest.WaitFor(t, 5*time.Second, "the client's row open", open("=proj-a:1", popupWhole, splitCut))
-	s.MustTmux(t, "send-keys", "-t", panel, "-l", "a-") // both windows match, w-one not
-	tmuxtest.WaitFor(t, 5*time.Second, "the search's rows, the first open", func() bool {
-		return !strings.Contains(screen(), "more window") && open("=proj-a:1", popupWhole, splitCut)()
-	})
-	panelPost(t, socket, "down")
-	tmuxtest.WaitFor(t, 5*time.Second, "the second row open", open("=proj-a:2", splitWhole, popupCut))
+	tmuxtest.WaitFor(t, 5*time.Second, "the window's row open", open("in-the-panel"))
+	s.MustTmux(t, "send-keys", "-t", panel, "Down")
+	tmuxtest.WaitFor(t, 5*time.Second, "the first pane's row open", open("-pane-0-here"))
 
 	server, err := strconv.Atoi(s.Display(t, panel, "#{pid}"))
 	if err != nil {
@@ -817,11 +824,11 @@ func TestPanelReloadDuringMoveOpensCursorRow(t *testing.T) {
 	// fzf takes a post when it has done the one before, the focus event's
 	// reload included.
 	panelPost(t, socket, "up")
-	if err := ui.Reload(t.Context(), socket, "tmux-agent"); err != nil {
-		t.Fatal(err)
-	}
+	panelPost(t, socket, "put(a-split)")
 	resume()
-	tmuxtest.WaitFor(t, 5*time.Second, "the first row open after the reload", open("=proj-a:1", popupWhole, splitCut))
+	tmuxtest.WaitFor(t, 5*time.Second, "the search's rows, the window's row open", func() bool {
+		return strings.Contains(screen(), "a-split\n") && open("in-the-panel")()
+	})
 }
 
 // panelPost sends actions to the panel's fzf on its socket.
