@@ -81,7 +81,9 @@ func (r *Reviver) typeInto(ctx context.Context, pane, text, shell string) error 
 		if err != nil {
 			return err
 		}
-		if _, err := r.Tmux.Run(ctx, "send-keys", "-t", pane, "-l", "--", text); err != nil {
+		// A pane the user scrolls (copy mode, or any other mode) takes
+		// the keys in its mode: it leaves the mode first.
+		if _, err := r.Tmux.Run(ctx, "copy-mode", "-q", "-t", pane, ";", "send-keys", "-t", pane, "-l", "--", text); err != nil {
 			return err
 		}
 		if r.waitEcho(ctx, pane, at, text) {

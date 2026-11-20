@@ -52,7 +52,10 @@ var agents = []string{"claude", "fakeagent"}
 //	        each pasted prompt that Enter sends: save prompt N in
 //	        $STUB_DIR/$tag.promptN, then answer "answer N" in the transcript
 //	        and end the turn; for "ask" ask for a permission instead; for
-//	        "bye" end
+//	        "bye" end. A prompt that starts with "gate" waits for
+//	        $STUB_DIR/$tag.submitN before it is submitted, one that starts
+//	        with "hold" for $STUB_DIR/$tag.answerN before its answer;
+//	        $STUB_DIR/$tag.submittedN tells that its submit hook ran.
 //
 // It waits on a FIFO, not with sleep, so the terminal's signals reach no
 // child of its own.
@@ -136,11 +139,19 @@ case ${STUB_MODE:-exit} in
       n=$((n + 1))
       printf '%s' "$text" > "$d/$tag.prompt$n"
       text=
+      p=$(cat "$d/$tag.prompt$n")
+      if [[ $p == gate* ]]; then
+        until [[ -e $d/$tag.submit$n ]]; do read -r -t 0.02 -u "$nap" _ || true; done
+      fi
       hook UserPromptSubmit
-      case $(cat "$d/$tag.prompt$n") in
+      : > "$d/$tag.submitted$n"
+      case $p in
         ask) hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"ls"}' ;;
         bye) break ;;
         *)
+          if [[ $p == hold* ]]; then
+            until [[ -e $d/$tag.answer$n ]]; do read -r -t 0.02 -u "$nap" _ || true; done
+          fi
           printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_%s","stop_reason":"end_turn","content":[{"type":"text","text":"answer %s"}]}}\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$n" "$n" >> "$t"
           hook Stop

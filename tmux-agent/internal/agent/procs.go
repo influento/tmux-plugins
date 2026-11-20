@@ -127,13 +127,32 @@ func nearestAgentArgs(pid int, names []string, stop, server int) (args []string,
 // process. A stopped one counts: it can go on. tree maps a pid to its
 // children.
 func hasAgentBelow(pid int, names []string, tree map[int][]proc) bool {
-	if p, err := readProc(pid); err == nil && isAgentProc(p, names) {
+	return anyBelow(pid, tree, func(p proc) bool { return isAgentProc(p, names) })
+}
+
+// runsAgentBelow reports whether an agent process at or below pid runs,
+// not stopped: only then does an agent, not a shell, read the terminal.
+func runsAgentBelow(pid int, names []string, tree map[int][]proc) bool {
+	return anyBelow(pid, tree, func(p proc) bool { return isAgentProc(p, names) && p.state != 'T' })
+}
+
+// OwnerRuns reports whether a process named owner, an agent's command,
+// runs at or below pid, not stopped. It is the core's Core.OwnerRuns.
+func OwnerRuns(pid int, owner string) bool {
+	tree := processTree()
+	return tree != nil && runsAgentBelow(pid, []string{owner}, tree)
+}
+
+// anyBelow reports whether pid, or a process below it, is one that ok
+// accepts.
+func anyBelow(pid int, tree map[int][]proc, ok func(proc) bool) bool {
+	if p, err := readProc(pid); err == nil && ok(p) {
 		return true
 	}
 	queue := []int{pid}
 	for len(queue) > 0 {
 		for _, c := range tree[queue[0]] {
-			if isAgentProc(c, names) {
+			if ok(c) {
 				return true
 			}
 			queue = append(queue, c.pid)

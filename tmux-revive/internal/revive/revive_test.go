@@ -571,6 +571,47 @@ func TestSlowShellGetsTheCommandOnce(t *testing.T) {
 	}
 }
 
+// A pane the user scrolls (copy mode) while restore waits for its shell
+// still gets its command, once.
+func TestScrolledPaneGetsTheCommand(t *testing.T) {
+	tmuxtest.Require(t, "bash")
+	e := newEnv(t, "")
+	gate := filepath.Join(e.Home, "gate")
+	shell := filepath.Join(e.Bin, "gatedsh")
+	script := "#!/bin/bash\nuntil [[ -e " + gate + " ]]; do sleep 0.05; done\nexec /bin/sh\n"
+	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(e.ConfigHome, "tmux", "tmux.conf")
+	if err := os.WriteFile(conf, []byte(baseConfig+"set -g default-shell "+shell+"\n"+initLine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.writeSnapshot(t, []snapshot.Session{oneShell("proj-a", "1", e.Home, "claude --resume "+sessionUUID)})
+	done := make(chan string, 1)
+	go func() {
+		out, _ := e.Cmd(t, "tmux-revive", "restore").CombinedOutput()
+		done <- string(out)
+	}()
+	tmuxtest.WaitFor(t, 10*time.Second, "the restored pane", func() bool {
+		_, err := e.tmux.Run(context.Background(), "copy-mode", "-t", "proj-a:0.0")
+		return err == nil
+	})
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := <-done; !strings.Contains(out, "commands typed: 1") {
+		t.Errorf("restore said:\n%s", out)
+	}
+	time.Sleep(time.Second) // a second run would show by now
+	var runs []string
+	for _, c := range e.Calls("claude") {
+		runs = append(runs, strings.Join(c.Args, " "))
+	}
+	if want := []string{"--resume " + sessionUUID}; !slices.Equal(runs, want) {
+		t.Errorf("claude ran with %q, want %q", runs, want)
+	}
+}
+
 // prefix X on the last session: forget-session, then kill-session ends
 // the server, and the session does not come back.
 func TestForgottenLastSessionStaysClosed(t *testing.T) {

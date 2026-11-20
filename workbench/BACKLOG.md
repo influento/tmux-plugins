@@ -37,16 +37,13 @@ Open bugs, features and ideas for tmux-plugins, one entry each.
   before `go test -count=1 -run TestHookStopFlagsDone
   ./tmux-agent/internal/conformance/` fails it the same way; the run alone
   passes.
-- Flags vanish in windows that `start` opens (bug): the window runs
-  `sh -c` with the launcher as a child, so the terminal's foreground
-  process group leader is `sh`, and `#{pane_current_command}` is `sh`, not
-  the agent. The core's sweep (seen, list, status) drops every flag whose
-  owner is not the pane's command: a Claude Code flag in such a window
-  goes as "claude exited" at the next sweep, and the window shows `sh`.
-  Seen on 2026-11-20 in the contract sandbox (`start`, then
-  `#{pane_current_command}` = `sh`). `set -m` in the start script would
-  give the launcher its own group, but a Ctrl-Z of the agent would then
-  leave a stopped, orphaned group behind the login shell.
+- A window that `start` opens shows `sh` (bug): the window runs `sh -c`
+  with the launcher as a child, so the terminal's foreground process
+  group leader is `sh`, and `#{pane_current_command}` is `sh`, not the
+  agent. (The core's sweep keeps such a pane's flags: its owner runs below
+  the pane.) Seen on 2026-11-20 in the contract sandbox. `set -m` in the
+  start script would give the launcher its own group, but a Ctrl-Z of the
+  agent would then leave a stopped, orphaned group behind the login shell.
 - Panel: a split window's pane rows show no number. They show tmux's
   pane index (".1", ".2"), which the user finds odd; in the window the
   panel has joined they show ".2", ".3", as the panel takes index 1

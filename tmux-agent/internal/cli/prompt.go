@@ -128,10 +128,15 @@ func (a *app) promptCommand(args []string, stdin io.Reader) error {
 	if p.Pane == a.getenv("TMUX_PANE") {
 		return exitWith(2, "%s is the caller's own pane", p.Pane)
 	}
-	switch p.Flag {
-	case attention.NeedsYou:
-		return exitWith(exitBusy, "%s waits on the user: %s", fs.Arg(0), p.Reason)
-	case attention.Working:
+	now, claimed, err := a.env.ClaimForPrompt(ctx, p.Pane)
+	switch {
+	case errors.Is(err, agent.ErrNoAgentRuns):
+		return exitWith(exitNoAgent, "no agent runs in %s", fs.Arg(0))
+	case err != nil:
+		return err
+	case !claimed && now.Flag == attention.NeedsYou:
+		return exitWith(exitBusy, "%s waits on the user: %s", fs.Arg(0), now.Reason)
+	case !claimed:
 		return exitWith(exitBusy, "%s is working", fs.Arg(0))
 	}
 	channel := ""
@@ -182,13 +187,10 @@ func (a *app) promptCommand(args []string, stdin io.Reader) error {
 	return nil
 }
 
-// typePrompt pastes text into the pane and presses Enter. A done flag is
-// seen first: the prompt answers it, and the wait then starts from idle.
-// With a channel, the pane keeps it for the turn's end to signal.
+// typePrompt pastes text into the pane and presses Enter. The pane leaves
+// copy mode, or any other mode, first: a mode takes the keys. With a
+// channel, the pane keeps it for the turn's end to signal.
 func (a *app) typePrompt(ctx context.Context, pane, text, channel string) error {
-	if err := a.core.Seen(ctx, pane); err != nil {
-		return err
-	}
 	buf := agent.NewPromptChannel() // a buffer name no other paste uses
 	if err := a.tmux.LoadBuffer(ctx, buf, []byte(text)); err != nil {
 		return err
@@ -197,7 +199,8 @@ func (a *app) typePrompt(ctx context.Context, pane, text, channel string) error 
 	if channel != "" {
 		args = append(args, "set-option", "-p", "-t", pane, attention.OptWait, channel, ";")
 	}
-	args = append(args, "paste-buffer", "-p", "-r", "-d", "-b", buf, "-t", pane, ";",
+	args = append(args, "copy-mode", "-q", "-t", pane, ";",
+		"paste-buffer", "-p", "-r", "-d", "-b", buf, "-t", pane, ";",
 		"send-keys", "-t", pane, "Enter")
 	_, err := a.tmux.Run(ctx, args...)
 	return err
@@ -312,10 +315,13 @@ func (a *app) agentTarget(ctx context.Context, target string) (agent.AgentPane, 
 	if err != nil {
 		return agent.AgentPane{}, err
 	}
+	// A window in two sessions, grouped or linked, is listed once in each.
 	var hits []agent.AgentPane
+	hit := map[string]bool{}
 	for _, p := range ps {
-		if p.Pane == target || p.WindowName == target || p.TmuxSession+":"+p.WindowName == target {
+		if !hit[p.Pane] && (p.Pane == target || p.WindowName == target || p.TmuxSession+":"+p.WindowName == target) {
 			hits = append(hits, p)
+			hit[p.Pane] = true
 		}
 	}
 	switch len(hits) {

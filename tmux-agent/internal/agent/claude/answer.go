@@ -13,7 +13,7 @@ import (
 )
 
 // answerTail is how much of a transcript's end Answers reads first; the
-// whole transcript only when that holds fewer answers than asked for.
+// whole transcript only when that holds no more answers than asked for.
 const answerTail = 8 << 20
 
 // Answers are the texts of the last n messages that ended a turn: Claude
@@ -36,8 +36,9 @@ func (Claude) Answers(transcript string, n int) []agent.Answer {
 	if off := st.Size() - answerTail; off > 0 {
 		r := bufio.NewReader(io.NewSectionReader(f, off, answerTail))
 		_, _ = r.ReadBytes('\n') // the first line is cut
-		if as := answers(r, n); len(as) == n {
-			return as
+		// The oldest answer in the tail can lack blocks before its start.
+		if as := answers(r, n+1); len(as) == n+1 {
+			return as[1:]
 		}
 	}
 	return answers(bufio.NewReader(io.NewSectionReader(f, 0, st.Size())), n)

@@ -254,7 +254,7 @@ func newApp(version string, stdout, stderr io.Writer, getenv func(string) string
 	a.logPath = filepath.Join(store.StateDir(getenv), "log")
 	a.debug = getenv("TMUX_AGENT_DEBUG") != ""
 	a.tmux = &tmux.Client{Timeout: 2 * time.Second}
-	a.core = &attention.Core{Tmux: a.tmux, Agents: a.reg.CommandNames(), Marks: marks(a.reg), Notify: a.spawnNotify}
+	a.core = &attention.Core{Tmux: a.tmux, Agents: a.reg.CommandNames(), Marks: marks(a.reg), Notify: a.spawnNotify, OwnerRuns: agent.OwnerRuns}
 	a.env = &agent.Env{
 		Tmux: a.tmux, Core: a.core, Registry: a.reg,
 		Store:    &store.Store{Dir: store.StateDir(getenv)},

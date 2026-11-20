@@ -108,6 +108,12 @@ type Core struct {
 	Changed func(ctx context.Context)
 	// Agents are the commands whose idle panes List shows as agents.
 	Agents []string
+	// OwnerRuns, when set, reports whether a process named owner runs at
+	// or below the pane's first process pid, not stopped. Sweep keeps a
+	// flag whose owner runs although it is not the pane's command: tmux
+	// names the pane after its foreground process group's leader, which
+	// can be a shell that runs the owner (a window start opens).
+	OwnerRuns func(pid int, owner string) bool
 	// Marks are the panel's agent marks, by agent name and by command.
 	Marks map[string]AgentMark
 	// Now is the clock; time.Now when nil.
@@ -422,20 +428,27 @@ func (c *Core) Redraw(ctx context.Context) error {
 	return c.Status(ctx)
 }
 
-// Sweep drops every flag whose owner is no longer the pane's command and
-// leaves a note the list shows. It reports whether it dropped any.
+// Sweep drops every flag whose owner is no longer the pane's command, nor
+// runs in the pane (OwnerRuns), and leaves a note the list shows. It
+// reports whether it dropped any.
 func (c *Core) Sweep(ctx context.Context) (bool, error) {
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F",
-		"#{pane_id}"+sep+"#{@attention}"+sep+"#{@attention_owner}"+sep+"#{pane_current_command}"+sep+"#{"+OptWait+"}")
+		"#{pane_id}"+sep+"#{@attention}"+sep+"#{@attention_owner}"+sep+"#{pane_current_command}"+sep+"#{"+OptWait+"}"+sep+"#{pane_pid}")
 	if err != nil {
 		return false, err
 	}
 	dropped := false
 	var col *Colours
+	// A window in two sessions, grouped or linked, is listed once in each.
+	swept := map[string]bool{}
 	for _, l := range lines(out) {
-		f := split(l, 5)
+		f := split(l, 6)
 		id, st, owner, cmd := f[0], f[1], f[2], f[3]
-		if st == "" || owner == "" || owner == cmd {
+		if st == "" || owner == "" || owner == cmd || swept[id] {
+			continue
+		}
+		swept[id] = true
+		if pid, err := strconv.Atoi(f[5]); err == nil && c.OwnerRuns != nil && c.OwnerRuns(pid, owner) {
 			continue
 		}
 		args := append(unflagArgs(id), signalArgs(id, f[4], Idle)...)

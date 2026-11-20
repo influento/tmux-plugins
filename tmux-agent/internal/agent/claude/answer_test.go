@@ -49,3 +49,26 @@ func TestAnswers(t *testing.T) {
 		t.Errorf("a missing transcript: %v", got)
 	}
 }
+
+// Past answerTail only the tail is read first: an answer whose first
+// lines lie before the tail's start still comes whole.
+func TestAnswersAcrossTheTail(t *testing.T) {
+	m1a := `{"type":"assistant","timestamp":"2026-01-02T10:00:01.000Z","message":{"id":"m1","stop_reason":"end_turn","content":[{"type":"text","text":"part one"}]}}` + "\n"
+	m1b := `{"type":"assistant","timestamp":"2026-01-02T10:00:01.500Z","message":{"id":"m1","stop_reason":"end_turn","content":[{"type":"text","text":"part two"}]}}` + "\n"
+	m2 := `{"type":"assistant","timestamp":"2026-01-02T10:01:01.000Z","message":{"id":"m2","stop_reason":"end_turn","content":[{"type":"text","text":"answer two"}]}}` + "\n"
+	// The tail starts in the middle of m1a.
+	cut := len(m1a) / 2
+	head, end := `{"type":"user","message":{"role":"user","content":"`, `"}}`+"\n"
+	fill := head + strings.Repeat("x", cut+answerTail-len(m1a)-len(m1b)-len(m2)-len(head)-len(end)) + end
+	path := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(path, []byte(m1a+m1b+fill+m2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range (Claude{}).Answers(path, 2) {
+		got = append(got, a.Text)
+	}
+	if want := []string{"part one\n\npart two", "answer two"}; !slices.Equal(got, want) {
+		t.Errorf("Answers(2) = %q, want %q", got, want)
+	}
+}

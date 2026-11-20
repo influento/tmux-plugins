@@ -179,3 +179,39 @@ func TestClearKeepsTheFlagTime(t *testing.T) {
 		t.Errorf("flag|at|idle_at = %q, want ||1700000000", got)
 	}
 }
+
+// signals counts the wait-for signals of channel among the tmux calls it
+// passes on.
+type signals struct {
+	Tmux
+	channel string
+	n       int
+}
+
+func (s *signals) Run(ctx context.Context, args ...string) (string, error) {
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "wait-for" && args[i+1] == "-S" && args[i+2] == s.channel {
+			s.n++
+		}
+	}
+	return s.Tmux.Run(ctx, args...)
+}
+
+// A window in two sessions (grouped or linked) is listed once per session:
+// a sweep wakes a prompt that waits on its pane once. A second wake no
+// prompt waits for stays in the server.
+func TestSweepSignalsOnce(t *testing.T) {
+	s, p1, _ := panes(t)
+	s.MustTmux(t, "new-session", "-d", "-t", "proj-a", "-s", "proj-b")
+	s.MustTmux(t, "set-option", "-p", "-t", p1, "@attention", "working", ";",
+		"set-option", "-p", "-t", p1, "@attention_owner", "fakeagent", ";",
+		"set-option", "-p", "-t", p1, OptWait, "chan-a")
+	sig := &signals{Tmux: s.Client, channel: "chan-a"}
+	c := &Core{Tmux: sig}
+	if _, err := c.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sig.n != 1 {
+		t.Errorf("the sweep signalled the waiter %d times, want 1", sig.n)
+	}
+}

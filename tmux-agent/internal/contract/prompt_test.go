@@ -3,6 +3,7 @@ package contract
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -156,4 +157,164 @@ func TestPrompt(t *testing.T) {
 			t.Errorf("@attention_wait = %q after the wait", w)
 		}
 	})
+}
+
+// touch creates the empty file name in the stub's folder.
+func (e *env) touch(t *testing.T, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(e.dir, name), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitExists waits until the file name exists in the stub's folder.
+func (e *env) waitExists(t *testing.T, name string) {
+	t.Helper()
+	tmuxtest.WaitFor(t, 10*time.Second, name, func() bool {
+		_, err := os.Stat(filepath.Join(e.dir, name))
+		return err == nil
+	})
+}
+
+// promptRun is what one run of prompt printed and its exit code.
+type promptRun struct {
+	out, stderr string
+	code        int
+}
+
+// promptBackground runs prompt in the background.
+func (e *env) promptBackground(t *testing.T, args ...string) <-chan promptRun {
+	t.Helper()
+	ch := make(chan promptRun, 1)
+	go func() {
+		out, stderr, code := e.tmuxAgentIn(t, e.pane, "", append([]string{"prompt"}, args...)...)
+		ch <- promptRun{out, stderr, code}
+	}()
+	return ch
+}
+
+// A window in two sessions, grouped or linked, is one agent: its pane, its
+// name and each SESSION:WINDOW name it.
+func TestPromptGroupedSessions(t *testing.T) {
+	e := newEnv(t)
+	paneA := e.startChat(t, "agent-a", sessionA)
+	e.MustTmux(t, "new-session", "-d", "-t", "proj-a", "-s", "proj-b")
+	for i, target := range []string{paneA, "agent-a", "proj-a:agent-a", "proj-b:agent-a"} {
+		out, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "--wait", "--timeout", "20s", target, "hello")
+		if want := fmt.Sprintf("answer %d", i+1); code != 0 || out != want {
+			t.Errorf("prompt %s: exit %d, %q, %q; want 0 and %q", target, code, out, stderr, want)
+		}
+	}
+	if out, stderr, code := e.tmuxAgentIn(t, e.pane, "", "read", paneA); code != 0 || out != "answer 4" {
+		t.Errorf("read %s: exit %d, %q, %q; want 0 and \"answer 4\"", paneA, code, out, stderr)
+	}
+}
+
+// sessionC is a third agent session.
+const sessionC = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+
+// A pane whose agent no longer runs keeps its session for a resume, and
+// its shell reads the terminal: prompt refuses it (exit 4) and types
+// nothing. The launcher killed with SIGTERM, the launcher and the agent
+// with SIGKILL, or the agent stopped with Ctrl-Z.
+func TestPromptNoRunningAgent(t *testing.T) {
+	e := newEnv(t)
+	for _, c := range []struct {
+		name, session string
+		end           func(t *testing.T, pane, launcher string)
+	}{
+		{"agent-a", sessionA, func(t *testing.T, pane, launcher string) {
+			t.Helper()
+			e.MustTmux(t, "run-shell", "kill -TERM "+launcher)
+		}},
+		{"agent-b", sessionB, func(t *testing.T, pane, launcher string) {
+			t.Helper()
+			// An agent left alone, in a group with no terminal, would end
+			// only at its next read: the agent goes too.
+			e.MustTmux(t, "run-shell", "kill -KILL "+launcher+" "+e.file(t, "agent-b.pid"))
+		}},
+		{"agent-c", sessionC, func(t *testing.T, pane, launcher string) {
+			t.Helper()
+			e.MustTmux(t, "send-keys", "-t", pane, "C-z")
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pane := e.startChat(t, c.name, c.session)
+			c.end(t, pane, e.file(t, c.name+".ppid"))
+			tmuxtest.WaitFor(t, 10*time.Second, "the shell", func() bool {
+				return e.Display(t, pane, "#{pane_current_command}") == "bash"
+			})
+			if s := e.paneOpt(t, pane, "@agent_session"); s != c.session {
+				t.Fatalf("@agent_session = %q, want the session kept", s)
+			}
+			_, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", c.name, `touch "$STUB_DIR/`+c.name+`.typed"`)
+			if code != 4 {
+				t.Errorf("prompt: exit %d, %q; want 4", code, stderr)
+			}
+			// The shell runs what it read in order: the prompt's text before this.
+			e.MustTmux(t, "send-keys", "-t", pane, "-l", `touch "$STUB_DIR/`+c.name+`.after"`)
+			e.MustTmux(t, "send-keys", "-t", pane, "Enter")
+			e.waitExists(t, c.name+".after")
+			if _, err := os.Stat(filepath.Join(e.dir, c.name+".typed")); err == nil {
+				t.Error("the shell ran the prompt's text")
+			}
+		})
+	}
+}
+
+// A second prompt that comes before the agent took the first one in sees
+// it working (exit 3); the first prompt gets its own answer.
+func TestPromptTwoAtOnce(t *testing.T) {
+	e := newEnv(t)
+	e.startChat(t, "agent-a", sessionA)
+	first := e.promptBackground(t, "--wait", "--timeout", "20s", "agent-a", "gate")
+	e.waitExists(t, "agent-a.prompt1")
+	if _, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "--wait", "--timeout", "5s", "agent-a", "second"); code != 3 {
+		t.Errorf("the second prompt: exit %d, %q; want 3", code, stderr)
+	}
+	e.touch(t, "agent-a.submit1")
+	if r := <-first; r.code != 0 || r.out != "answer 1" {
+		t.Errorf("the first prompt: exit %d, %q, %q; want 0 and \"answer 1\"", r.code, r.out, r.stderr)
+	}
+}
+
+// A pane the user scrolls (copy mode) still gets the prompt, sent.
+func TestPromptCopyMode(t *testing.T) {
+	e := newEnv(t)
+	pane := e.startChat(t, "agent-a", sessionA)
+	for i, keys := range []string{"emacs", "vi"} {
+		e.MustTmux(t, "set-option", "-g", "mode-keys", keys)
+		e.MustTmux(t, "copy-mode", "-t", pane)
+		out, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "--wait", "--timeout", "10s", "agent-a", "hello")
+		if want := fmt.Sprintf("answer %d", i+1); code != 0 || out != want {
+			t.Errorf("mode-keys %s: exit %d, %q, %q; want 0 and %q", keys, code, out, stderr, want)
+		}
+	}
+}
+
+// In a window start opens, the pane's command is sh, the launcher's
+// parent: a sweep keeps the agent's flag, a second prompt sees it working,
+// and the first gets its answer.
+func TestPromptInStartWindow(t *testing.T) {
+	e := newEnv(t)
+	e.stubEnv(t, "STUB_MODE", "chat", "STUB_TAG", "w-a", "STUB_SESSION", sessionA)
+	if out, stderr, code := e.start(t, "--name", "w-a", "claude"); code != 0 {
+		t.Fatalf("start: exit %d, %q, %q", code, out, stderr)
+	}
+	pane := e.MustTmux(t, "list-panes", "-a", "-f", "#{==:#{window_name},w-a}", "-F", "#{pane_id}")
+	first := e.promptBackground(t, "--wait", "--timeout", "20s", "w-a", "hold")
+	e.waitExists(t, "w-a.submitted1")
+	if _, stderr, code := e.tmuxAgentIn(t, e.pane, "", "sweep"); code != 0 {
+		t.Fatalf("sweep: exit %d, %q", code, stderr)
+	}
+	if flag := e.paneOpt(t, pane, "@attention"); flag != "working" {
+		t.Errorf("after a sweep the flag is %q, want working", flag)
+	}
+	if _, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "w-a", "second"); code != 3 {
+		t.Errorf("a second prompt: exit %d, %q; want 3", code, stderr)
+	}
+	e.touch(t, "w-a.answer1")
+	if r := <-first; r.code != 0 || r.out != "answer 1" {
+		t.Errorf("the first prompt: exit %d, %q, %q; want 0 and \"answer 1\"", r.code, r.out, r.stderr)
+	}
 }

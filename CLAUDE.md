@@ -286,10 +286,16 @@ Rules:
   hold, and the watcher ends the held turn when the last run ends.
 - `prompt` and `read`: one agent drives another as the user would.
   `prompt` finds the agent by pane, window name in any session, or
-  SESSION:WINDOW (two matches: exit 2), refuses one that works or waits
-  on the user (exit 3) and the caller's own pane, sees a done flag, then
-  pastes the text (`load-buffer` from stdin, `paste-buffer -p`: a newline
-  does not send it) and presses Enter. `--wait` keeps a `wait-for`
+  SESSION:WINDOW (two panes match: exit 2; a window in two sessions is
+  one), refuses the caller's own pane. Under the lock it refuses a pane
+  where no agent process runs, gone or stopped, though the session stays
+  for a resume (exit 4: the shell would run the text), and one that works
+  or waits on the user (exit 3); else it sees a done flag and flags the
+  pane working as the agent's prompt hook does, so a second prompt before
+  that hook sees it working. Then it takes the pane out of copy mode or
+  any mode (a mode takes the keys), pastes the text (`load-buffer` from
+  stdin, `paste-buffer -p`: a newline does not send it) and presses
+  Enter. `--wait` keeps a `wait-for`
   channel in the pane's `@attention_wait`; the core signals and unsets it
   at the flag's next change to anything but working (`Set`, `Clear`,
   `Sweep`), so a held turn or running subagents keep it waiting, and a
@@ -603,7 +609,8 @@ Rules:
   restored pane whose `@revive_pane` a live pane holds gets a new id and no
   scrollback. A session, window or pane tmux refuses costs only itself; the
   rest are still made. It types `@revive_cmd` once into a pane: it waits
-  for the shell's prompt, sends the text literally, checks the text shows,
+  for the shell's prompt, takes the pane out of copy mode or any mode the
+  user scrolls in, sends the text literally, checks the text shows,
   then sends Enter; it clears the line and tries again on a timeout. Text
   with a newline or another control character is not typed (the shell
   would act on it as it arrives) and shows as not typed. A program on the
