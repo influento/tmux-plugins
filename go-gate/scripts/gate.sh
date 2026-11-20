@@ -39,6 +39,8 @@ LINT_BIN=$(tool go-gate/golangci golangci-lint) || exit 1
 CHECK_BIN=$(tool go-gate check) || exit 1
 DEADCODE_BIN=$(tool go-gate deadcode) || exit 1
 check() { "$CHECK_BIN" "$PWD" "$@"; }
+# shellcheck source-path=SCRIPTDIR/../../../shared source=test-lock.sh
+. go-gate/scripts/test-lock.sh
 run() { "$@" || FAIL=1; }
 # A tool that prints a summary when it passes: its output only when it fails.
 quiet() { local out; out=$("$@" 2>&1) && return; printf '%s\n' "$out"; return 1; }
@@ -134,8 +136,13 @@ tests() {
   # The full run shuffles the order; a shuffled run is never cached, so --local
   # runs from Go's test cache: only the packages a change reaches run again.
   [ "$MODE" = "--local" ] || args+=(-shuffle=on)
-  local trc
-  go test "${args[@]}" -json "${PKGS[@]}" > "$TMP/test.json" 2>&1; trc=$?
+  # -p: test binaries at once; -parallel: the t.Parallel tests of one binary.
+  local workers trc
+  workers=$(test_workers)
+  [ -z "$workers" ] || args+=(-p "$workers" -parallel "$workers")
+  # shellcheck disable=SC2016  # the inner shell's $0 and $@: go test's output into the file
+  test_locked go-gate "$MODE" sh -c 'exec "$@" > "$0" 2>&1' "$TMP/test.json" go test "${args[@]}" -json "${PKGS[@]}"; trc=$?
+  [ "$trc" -ne "$TEST_LOCK_TIMED_OUT" ] || return 1
   check tests < "$TMP/test.json"; rc=$?
   # go test can fail before any test event: a go.mod it cannot use, a bad flag.
   [ "$rc" -ne 0 ] || [ "$trc" -eq 0 ] || { echo "go test failed (exit $trc)"; rc=1; }

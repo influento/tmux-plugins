@@ -3,16 +3,7 @@
     "ask": [
       "Bash(stack add *)",
       "Bash(stack rm *)",
-      "Bash(stack update *)",
-      "Edit(/.claude/settings.json)",
-      "Edit(/.claude/hooks/workshop-guard)",
-      "Edit(/.claude/workshop.conf)",
-      "Edit(/go-gate/**)",
-      "Edit(/go.mod)",
-      "Edit(/go.sum)",
-      "Edit(/go.work)",
-      "Edit(/go.work.sum)",
-      "Edit(/vendor/**)"
+      "Bash(stack update *)"
     ],
     "allow": [
       "Bash(bash go-gate/scripts/gate.sh)",
@@ -81,7 +72,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Edit|MultiEdit|Write|NotebookEdit",
         "hooks": [
           {
             "type": "command",

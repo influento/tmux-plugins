@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Bash, copied into a project by guard. A shell command
-# that can write a path of an Edit(...) rule in permissions.deny or .ask, or
-# cds into a guarded directory, gets the answer the edit tools get: deny or
-# ask. Settings rules alone let a redirect such as `> tsconfig.json` through
-# in auto mode (../../AGENTS.md, "Guarded files"). The hook judges each
+# PreToolUse hook for Bash and the edit tools, copied into a project by
+# guard. A change to a path of .claude/guarded waits for the user: the hook
+# refuses it and tells the agent to ask in plain words, until the user
+# approves (approved below). A change to a path of an Edit(...) rule in
+# permissions.deny is refused. A shell command changes a path when it can
+# write it or cds into a guarded directory: settings rules alone let a
+# redirect such as `> tsconfig.json` through in auto mode (../../AGENTS.md,
+# "Guarded files"). The hook judges each
 # pipeline of the command alone: one that names the path passes when the
 # part that first names it and every part after it are known reads (cat,
 # grep, git diff, ...) and no redirect goes into the path, since a pipe
@@ -17,12 +20,20 @@ set -euo pipefail
 exec python3 -c "$(cat <<'PY'
 import json, os, re, shlex, sys
 
-cmd = json.load(sys.stdin).get("tool_input", {}).get("command", "")
+data = json.load(sys.stdin)
+tool = data.get("tool_name", "Bash")
+cmd = data.get("tool_input", {}).get("command", "")
+root = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR", "."))
 try:
-    with open(os.path.join(os.environ.get("CLAUDE_PROJECT_DIR", "."), ".claude/settings.json")) as fh:
+    with open(os.path.join(root, ".claude/settings.json")) as fh:
         perms = json.load(fh).get("permissions", {})
 except (OSError, ValueError):
-    sys.exit(0)
+    perms = {}
+try:
+    with open(os.path.join(root, ".claude/guarded")) as fh:
+        listed = [line.strip() for line in fh if line.strip()]
+except OSError:
+    listed = []
 
 READ = {"cat", "head", "tail", "less", "wc", "ls", "grep", "rg", "diff", "cmp", "stat", "file",
         "tree", "jq", "realpath", "readlink", "basename", "dirname", "echo", "printf", "test",
@@ -422,16 +433,105 @@ def writes(path, parsed):
                                              for part in pipe[first:])
     return any(pipe_writes(pipe) for pipe in pipelines)
 
-parsed = parse(cmd)
-for decision in ("deny", "ask"):
-    for rule in perms.get(decision, []):
-        if not (rule.startswith("Edit(/") and rule.endswith(")")):
-            continue
-        path = rule[6:-1].removesuffix("**")
-        if path and writes(path, parsed):
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision,
-                "permissionDecisionReason": path + " is guarded: only the user decides a change to it. "
-                "To only read it, use cat, jq or git show, or run the tool without naming the file."}}))
-            sys.exit(0)
+def rule_paths(decision):
+    return [r[6:-1].removesuffix("**") for r in perms.get(decision, []) if r.startswith("Edit(/") and r.endswith(")")]
+
+# The user's approval: a whole reply that is a plain yes, and nothing more.
+YES = re.compile(r"\W*(?:yes|y|yep|yeah|sure|approve|approved|ok|okay|go|go on|go ahead|do it|lgtm)"
+                 r"(?:\W+(?:go ahead|go on|do it|please))?\W*", re.I)
+# The agent's request, in words the refusal fixes, at the start of a line
+# (not quoted inside a summary): the file it names.
+ASKED = re.compile(r"(?m)^\W*Approve a change to [`'\"]?([^\s`'\"?]+)")
+
+def text_of(row):
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and all(isinstance(b, dict) and b.get("type") == "text" for b in content):
+        return "\n".join(b.get("text", "") for b in content)
+    return None
+
+def asked(text):
+    # The paths a text asks to change, relative to the project.
+    out = set()
+    for name in ASKED.findall(text or ""):
+        name = name.rstrip(".,;:")
+        out.add(os.path.relpath(name, root) if os.path.isabs(name) else name.removeprefix("./"))
+    return out
+
+def approvals():
+    # The paths the user approved a change to in this turn: an
+    # AskUserQuestion that asks for it, answered Approve or a plain yes, or
+    # a prompt the user typed (not another session's message, nor one a
+    # program sent with claude -p) that is a plain yes to an agent message
+    # that asks for it. A question or a message asks for a change only in
+    # the refusal's words.
+    transcript, turn = data.get("transcript_path"), data.get("prompt_id")
+    if not transcript or not turn:
+        return set()
+    try:
+        with open(transcript) as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+    except (OSError, ValueError):
+        return set()
+    said, ok = "", set()
+    for row in rows:
+        result = row.get("toolUseResult")
+        answers = result.get("answers") if isinstance(result, dict) else None
+        if row.get("promptId") == turn and isinstance(answers, dict):
+            for q, a in answers.items():
+                if a == "Approve" or YES.fullmatch(str(a)):
+                    ok |= asked(q)
+        if row.get("type") == "assistant":
+            text = "\n".join(b.get("text", "") for b in (row.get("message") or {}).get("content") or []
+                             if isinstance(b, dict) and b.get("type") == "text")
+            said = text or said
+        elif row.get("type") == "user" and row.get("promptId") == turn and (row.get("origin") or {}).get("kind") == "human" \
+                and text_of(row) is not None and YES.fullmatch(text_of(row).strip()):
+            ok |= asked(said)
+    return ok
+
+def refuse(path, locked, name):
+    reason = (path + " is locked: no agent changes it. " if locked else
+              path + " is guarded: it judges the work, so the user approves each change to it. Do not try "
+              "another way. If the change is needed, ask the user first: start with \"Approve a change to " +
+              name + "?\", then say in one or two plain sentences what changes in it and why the work needs "
+              "it, and leave the command out. With AskUserQuestion, put all that in the question and give the "
+              "options Approve and Deny; without it, ask in your reply and end your turn. Once the user "
+              "approves, make the change. ") + \
+        "To only read it, use cat, jq or git show, or run the tool without naming the file."
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": reason}}))
+    sys.exit(0)
+
+locked = rule_paths("deny")
+# An older guard listed its paths as ask rules.
+guarded = listed + [path for path in rule_paths("ask") if path not in listed]
+rel = ""
+if tool == "Bash":
+    parsed = parse(cmd)
+    hit = lambda path: writes(path, parsed)
+else:
+    target = data.get("tool_input", {}).get("file_path") or data.get("tool_input", {}).get("notebook_path") or ""
+    rel = os.path.relpath(os.path.abspath(os.path.join(root, target)), root) if target else ""
+    hit = lambda path: bool(rel) and (rel.startswith(path) if path.endswith("/") else rel == path)
+def approved(path):
+    # An approval names what changes: the file an edit tool changes; for a
+    # shell write, the guarded path, or each file in a guarded folder that
+    # the command names.
+    ok = approvals()
+    if tool != "Bash":
+        return rel in ok
+    if path in ok or not path.endswith("/"):
+        return path in ok
+    named = {m.rstrip(".,;:") for m in re.findall(r"(?<![\w./-])" + re.escape(path) + r"[^\s'\"`;|&<>()]*", cmd)}
+    return bool(named) and named <= ok
+
+for path in locked:
+    if path and hit(path):
+        refuse(path, True, path)
+for path in guarded:
+    if path and hit(path) and not approved(path):
+        refuse(path, False, rel if tool != "Bash" else path)
 PY
 )"
