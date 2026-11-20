@@ -49,6 +49,15 @@ const usage = `usage:
                    [--task ID --source S [--title T]]
                                        bind the window to a task, opened if new (a
                                        window NAME open already joins it too)
+  tmux-agent prompt [--wait] [--timeout D] [--json] TARGET [TEXT]
+                                       type TEXT (else stdin) into the agent in TARGET (a
+                                       pane, a window name, or SESSION:WINDOW) and press
+                                       Enter; --wait prints its answer, the text of the
+                                       turn's last message, once the turn ends. Exit 3:
+                                       the agent works or waits on the user; 4: no agent
+                                       in TARGET; 5: the turn ended without an answer
+  tmux-agent read [--last N] [--json] TARGET
+                                       the agent's last N answers (1), oldest first
   tmux-agent task end ID --source S [--close] [--json]
                                        forget a task; with --close, close its windows,
                                        the caller's own last. Exit 4: no such task
@@ -190,6 +199,10 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 		return a.env.Launch(a.reg.Get(rest[0]), rest[1:], self, stderr)
 	case "start":
 		return a.start(rest)
+	case "prompt":
+		return a.runCode(cmd, func() error { return a.promptCommand(rest, stdin) })
+	case "read":
+		return a.runCode(cmd, func() error { return a.readCommand(rest) })
 	case "task":
 		return a.taskCommand(rest)
 	case "revive":

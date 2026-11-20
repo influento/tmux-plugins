@@ -36,6 +36,14 @@ A tool that runs several agents for one unit of work binds them to a task:
 S [--close]`, `task list [--json]`. The panel shows a task's windows as one
 row, with the role that matters now; agents group by repository.
 
+One agent drives another as the user would: `tmux-agent prompt --wait
+NAME "TEXT"` types the prompt into the agent in window NAME (or
+`SESSION:WINDOW`, or a pane id), presses Enter and prints the answer, the
+text of the turn's last message, once the turn ends. Without TEXT it reads
+stdin. It refuses an agent that works or waits on you (exit 3); `tmux-agent
+read [--last N] NAME` prints the last answers. Both work over ssh on
+another machine's agents.
+
 The panel is a tmux pane at the left edge, full height, 40 columns, that
 follows its client to every window and session; the same key closes it.
 `tmux-agent tmux-init` sets its hooks. These keys move the panel and switch

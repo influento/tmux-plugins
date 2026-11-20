@@ -158,21 +158,34 @@ func lines(out string) []string {
 	return strings.Split(out, "\n")
 }
 
+// OptWait holds, on a pane, the tmux wait-for channel of a program that
+// waits for the pane's turn to end (tmux-agent prompt --wait). The flag's
+// next change to anything but working signals it, once.
+const OptWait = "@attention_wait"
+
 // FlagOf returns the pane's state and reason.
 func (c *Core) FlagOf(ctx context.Context, pane string) (State, string, error) {
-	st, reason, _, err := c.read(ctx, pane)
+	st, reason, _, _, err := c.read(ctx, pane)
 	return st, reason, err
 }
 
-// read returns the pane's state, reason and failed mark.
-func (c *Core) read(ctx context.Context, pane string) (st State, reason string, failed bool, err error) {
+// read returns the pane's state, reason, failed mark and waiter.
+func (c *Core) read(ctx context.Context, pane string) (st State, reason string, failed bool, wait string, err error) {
 	out, err := c.Tmux.Output(ctx, "display-message", "-p", "-t", pane,
-		"#{@attention}"+sep+"#{@attention_reason}"+sep+"#{@attention_failed}")
+		"#{@attention}"+sep+"#{@attention_reason}"+sep+"#{@attention_failed}"+sep+"#{"+OptWait+"}")
 	if err != nil {
-		return Idle, "", false, err
+		return Idle, "", false, "", err
 	}
-	f := split(out, 3)
-	return State(f[0]), f[1], f[2] == "1", nil
+	f := split(out, 4)
+	return State(f[0]), f[1], f[2] == "1", f[3], nil
+}
+
+// signalArgs wake the waiter of a pane whose flag changed to s.
+func signalArgs(pane, wait string, s State) []string {
+	if wait == "" || s == Working {
+		return nil
+	}
+	return []string{"set-option", "-pu", "-t", pane, OptWait, ";", "wait-for", "-S", wait, ";"}
 }
 
 // Mark is what a tmux format draws for a flag: its glyph in its colour and
@@ -240,7 +253,7 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 	if f.Failed && f.State != Done {
 		return Idle, false, fmt.Errorf("set: only a done flag can be failed, not %s", f.State)
 	}
-	cur, reason, failed, err := c.read(ctx, pane)
+	cur, reason, failed, wait, err := c.read(ctx, pane)
 	if err != nil {
 		return Idle, false, err
 	}
@@ -281,6 +294,9 @@ func (c *Core) Set(ctx context.Context, pane string, f Flag) (prev State, change
 	} else {
 		args = append(args, "set-option", "-pu", "-t", pane, "@attention_owner")
 	}
+	if sig := signalArgs(pane, wait, f.State); sig != nil {
+		args = append(append(args, ";"), sig[:len(sig)-1]...)
+	}
 	if _, err := c.Tmux.Run(ctx, args...); err != nil {
 		return cur, false, err
 	}
@@ -309,11 +325,12 @@ func unflagArgs(pane string) []string {
 
 // Clear sets the pane back to idle. A pane without a flag is left alone.
 func (c *Core) Clear(ctx context.Context, pane string) error {
-	cur, _, err := c.FlagOf(ctx, pane)
+	cur, _, _, wait, err := c.read(ctx, pane)
 	if err != nil || cur == Idle {
 		return err
 	}
-	args := append(unflagArgs(pane), "set-option", "-pu", "-t", pane, "@attention_gone")
+	args := append(unflagArgs(pane), signalArgs(pane, wait, Idle)...)
+	args = append(args, "set-option", "-pu", "-t", pane, "@attention_gone")
 	if _, err := c.Tmux.Run(ctx, args...); err != nil {
 		return err
 	}
@@ -409,19 +426,20 @@ func (c *Core) Redraw(ctx context.Context) error {
 // leaves a note the list shows. It reports whether it dropped any.
 func (c *Core) Sweep(ctx context.Context) (bool, error) {
 	out, err := c.Tmux.Output(ctx, "list-panes", "-a", "-F",
-		"#{pane_id}"+sep+"#{@attention}"+sep+"#{@attention_owner}"+sep+"#{pane_current_command}")
+		"#{pane_id}"+sep+"#{@attention}"+sep+"#{@attention_owner}"+sep+"#{pane_current_command}"+sep+"#{"+OptWait+"}")
 	if err != nil {
 		return false, err
 	}
 	dropped := false
 	var col *Colours
 	for _, l := range lines(out) {
-		f := split(l, 4)
+		f := split(l, 5)
 		id, st, owner, cmd := f[0], f[1], f[2], f[3]
 		if st == "" || owner == "" || owner == cmd {
 			continue
 		}
-		args := append(unflagArgs(id), "set-option", "-p", "-t", id, "@attention_gone", st+" · "+owner+" exited")
+		args := append(unflagArgs(id), signalArgs(id, f[4], Idle)...)
+		args = append(args, "set-option", "-p", "-t", id, "@attention_gone", st+" · "+owner+" exited")
 		if _, err := c.Tmux.Run(ctx, args...); err != nil {
 			if isGone(err) {
 				continue

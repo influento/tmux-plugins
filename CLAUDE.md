@@ -284,6 +284,23 @@ Rules:
   kind's mark and count after ⑂ (`✳6`). A turn that ends while they run
   stays working, held (`@agent_held`); the agent's next turn drops the
   hold, and the watcher ends the held turn when the last run ends.
+- `prompt` and `read`: one agent drives another as the user would.
+  `prompt` finds the agent by pane, window name in any session, or
+  SESSION:WINDOW (two matches: exit 2), refuses one that works or waits
+  on the user (exit 3) and the caller's own pane, sees a done flag, then
+  pastes the text (`load-buffer` from stdin, `paste-buffer -p`: a newline
+  does not send it) and presses Enter. `--wait` keeps a `wait-for`
+  channel in the pane's `@attention_wait`; the core signals and unsets it
+  at the flag's next change to anything but working (`Set`, `Clear`,
+  `Sweep`), so a held turn or running subagents keep it waiting, and a
+  question to the user ends it with exit 3. A closed pane or an ended
+  session signals nothing: the wait looks every 2 s (exit 5). The answer
+  is the adapter's (`Answerer`): for Claude Code the text of the last
+  message that stops for anything but a tool call, at or after the
+  prompt, looked for up to 5 s (exit 5 without one). Both hold only for a
+  hook handled by a tmux-agent that knows `@attention_wait`: a demo of a
+  dev build sets the agent's PATH in the window's command, as the default
+  shell rebuilds it from /etc/profile.
 - `start` and `close` (step 5) are the contract for tools such as
   workbench, which then call no tmux for agent windows; their JSON has
   `version` (`contractVersion`). `start` opens a window that runs

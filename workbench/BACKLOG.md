@@ -37,6 +37,16 @@ Open bugs, features and ideas for tmux-plugins, one entry each.
   before `go test -count=1 -run TestHookStopFlagsDone
   ./tmux-agent/internal/conformance/` fails it the same way; the run alone
   passes.
+- Flags vanish in windows that `start` opens (bug): the window runs
+  `sh -c` with the launcher as a child, so the terminal's foreground
+  process group leader is `sh`, and `#{pane_current_command}` is `sh`, not
+  the agent. The core's sweep (seen, list, status) drops every flag whose
+  owner is not the pane's command: a Claude Code flag in such a window
+  goes as "claude exited" at the next sweep, and the window shows `sh`.
+  Seen on 2026-11-20 in the contract sandbox (`start`, then
+  `#{pane_current_command}` = `sh`). `set -m` in the start script would
+  give the launcher its own group, but a Ctrl-Z of the agent would then
+  leave a stopped, orphaned group behind the login shell.
 - Panel: a split window's pane rows show no number. They show tmux's
   pane index (".1", ".2"), which the user finds odd; in the window the
   panel has joined they show ".2", ".3", as the panel takes index 1
@@ -89,19 +99,12 @@ Open bugs, features and ideas for tmux-plugins, one entry each.
   `passed|failed`. It knows no agent and needs nothing else; about two hours.
   Useful for scripts and agents that start a server or a test run in a pane
   they can see.
-- Prompt, read and an orchestration skill (feature; parked): `start` exists
-  (window only). Left: `tmux-agent prompt <name> "<text>" --wait` pastes with
-  `paste-buffer -p`, presses Enter and waits on a tmux `wait-for` channel that
-  the turn-end event signals; it refuses with exit 3 when the agent waits on
-  the user. `tmux-agent read <name> --last N` returns the last answers from
-  the pane's transcript, exact text, no screen reading. A skill teaches agents
-  to use them; tmux-peers stays for messages. Parked because Claude Code's own
-  messages between sessions cover most Claude-to-Claude work. What only these
-  give: plain shell scripts and other agents can drive panes, and prompt
-  refuses when the agent waits on the user. Needs the session-window tie, to
-  find an agent by window name. Open: whether `start` also opens a split in
-  the caller's window; whether another agent than Claude is needed first.
-  herdr's agent prompt, wait and read are a finished design to copy.
+- Orchestration skill (idea): `tmux-agent prompt` and `read` exist. A skill
+  that teaches agents to use them, here and over ssh on another machine
+  (`ssh HOST tmux-agent prompt --wait NAME`), is not written. tmux-peers
+  and Claude Code's own messages stay for Claude-to-Claude messages; what
+  only prompt gives: scripts and other agents can drive a pane, by window
+  name, and it refuses while the agent waits on the user.
 - Process tracker (feature; optional, waits for the user to want it): a list
   of every process an agent started (shells, background jobs, dev servers,
   apps), under its session; what an ended session left shows as "no session",

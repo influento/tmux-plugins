@@ -47,6 +47,12 @@ var agents = []string{"claude", "fakeagent"}
 //	spawn   start $STUB_INNER in the background as a script would, in
 //	        mode wait with tag inner, send $STUB_LATE_HOOK once it is
 //	        ready, then wait; $STUB_DIR/inner.release ends it alone
+//	chat    start session $STUB_SESSION with the transcript
+//	        $STUB_DIR/$tag.transcript, turn on bracketed paste, and take
+//	        each pasted prompt that Enter sends: save prompt N in
+//	        $STUB_DIR/$tag.promptN, then answer "answer N" in the transcript
+//	        and end the turn; for "ask" ask for a permission instead; for
+//	        "bye" end
 //
 // It waits on a FIFO, not with sleep, so the terminal's signals reach no
 // child of its own.
@@ -112,6 +118,35 @@ case ${STUB_MODE:-exit} in
     done < "$STUB_LATE_HOOK"
     echo sent > "$d/late.sent"
     wait_release
+    ;;
+  chat)
+    t=$d/$tag.transcript
+    : > "$t"
+    hook() {
+      tmux-agent hook claude <<< "{\"hook_event_name\":\"$1\",\"session_id\":\"$STUB_SESSION\",\"transcript_path\":\"$t\",\"cwd\":\"$d\"${2-}}"
+    }
+    hook SessionStart ',"source":"startup"'
+    printf '\e[?2004h'
+    n=0 text=
+    while IFS= read -r line; do
+      text+=${text:+$'\n'}$line
+      [[ $text == *$'\e[201~' ]] || continue
+      text=${text#$'\e[200~'}
+      text=${text%$'\e[201~'}
+      n=$((n + 1))
+      printf '%s' "$text" > "$d/$tag.prompt$n"
+      text=
+      hook UserPromptSubmit
+      case $(cat "$d/$tag.prompt$n") in
+        ask) hook PermissionRequest ',"tool_name":"Bash","tool_input":{"command":"ls"}' ;;
+        bye) break ;;
+        *)
+          printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_%s","stop_reason":"end_turn","content":[{"type":"text","text":"answer %s"}]}}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$n" "$n" >> "$t"
+          hook Stop
+          ;;
+      esac
+    done
     ;;
 esac
 exit "${STUB_CODE:-0}"

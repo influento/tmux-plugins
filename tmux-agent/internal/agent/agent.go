@@ -83,6 +83,18 @@ type Idler interface {
 	StatusFile(pid int, getenv func(string) string) string
 }
 
+// Answerer reads the agent's answers from its transcript: the text of each
+// turn's last message, oldest first, at most the last n.
+type Answerer interface {
+	Answers(transcript string, n int) []Answer
+}
+
+// Answer is the text an agent ended a turn with, and when it wrote it.
+type Answer struct {
+	Text string
+	At   time.Time
+}
+
 // ContextGauge reads how full the agent's context is: the tokens its last
 // model call held, and the limit they count against. Both are read again
 // each time, so a changed setting shows at the next turn end. ok is false

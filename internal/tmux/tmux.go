@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -76,9 +77,27 @@ func (c *Client) WaitFor(ctx context.Context, channel string) error {
 	return err
 }
 
+// LoadBuffer puts data into the paste buffer name, through stdin: a
+// command line holds only about 16 KiB.
+func (c *Client) LoadBuffer(ctx context.Context, name string, data []byte) error {
+	timeout := c.Timeout
+	if timeout == 0 {
+		timeout = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	_, err := c.runIn(ctx, bytes.NewReader(data), []string{"load-buffer", "-b", name, "-"})
+	return err
+}
+
 func (c *Client) run(ctx context.Context, args []string) (string, error) {
+	return c.runIn(ctx, nil, args)
+}
+
+func (c *Client) runIn(ctx context.Context, stdin io.Reader, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, "tmux", c.argv(args)...)
 	cmd.Env = c.Env
+	cmd.Stdin = stdin
 	// tmux forks the server from the first client; the server must not keep
 	// this process's pipes open, or Output would wait for the server to exit.
 	cmd.WaitDelay = time.Second
