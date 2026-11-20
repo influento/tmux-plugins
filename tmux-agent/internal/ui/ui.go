@@ -54,6 +54,10 @@ type PickOptions struct {
 	// to in after their go, with no Want file: the .want and .gone that
 	// place reads, so it keeps the cursor on that row.
 	Noted []string
+	// Open is the file a move writes the key of the row it opens in,
+	// before its reload starts: a reload that fzf kills for a newer one
+	// leaves the newer one that key. "" for none.
+	Open string
 }
 
 // moveActions are fzf's actions, as $FZF_ACTION names them, of the
@@ -127,9 +131,14 @@ func stepFrom(rows []attention.PickRow, i, dir int, action string) (string, stri
 // that reads the rows again with the cursor's row (its key, field 10)
 // open. Only a move has it: with no row under the cursor (a search that matches
 // none) fzf runs no command that names a field, and the other reloads
-// keep the row that was open.
-func openRow(self string) string {
-	return `printf "reload(%s'%s')" ` + shell.Quote(self+" pick-rows --fzf --open=") + " {10}"
+// keep the row that was open, or the one the key in the file open names
+// ("" for none).
+func openRow(self, open string) string {
+	note := ""
+	if open != "" {
+		note = "printf %s {10} >" + shell.Quote(open) + "; "
+	}
+	return note + `printf "reload(%s'%s')" ` + shell.Quote(self+" pick-rows --fzf --open=") + " {10}"
 }
 
 // Pick lets the user choose a session, a window or a pane with fzf and
@@ -224,8 +233,8 @@ func Pick(ctx context.Context, rows []attention.PickRow, opts PickOptions) (stri
 		// the client back. After up or down, the key went itself. Each move
 		// of the user's reads the rows again: fzf shows a row as it read
 		// it, and the cursor's row opens.
-		`--bind=focus:transform(case "$FZF_ACTION" in rebind|reload|reload-sync) ;; up|down) ` + openRow(opts.Self) + ` ;; *) { ` +
-			focusGo + `; } >/dev/null 2>&1; ` + openRow(opts.Self) + ` ;; esac)`,
+		`--bind=focus:transform(case "$FZF_ACTION" in rebind|reload|reload-sync) ;; up|down) ` + openRow(opts.Self, opts.Open) + ` ;; *) { ` +
+			focusGo + `; } >/dev/null 2>&1; ` + openRow(opts.Self, opts.Open) + ` ;; esac)`,
 		// The client stays where it is until the cursor is on its row: the
 		// first row fires a focus event before the cursor moves.
 		"--bind=start:unbind(focus)",

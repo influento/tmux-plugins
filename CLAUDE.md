@@ -368,8 +368,11 @@ Rules:
   is in two sessions, grouped or linked, after the session's id, as each
   session has a row for it). With no row under
   the cursor fzf runs no command that names a field, so every other
-  reload opens the row the last rows had open (`.place`), and place,
-  when it moves the cursor, reads them again. A change of the query
+  reload opens the row the last rows had open (`.place`), or the row a
+  move or place asked open (`.open`, written before its reload starts)
+  when that is another: fzf kills a running reload for a new one, so a
+  move's reload can end unread. Place, when it moves the cursor, reads
+  them again. A change of the query
   puts the cursor on the first row once: the change sets fzf's input
   label (shown nowhere), and the result event of the first rows read
   for that query (each row's last field) clears it, unless the user

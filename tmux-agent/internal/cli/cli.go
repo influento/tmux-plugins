@@ -927,14 +927,44 @@ func openKey(rows []attention.PickRow, keys ...string) {
 // openNoted are the keys of the row open in the rows notePlace noted
 // last, its own and the others that name it: the key it has can change
 // while it stays the row (a split window's row with one busy pane left, a
-// task's that stands for another pane); none for none.
+// task's that stands for another pane); none for none. A row a move or
+// place asked open (.open) that the open row is not comes first: fzf
+// killed the reload that opened it for this one.
 func (a *app) openNoted() []string {
-	for _, r := range a.noted() {
-		if r.Open {
-			return append([]string{r.Key}, r.Keys...)
+	noted := a.noted()
+	open := slices.IndexFunc(noted, func(r placeRow) bool { return r.Open })
+	keys := func(i int) []string { return append([]string{noted[i].Key}, noted[i].Keys...) }
+	if asked := a.askedOpen(); asked != "" && (open < 0 || !slices.Contains(keys(open), asked)) {
+		if i := slices.IndexFunc(noted, func(r placeRow) bool { return r.Label == "" && r.Key == asked }); i >= 0 {
+			return keys(i)
 		}
 	}
-	return nil
+	if open < 0 {
+		return nil
+	}
+	return keys(open)
+}
+
+// askedOpen is the key of the row a move or place asked open last, from
+// the panel's .open file; "" for none.
+func (a *app) askedOpen() string {
+	path := a.panelSocket(a.getenv("TMUX_PANE"), ".open")
+	if path == "" {
+		return ""
+	}
+	data, _ := os.ReadFile(path) // none, or a move's write under way: the open row then
+	return string(data)
+}
+
+// noteOpen notes key as the row place asks open, before its reload.
+func (a *app) noteOpen(key string) {
+	path := a.panelSocket(a.getenv("TMUX_PANE"), ".open")
+	if path == "" {
+		return
+	}
+	if err := writeFileAtomic(path, []byte(key)); err != nil {
+		a.logf("pick-key place: %v", err)
+	}
 }
 
 // noted are the rows notePlace noted last; none when it noted none.
@@ -1187,6 +1217,7 @@ func (a *app) pickKey(ctx context.Context, args []string) error {
 		// The rows opened the row the cursor was on: the row it goes to
 		// opens in rows read again.
 		if pos <= len(rows) && !noted[pos-1].Open {
+			a.noteOpen(rows[pos-1].Key)
 			actions += "+reload(" + shell.Quote(a.self) + " pick-rows --fzf --open=" + shell.Quote(rows[pos-1].Key) + ")"
 		}
 		fmt.Fprintln(a.stdout, actions)
@@ -1341,10 +1372,10 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 		return err
 	}
 	// The keys' files of an older panel in this pane go.
-	want, going := "", ""
+	want, going, open := "", "", ""
 	if p := a.panelSocket(a.getenv("TMUX_PANE"), ".want"); p != "" {
-		want, going = p, a.panelSocket(a.getenv("TMUX_PANE"), ".going")
-		for _, f := range []string{want, going, a.panelSocket(a.getenv("TMUX_PANE"), ".gone")} {
+		want, going, open = p, a.panelSocket(a.getenv("TMUX_PANE"), ".going"), a.panelSocket(a.getenv("TMUX_PANE"), ".open")
+		for _, f := range []string{want, going, open, a.panelSocket(a.getenv("TMUX_PANE"), ".gone")} {
 			if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
@@ -1407,7 +1438,7 @@ func (a *app) pick(ctx context.Context, client, origin string) error {
 	// The picker waits on the user; only the tmux calls are bounded.
 	target, err := ui.Pick(context.WithoutCancel(ctx), rows, ui.PickOptions{
 		Self: shell.Quote(a.self), Client: client, Start: start, State: state, Width: width,
-		Cursor: cursor, Listen: listen, Want: wantIf(listen != "", want), Going: going, Noted: noted})
+		Cursor: cursor, Listen: listen, Want: wantIf(listen != "", want), Going: going, Noted: noted, Open: open})
 	stopTick()
 	if listen != "" {
 		_ = os.Remove(listen) // fzf is gone; the panel may be too, so no tmux call
