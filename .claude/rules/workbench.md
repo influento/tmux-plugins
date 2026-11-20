@@ -288,8 +288,8 @@ The test book is one message, numbered. It holds:
 
 After the message, ask the user through the question prompt to do the
 book and then answer: each line passed, a line failed, or the user wants
-you to go through a line together. To go through a line, run what shows it, say what to look for,
-and wait for the user. Write in the proof, under each line, what the user
+you to go through a line together. To go through a line, run what shows
+it, say what to look for, and wait for the user. Write in the proof, under each line, what the user
 said in the user's words, and the date. If the book has no line, ask the
 user if the item merges.
 
