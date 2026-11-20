@@ -547,6 +547,32 @@ func TestPanelFollowsSwitchAfterGo(t *testing.T) {
 	}
 }
 
+// A go takes the client only to a row in .want that is not in .gone:
+// place notes the client's own row in both, as done. A go still in its
+// loop took that row after the client had moved on some other way, and
+// took the client back.
+func TestPanelGoSkipsRowDone(t *testing.T) {
+	s, origin, panel := openPanel(t)
+	two := s.MustTmux(t, "new-window", "-d", "-n", "w-two", "-P", "-F", "#{pane_id}")
+	if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", two).CombinedOutput(); err != nil {
+		t.Fatalf("flag: %v: %s", err, out)
+	}
+	s.WaitForContent(t, panel, "w-two")
+	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
+	files := filepath.Join(s.RuntimeDir, "tmux-agent", "panel-"+s.Display(t, panel, "#{pid}")+"-"+strings.TrimPrefix(panel, "%"))
+	for _, ext := range []string{".want", ".gone"} {
+		if err := os.WriteFile(files+ext, []byte(two), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := s.Command(t, panel, "tmux-agent", "sidebar", "go", client).CombinedOutput(); err != nil {
+		t.Fatalf("sidebar go: %v: %s", err, out)
+	}
+	if got := s.MustTmux(t, "list-clients", "-F", "=#{session_name}:#{window_index}"); got != "=proj-a:0" {
+		t.Errorf("client on %s after a go with its row done, want =proj-a:0", got)
+	}
+}
+
 // openPanelSearch opens the panel over w-one to w-ten, moves the client
 // to w-ten with the panel, and types the search w-t: its rows are w-two
 // (proj-a:1), w-three (proj-a:2) and w-ten (proj-a:3). The cursor goes to

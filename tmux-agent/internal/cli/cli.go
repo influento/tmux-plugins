@@ -1028,6 +1028,15 @@ func (a *app) goWanted(ctx context.Context, client string) error {
 		data, _ := os.ReadFile(want) // none, or a key's write under way: the next look sees it
 		return string(data)
 	}
+	// A row in .gone is done: place notes the client's own row in both
+	// files, and a client moved on since must stay where it went.
+	pending := func() string {
+		w := read()
+		if g, _ := os.ReadFile(gone); string(g) == w {
+			return ""
+		}
+		return w
+	}
 	owned := going // .going while this go holds it
 	defer func() {
 		if owned != "" {
@@ -1035,13 +1044,17 @@ func (a *app) goWanted(ctx context.Context, client string) error {
 		}
 	}()
 	for ctx.Err() == nil {
-		target, moved, err := a.side.GoWant(ctx, client, read)
-		done := target
-		if err != nil {
-			done = read()
-		}
-		if werr := writeFileAtomic(gone, []byte(done)); err == nil {
-			err = werr
+		target, moved, err := a.side.GoWant(ctx, client, pending)
+		if target == "" && err == nil {
+			target = read() // nothing on its way: .gone has it already
+		} else {
+			done := target
+			if err != nil {
+				done = read()
+			}
+			if werr := writeFileAtomic(gone, []byte(done)); err == nil {
+				err = werr
+			}
 		}
 		a.debugf("sidebar go %s to %q, moved %v, FZF_ACTION %q", client, target, moved, a.getenv("FZF_ACTION"))
 		if err == nil && moved {

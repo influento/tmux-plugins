@@ -397,7 +397,8 @@ Rules:
   and fzf never draws the cursor on a label. The key writes the row's
   key to the panel's `.want` file and starts `sidebar go CLIENT` in the
   background unless one runs (the `.going` folder): one go at a time
-  takes the client, under the panel lock, to the row in `.want` (a
+  takes the client, under the panel lock, to the row in `.want` that
+  is not in `.gone` (place notes the client's own row in both, as done) (a
   pane's row to its pane), again while it changes, notes each row it is done with (taken,
   or given up on an error) in `.gone`, and looks once more after it
   removes `.going`. A go that held up fzf's next key left a queue of
