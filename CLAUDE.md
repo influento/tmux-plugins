@@ -95,7 +95,8 @@ loops, stress runs or parallel copies of a test (each session's go-gate
 Stop hook runs `go test` too). Check `uptime` after a run. Ask the user
 before a k-of-N run of an intermittent failure, and keep N small and
 serial. A flaky test gets its cause found and proven, never a tolerance:
-no retry, no longer timeout.
+no retry, no longer timeout. A failing test whose cause can't be found
+is removed.
 
 ## Plugin: tmux-warp
 

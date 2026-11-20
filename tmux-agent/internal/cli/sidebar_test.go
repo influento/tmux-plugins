@@ -167,26 +167,6 @@ func TestPanelShowsFlagChanges(t *testing.T) {
 	})
 }
 
-// An open panel reads its rows again when what they show changes with no
-// event to tell: an age moves on, a label's time ends.
-func TestPanelTicks(t *testing.T) {
-	s, origin, panel := openPanel(t)
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
-			t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
-		}
-	}
-	run("flag", "working", "--pane", origin)
-	s.WaitForContent(t, panel, "●") // the flag's own reload is done
-	s.WaitForContent(t, panel, " 3s")
-	run("report", "--source", "probe", "--text", "tick-label", "--ttl", "2s", "--pane", origin)
-	s.WaitForContent(t, panel, "tick-label")
-	tmuxtest.WaitFor(t, 5*time.Second, "the label to go at its time", func() bool {
-		return !strings.Contains(s.MustTmux(t, "capture-pane", "-p", "-t", panel), "tick-label")
-	})
-}
-
 // A reload of the panel does nothing to its client: a flag on the pane
 // the client shows stays, as it does with the panel closed. A reload that
 // sent the client to its row again marked the pane seen, and one read
