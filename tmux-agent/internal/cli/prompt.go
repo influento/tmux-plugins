@@ -31,12 +31,8 @@ const (
 // starts.
 const receiptWait = 10 * time.Second
 
-// promptSource is the label source prompt reports a failed delivery on,
-// on the agent's pane; promptLabelTTL is how long such a label shows.
-const (
-	promptSource   = "prompt"
-	promptLabelTTL = time.Hour
-)
+// promptLabelTTL is how long the label of a failed delivery shows.
+const promptLabelTTL = time.Hour
 
 // screenTail is how many of a pane's last lines a failed delivery shows.
 const screenTail = 6
@@ -140,6 +136,10 @@ func (a *app) promptCommand(args []string, stdin io.Reader) (err error) {
 		return exitWith(2, "no text to send")
 	}
 
+	// A signal from here on ends prompt with exitSignal, and gives a claim
+	// back: the default action would leave the pane flagged working.
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	p, err := a.agentTarget(ctx, fs.Arg(0))
@@ -159,6 +159,9 @@ func (a *app) promptCommand(args []string, stdin io.Reader) (err error) {
 	if ic, ok := a.reg.Get(p.Agent).(agent.InputCommander); ok && !*raw && ic.InputCommand(text) {
 		return exitWith(2, "%s's input box takes this text as a command, not a prompt: --raw sends it anyway", fs.Arg(0))
 	}
+	if sigCtx.Err() != nil {
+		return exitWith(exitSignal, "interrupted")
+	}
 	claimedAt := time.Now()
 	now, claimed, err := a.env.ClaimForPrompt(ctx, p.Pane)
 	switch {
@@ -175,12 +178,14 @@ func (a *app) promptCommand(args []string, stdin io.Reader) (err error) {
 	if *wait {
 		channel = agent.NewPromptChannel()
 	}
-	if err := a.typePrompt(ctx, p.Pane, text, channel); err != nil {
+	deadline, _ := ctx.Deadline()
+	typeCtx, cancelType := context.WithDeadline(sigCtx, deadline)
+	defer cancelType()
+	// A signal stops the typing; the receipt's wait then sees it end, and
+	// gives the claim back.
+	if err := a.typePrompt(typeCtx, p.Pane, text, channel); err != nil && sigCtx.Err() == nil {
 		return err
 	}
-	// A signal ends the wait, and the pane's channel with it.
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer stop()
 	waitCtx := sigCtx
 	if *timeout > 0 {
 		var cancelWait context.CancelFunc
@@ -269,12 +274,13 @@ func (a *app) receipt(ctx context.Context, p agent.AgentPane, text string, claim
 		case !ok:
 			return time.Time{}, exitWith(exitNoAnswer, "%s closed", p.Pane)
 		case !now.PromptGot.Before(claimed) && (now.PromptGotKey == "-" || now.PromptGotKey == agent.PromptKey(text)):
-			a.promptLabel(ctx, p.Pane, "")
 			a.logf("prompt %s (%s): taken", p.Pane, p.WindowName)
 			return now.PromptGot, nil
 		case !now.PromptGot.Before(claimed):
 			a.dropWait(ctx, p.Pane, channel)
-			a.promptLabel(ctx, p.Pane, "⚠ prompt: the agent got other text")
+			if err := a.env.Report(ctx, p.Pane, promptLabel("⚠ prompt: the agent got other text")); err != nil {
+				a.logf("prompt %s: label: %v", p.Pane, err)
+			}
 			a.logf("prompt %s (%s): the agent got other text than was sent", p.Pane, p.WindowName)
 			return time.Time{}, exitWith(exitNoTurn, "%s got other text than was sent: text in its input box joined it?", p.WindowName)
 		}
@@ -296,14 +302,13 @@ func (a *app) receipt(ctx context.Context, p agent.AgentPane, text string, claim
 func (a *app) noReceipt(ctx context.Context, p agent.AgentPane, claimed time.Time, waited time.Duration, code int) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
 	defer cancel()
-	released, err := a.env.ReleasePrompt(ctx, p.Pane, claimed)
+	released, err := a.env.ReleasePrompt(ctx, p.Pane, claimed, promptLabel("⚠ prompt not submitted"))
 	if err != nil {
 		return err
 	}
 	if !released { // the receipt came at the last moment
 		return exitWith(code, "%s took the prompt only after %s", p.WindowName, waited)
 	}
-	a.promptLabel(ctx, p.Pane, "⚠ prompt not submitted")
 	a.logf("prompt %s (%s): not submitted, no receipt in %s", p.Pane, p.WindowName, waited)
 	screen, _ := a.tmux.Output(ctx, "capture-pane", "-p", "-t", p.Pane)
 	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
@@ -316,15 +321,9 @@ func (a *app) noReceipt(ctx context.Context, p agent.AgentPane, claimed time.Tim
 		p.WindowName, what, waited, strings.Join(lines, "\n"))
 }
 
-// promptLabel sets the pane's prompt label to text, or clears it for "".
-func (a *app) promptLabel(ctx context.Context, pane, text string) {
-	l := attention.Label{Source: promptSource, Text: text}
-	if text != "" {
-		l.Until = time.Now().Add(promptLabelTTL).Unix()
-	}
-	if err := a.env.Report(ctx, pane, l); err != nil {
-		a.logf("prompt %s: label: %v", pane, err)
-	}
+// promptLabel is the label of a failed delivery that says text.
+func promptLabel(text string) attention.Label {
+	return attention.Label{Source: agent.PromptSource, Text: text, Until: time.Now().Add(promptLabelTTL).Unix()}
 }
 
 // waitTurn waits until the core signals channel, and returns the pane as

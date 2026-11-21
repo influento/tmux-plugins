@@ -419,6 +419,56 @@ func TestPromptEndedBeforeReceipt(t *testing.T) {
 	})
 }
 
+// A signal while prompt types the text, after its claim, ends it as a
+// signal before the receipt does: exit 130, the pane's flag back, no channel.
+func TestPromptSignalWhileTyping(t *testing.T) {
+	e := newEnv(t)
+	pane := e.startChat(t, "agent-a", sessionA)
+	// The hook holds load-buffer, the first tmux call after the claim,
+	// until the test lets it go.
+	typing, release := filepath.Join(e.dir, "typing"), filepath.Join(e.dir, "release")
+	e.MustTmux(t, "set-hook", "-g", "after-load-buffer",
+		"run-shell 'touch "+typing+"; until [ -e "+release+" ]; do sleep 0.02; done'")
+	cmd := e.Command(t, e.pane, "tmux-agent", "prompt", "--wait", "agent-a", "hello")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	e.waitExists(t, "typing")
+	if flag := e.paneOpt(t, pane, "@attention"); flag != "working" {
+		t.Fatalf("flag %q while typing, want the claim's working", flag)
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	e.touch(t, "release")
+	err := cmd.Wait()
+	if ee, ok := errors.AsType[*exec.ExitError](err); !ok || ee.ExitCode() != 130 {
+		t.Errorf("prompt: %v; want exit 130", err)
+	}
+	if flag := e.paneOpt(t, pane, "@attention"); flag != "" {
+		t.Errorf("flag %q after, want none", flag)
+	}
+	if w := e.paneOpt(t, pane, "@attention_wait"); w != "" {
+		t.Errorf("@attention_wait = %q after, want none", w)
+	}
+}
+
+// A prompt the agent takes after prompt gave up its receipt wait clears
+// the label that says it was not submitted.
+func TestPromptLateReceipt(t *testing.T) {
+	e := newEnv(t)
+	pane := e.startChat(t, "agent-a", sessionA)
+	_, stderr, code := e.tmuxAgentIn(t, e.pane, "", "prompt", "--timeout", "2s", "agent-a", "gate one")
+	if code != 1 || !strings.Contains(e.promptLabel(t, pane), "not submitted") {
+		t.Fatalf("exit %d, %q, label %q; want 1 and the label", code, stderr, e.promptLabel(t, pane))
+	}
+	e.touch(t, "agent-a.submit1")
+	e.waitExists(t, "agent-a.submitted1")
+	if l := e.promptLabel(t, pane); l != "" {
+		t.Errorf("label %q after the agent took the prompt, want none", l)
+	}
+}
+
 // Text half typed in the agent's input box joins the prompt: the agent
 // gets other text than was sent, and prompt says so (exit 6).
 func TestPromptMergedWithDraft(t *testing.T) {

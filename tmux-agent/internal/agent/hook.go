@@ -499,6 +499,9 @@ func (e *Env) working(ctx context.Context, a Agent, ev Event, l live, session st
 		if err := e.paneOpts(ctx, map[string]string{optPromptGot: strconv.FormatInt(e.now().UnixMilli(), 10) + " " + PromptKey(ev.Prompt)}); err != nil {
 			return err
 		}
+		if err := e.Core.Report(ctx, e.Pane, attention.Label{Source: PromptSource}); err != nil {
+			return err
+		}
 	}
 	if ev.Subagent != nil {
 		e.rememberSubagent(a, session, *ev.Subagent)

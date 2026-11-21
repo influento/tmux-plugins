@@ -89,6 +89,10 @@ func NewPromptChannel() string {
 	return "tmux-agent-prompt-" + hex.EncodeToString(b)
 }
 
+// PromptSource is the label source of a prompt that the agent did not
+// take; the agent's next prompt removes the label.
+const PromptSource = "prompt"
+
 // ErrNoAgentRuns is a prompt's pane whose agent process is gone or
 // stopped: the pane's shell would read the prompt as a command.
 var ErrNoAgentRuns = errors.New("no agent runs in the pane")
@@ -132,14 +136,21 @@ func PromptKey(text string) string {
 
 // ReleasePrompt gives back the claim of a prompt that got no receipt since
 // claimed: the working flag the claim set goes, as an Esc before the first
-// token would end it. A receipt that came meanwhile keeps it; released is
-// then false.
-func (e *Env) ReleasePrompt(ctx context.Context, pane string, claimed time.Time) (released bool, err error) {
+// token would end it, and the pane gets label. A receipt that came
+// meanwhile keeps both; released is then false. The label goes on under
+// the lock: a receipt after it must find the label to remove it.
+func (e *Env) ReleasePrompt(ctx context.Context, pane string, claimed time.Time, label attention.Label) (released bool, err error) {
 	defer e.lock(ctx)()
 	p, ok, err := e.PaneNow(ctx, pane)
 	if err != nil || !ok || !p.PromptGot.Before(claimed) {
 		return false, err
 	}
 	now := e.now()
-	return true, e.endTurnAt(ctx, pane, e.Registry.Get(p.Agent), p.Session, func() (time.Time, bool) { return now, true }, attention.Working)
+	if err := e.endTurnAt(ctx, pane, e.Registry.Get(p.Agent), p.Session, func() (time.Time, bool) { return now, true }, attention.Working); err != nil {
+		return true, err
+	}
+	if err := e.Core.Report(ctx, pane, label); err != nil {
+		e.logf("prompt %s: label: %v", pane, err)
+	}
+	return true, nil
 }
