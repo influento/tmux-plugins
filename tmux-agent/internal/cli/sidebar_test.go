@@ -168,6 +168,47 @@ func TestPanelShowsFlagChanges(t *testing.T) {
 	})
 }
 
+// A panel reload sent by an agent's launcher from an older release, in the
+// form it had then, still shows the rows: the launcher runs as long as its
+// agent, across releases. The v0.3.10 form blanked the panel until the
+// next reload.
+func TestPanelTakesOlderReload(t *testing.T) {
+	s, _, panel := openPanel(t)
+	// An agent row with no flag and no age: nothing reloads it on its own.
+	pane := s.MustTmux(t, "new-window", "-d", "-n", "w-two", "-P", "-F", "#{pane_id}")
+	// The pane's own command as its agent, as the launcher sets it.
+	s.MustTmux(t, "set-option", "-p", "-t", pane, "@agent", s.Display(t, pane, "#{pane_current_command}"))
+	if out, err := s.Command(t, pane, "tmux-agent", "sidebar", "reload").CombinedOutput(); err != nil {
+		t.Fatalf("sidebar reload: %v: %s", err, out)
+	}
+	s.WaitForContent(t, panel, "w-two")
+	// A label set with no reload: only the older reload can show it.
+	s.MustTmux(t, "set-option", "-p", "-t", pane, "@labels", `[{"source":"probe","text":"label-older"}]`)
+	client := s.MustTmux(t, "list-clients", "-F", "#{client_name}")
+	older := fmt.Sprintf("unbind(focus)+reload-sync(tmux-agent pick-rows --fzf --place '%s')+transform(tmux-agent pick-key place)+rebind(focus)", client)
+	postPanel(t, s.Display(t, panel, "#{"+sidebar.OptListen+"}"), older)
+	s.WaitForContent(t, panel, "label-older")
+}
+
+// postPanel sends actions to the panel's fzf on its socket.
+func postPanel(t *testing.T, socket, actions string) {
+	t.Helper()
+	hc := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+	}}
+	resp, err := hc.Post("http://fzf/", "text/plain", strings.NewReader(actions))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post %q: %s", actions, resp.Status)
+	}
+}
+
 // A reload of the panel does nothing to its client: a flag on the pane
 // the client shows stays, as it does with the panel closed. A reload that
 // sent the client to its row again marked the pane seen, and one read

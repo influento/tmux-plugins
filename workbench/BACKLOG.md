@@ -60,6 +60,12 @@ Open bugs, features and ideas for tmux-plugins, one entry each.
   another row before place puts it back. Minor and cosmetic. Check first
   whether it still shows since one background go at a time.
 
+- Launchers leave defunct `tmux-agent` children (bug): on 2026-11-21, four
+  `tmux-agent run claude` launchers (v0.3.10, v0.3.33, v0.3.34) had 26
+  zombie `tmux-agent` children between them, 18 under one launcher 3 h
+  old. Which children they were, and why the launcher does not reap them,
+  is not known yet.
+
 ## tmux-agent: contract
 
 - Version field in `list --json` (feature; waits for a second reader of

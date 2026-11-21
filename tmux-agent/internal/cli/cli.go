@@ -901,13 +901,16 @@ func (a *app) pickRows(ctx context.Context, args []string) error {
 	var open []string
 	query := strings.Join(args, " ")
 	if len(args) > 0 && args[0] == "--fzf" {
-		switch {
-		case len(args) == 2 && strings.HasPrefix(args[1], "--open="):
-			open = []string{strings.TrimPrefix(args[1], "--open=")}
-		case len(args) > 1:
-			return errUsage
-		default:
-			open = a.openNoted()
+		// A reload's sender names its command line, and an agent's
+		// launcher sends from the release it started with: an argument
+		// this release does not know (v0.3.10's --place CLIENT) still
+		// prints the rows. fzf shows a reload that prints none as an
+		// empty panel until the next one.
+		open = a.openNoted()
+		for _, arg := range args[1:] {
+			if key, ok := strings.CutPrefix(arg, "--open="); ok {
+				open = []string{key}
+			}
 		}
 		p = a.panelOf()
 		query = a.getenv("FZF_QUERY")
