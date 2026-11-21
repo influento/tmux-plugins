@@ -76,7 +76,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workshop-guard"
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workshop-guard",
+            "onFailure": "block"
           }
         ]
       }

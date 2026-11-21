@@ -38,7 +38,7 @@ except OSError:
 READ = {"cat", "head", "tail", "less", "wc", "ls", "grep", "rg", "diff", "cmp", "stat", "file",
         "tree", "jq", "realpath", "readlink", "basename", "dirname", "echo", "printf", "test",
         "[", "true", ":", "cd", "pwd", "cut", "tr", "nl", "uniq", "column", "od", "xxd",
-        "md5sum", "sha256sum", "read", "mapfile", "readarray", "for", "select"}
+        "md5sum", "sha256sum", "read", "mapfile", "readarray", "for", "select", "pgrep", "pidof", "ps"}
 GIT_READ = {"diff", "log", "show", "status", "blame", "grep", "ls-files", "ls-tree", "rev-parse",
             "cat-file", "merge-base", "describe", "shortlog", "check-ignore", "add", "commit"}
 FIND_WRITE = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
@@ -95,6 +95,145 @@ LOOKUP = r"(?:PATH|path|commands|functions|aliases|galiases|saliases|options|fpa
 # (${PATH:=}, zsh's ${(P)name::=}).
 SHELL_TEXT = re.compile(r"\b(?:for|select)[ \t]+" + LOOKUP + r"\b|\$\{[^}]*=")
 HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'(\w+)'|\"(\w+)\"|\\?(\w+))")
+HOME = os.path.expanduser("~")
+# The characters that end a path in a word or a script: the text from one of
+# them to a mention of a guarded path is the folder the mention is in.
+DELIM = set(" \t\r\n'\"`=(),;:<>|&")
+
+def inside(p):
+    # Whether the absolute path p is the project's root or in it.
+    return any(q == r or q.startswith(r.rstrip("/") + "/")
+               for q in {p, os.path.realpath(p)} for r in {root, os.path.realpath(root)})
+
+def resolve(word, cwd, dirs):
+    # The absolute path a word names, or None when the hook cannot tell. A
+    # word may start with ~, $HOME or a variable of dirs (the folders that
+    # the command sets them to); a relative word resolves only in a known
+    # folder outside the project (cwd).
+    m = re.match(r"(~|\$(\w+)|\$\{(\w+)\})(?=/|$)", word)
+    if m:
+        var = m.group(2) or m.group(3)
+        base = HOME if var in (None, "HOME") else dirs.get(var)
+        rest = word[m.end():]
+    elif word.startswith("/"):
+        base, rest = "/", word
+    else:
+        base, rest = cwd, word
+    if base is None or re.search(r"[$`*?\[\]{}]", rest):
+        return None
+    return os.path.normpath(os.path.join(base, rest.lstrip("/")))
+
+def same(a, b):
+    return os.path.normpath(a) == os.path.normpath(b) or os.path.realpath(a) == os.path.realpath(b)
+
+def guarded_elsewhere(full, path):
+    # Whether the project that the absolute path full is in, another
+    # project of the workshop tools, guards or locks it as path too.
+    d = os.path.dirname(full)
+    while True:
+        if os.path.isfile(os.path.join(d, ".claude/guarded")) and same(full, os.path.join(d, path.rstrip("/"))):
+            try:
+                with open(os.path.join(d, ".claude/guarded")) as fh:
+                    theirs = {line.strip() for line in fh}
+                with open(os.path.join(d, ".claude/settings.json")) as fh:
+                    deny = json.load(fh).get("permissions", {}).get("deny", [])
+            except (OSError, ValueError):
+                return True
+            theirs |= {r[6:-1].removesuffix("**") for r in deny if r.startswith("Edit(/") and r.endswith(")")}
+            return path in theirs
+        if os.path.dirname(d) == d:
+            return False
+        d = os.path.dirname(d)
+
+def mktemp_dir(text, dirs):
+    # The folder that a $( ) of a plain mktemp makes its file or folder in,
+    # as a path in it, or None.
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return None
+    if words[:1] != ["mktemp"]:
+        return None
+    where, templates, flag_t, it = None, [], False, iter(words[1:])
+    for w in it:
+        if w == "-p":
+            where = next(it, None)
+        elif w.startswith("--tmpdir="):
+            where = w.split("=", 1)[1]
+        elif w == "-t":
+            flag_t = True
+        elif w in ("-d", "-u", "-q", "--directory", "--dry-run", "--quiet") or w.startswith("--suffix="):
+            continue
+        elif w.startswith("-") or not re.fullmatch(r"[\w./~-]+", w):
+            return None
+        else:
+            templates.append(w)
+    if len(templates) > 1:
+        return None
+    template = templates[0] if templates else ""
+    if "/" in template:
+        if where is not None or flag_t:
+            return None
+        where = os.path.dirname(template)
+    elif where is None:
+        where = os.environ.get("TMPDIR") or "/tmp"
+    base = resolve(where, None, dirs)
+    return None if base is None else os.path.join(base, "<mktemp>")
+
+def known_dirs(parts, texts, shell_text):
+    # The variables that the command sets, before any use, to a folder the
+    # hook can tell: a literal absolute path, one under ~ or $HOME, or a
+    # mktemp. Only an assignment alone at the top level counts; a variable
+    # that a loop, a read, a builtin or a second assignment can set is
+    # unknown.
+    if shell_text:
+        return {}
+    found, bad, depth = {}, set(), 0
+    for words, _, _, sep in parts:
+        depth += sep.count("(") - sep.count(")")
+        pre, command = split(words)
+        name = command[0] if command else ""
+        if name in ("for", "select") and len(command) > 1:
+            bad.add(command[1])
+        elif name in READERS or name in SHELL_STATE or name in ("printf", "print"):
+            bad.update(re.sub(r"[=\[].*", "", w) for w in command[1:] if not w.startswith("-"))
+        for w in pre:
+            m = ASSIGN.match(w)
+            if not m:
+                continue
+            var, value = m.group(1), w.split("=", 1)[1]
+            if command or depth or m.group(2) or "+=" in w[:m.end()]:
+                bad.add(var)
+                continue
+            d = mktemp_dir(texts.get(value, ""), {}) if re.fullmatch(r"__SUB\d+__", value) else resolve(value, None, {})
+            if d is None or found.get(var, d) != d:
+                bad.add(var)
+            found[var] = d
+    for var in list(found):
+        first_set = re.search(r"(?<![\w$])" + var + r"=", cmd)
+        first_use = re.search(r"\$\{?" + var + r"\b", cmd)
+        if var in bad or (first_use and (not first_set or first_use.start() < first_set.start())):
+            del found[var]
+    return found
+
+def place(parts, dirs):
+    # Each part with the folder it runs in when a cd before it, joined by
+    # &&, took the command outside the project; else None. Any other
+    # separator, or a cd the hook cannot follow, gives None again: from
+    # there the part may run in the project.
+    out, cwd = [], None
+    for k, (words, outs, ins, sep) in enumerate(parts):
+        sep = sep.replace("\n", "") or (";" if sep else "")
+        if sep not in ("", "&&", "|"):
+            cwd = None
+        out.append((words, outs, ins, cwd))
+        command = split(words)[1]
+        nxt = parts[k + 1][3].replace("\n", "") if k + 1 < len(parts) else ""
+        if command[:1] == ["cd"] and sep != "|" and nxt == "&&":
+            args = [a for a in command[1:] if a not in ("-P", "-L", "--")]
+            d = HOME if not args else resolve(args[0], cwd, dirs) if len(args) == 1 and args[0] != "-" else None
+            cwd = d if d is not None and not inside(d) else None
+    return out
 
 def split(words):
     # A part's leading keywords, assignments and timeout, and its command.
@@ -168,12 +307,25 @@ def changes_shell(part):
         return command[0] in SHELL_STATE or (command[0] in ("printf", "print") and "-v" in command)
     return any(m.group(2) or m.group(1) in os.environ or re.fullmatch(LOOKUP, m.group(1)) for m in sets)
 
-def unread(words, scripts):
+def unread(words, scripts, cwd, dirs):
     # The words of a command that can name a path it writes: all but the
     # value of a checker's config flag, and, when scripts, the script that
-    # an interpreter runs.
+    # an interpreter runs. None of a find that only lists and only searches
+    # folders outside the project: its patterns match no file of the project.
     if scripts and (k := script_run(words)) is not None:
         return words[:k] + words[k + 1:]
+    if words[:1] == ["find"] and not FIND_WRITE.intersection(words):
+        rest = words[1:]
+        while rest and rest[0] in ("-H", "-L", "-P"):
+            rest = rest[1:]
+        starts = []
+        for w in rest:
+            if w.startswith("-") or w in ("(", "!", ")", ","):
+                break
+            starts.append(w)
+        found = [resolve(w, cwd, dirs) for w in starts]
+        if starts and all(d is not None and not inside(d) for d in found):
+            return words[:1]
     i = 0
     if words[:1] and words[0] in RUNNERS:
         i = 1
@@ -229,8 +381,9 @@ def lift(cmd, i, texts, subs, inner):
             if got is None:
                 return None
             text, i = got
-            subs.append(text)
-            out.append(put("SUB", text))
+            key = put("SUB", text)
+            subs.append((key, text))
+            out.append(key)
             continue
         elif c == "`":
             return None
@@ -292,8 +445,8 @@ def lift(cmd, i, texts, subs, inner):
 
 def pipes(cmd):
     # The pipelines of a command, each a list of parts (words, files the
-    # part redirects into, files it reads by redirect). None when the hook
-    # cannot read the command.
+    # part redirects into, files it reads by redirect, the separator before
+    # it). None when the hook cannot read the command.
     lex = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()<>\n")
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
@@ -304,12 +457,12 @@ def pipes(cmd):
         tokens = list(lex)
     except ValueError:
         return None
-    pipelines, pipe, words, outs, ins, i = [], [], [], [], [], 0
+    pipelines, pipe, words, outs, ins, sep, i = [], [], [], [], [], "", 0
     while i < len(tokens):
         t = tokens[i]
         if t and set(t) <= set(";&|()\n"):
-            pipe.append((words, outs, ins))
-            words, outs, ins = [], [], []
+            pipe.append((words, outs, ins, sep))
+            words, outs, ins, sep = [], [], [], t
             if not ("|" in t and "||" not in t):
                 pipelines.append(pipe)
                 pipe = []
@@ -324,9 +477,39 @@ def pipes(cmd):
         else:
             words.append(t)
         i += 1
-    pipe.append((words, outs, ins))
+    pipe.append((words, outs, ins, sep))
     pipelines.append(pipe)
     return pipelines
+
+def blank_quotes(text):
+    # The text with what its quotes hold blanked, and its comments: a () in
+    # a string defines no function.
+    out, q, i, n = [], None, 0, len(text)
+    while i < n:
+        c = text[i]
+        if q is None and c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if q is None:
+            if c == "\\":
+                out.append(text[i:i + 2])
+                i += 2
+                continue
+            if c in "'\"":
+                q = c
+            out.append(c)
+        elif q == '"' and c == "\\":
+            out.append("  ")
+            i += 2
+            continue
+        elif c == q:
+            q = None
+            out.append(c)
+        else:
+            out.append(" ")
+        i += 1
+    return "".join(out)
 
 def cp_target(args):
     # The words of cp's arguments that it can write: its options and its
@@ -356,23 +539,33 @@ def parse(cmd):
     got = lift(cmd, 0, texts, subs, False)
     if got is None:
         return None
-    pipelines = []
-    for text in (got[0], *subs):
+    raw = {}
+    for key, text in (("", got[0]), *subs):
         found = pipes(text)
         if found is None:
             return None
-        pipelines += found
+        raw[key] = found
     # The names that a function definition in the shell's text, not in a
-    # heredoc's, gives: the parts lose its ().
-    shell = "\n".join((got[0], *subs))
-    defined = {name for m in FUNC_DEF.finditer(shell) for name in (m.group(1) or m.group(2)).split()}
-    return pipelines, texts, defined, SHELL_TEXT.search(shell) is not None
+    # heredoc's nor in a string, gives: the parts lose its ().
+    shell = "\n".join((got[0], *(text for _, text in subs)))
+    defined = {name for m in FUNC_DEF.finditer(blank_quotes(shell)) for name in (m.group(1) or m.group(2)).split()}
+    shell_text = SHELL_TEXT.search(shell) is not None
+    dirs = known_dirs([part for pipe in raw[""] for part in pipe], texts, shell_text)
+    # Each text's parts with the folder each runs in; a $( ) starts in the project.
+    placed = {}
+    for key, found in raw.items():
+        flat = place([part for pipe in found for part in pipe], dirs)
+        it = iter(flat)
+        placed[key] = [[next(it) for _ in pipe] for pipe in found]
+    pipelines = [pipe for found in placed.values() for pipe in found]
+    sub_parts = {key: [part for pipe in found for part in pipe] for key, found in placed.items() if key}
+    return pipelines, texts, defined, shell_text, sub_parts, dirs
 
 def writes(path, parsed):
     # Text the hook cannot read counts whole.
     if parsed is None:
         return path in cmd
-    pipelines, texts, defined, shell_text = parsed
+    pipelines, texts, defined, shell_text, sub_parts, dirs = parsed
     parts = [part for pipe in pipelines for part in pipe]
     # A guarded script that an interpreter runs is read, not written, unless
     # a part of the command changes the shell. Its arguments still count.
@@ -380,18 +573,43 @@ def writes(path, parsed):
     # A word names the path where the path stands whole in it.
     whole = r"(?<![\w.-])" + re.escape(path) + ("" if path.endswith("/") else r"(?![\w.-])")
     pat = re.compile(whole)
+    target = os.path.join(root, path.rstrip("/"))
 
-    def names(w):
-        # A placeholder names the path when its text does.
-        return bool(pat.search(w)) or any(names(texts.get(k, "")) for k in re.findall(r"__(?:DOC|SUB)\d+__", w))
+    def mentions(text, cwd):
+        # Where the text names the project's path. A mention in a longer
+        # path that the hook can resolve, from ~, $HOME, /, a variable of
+        # dirs, or the folder outside the project that a cd led to, names it
+        # only when that path is the project's.
+        out = []
+        for m in pat.finditer(text):
+            j = m.start()
+            while j > 0 and text[j - 1] not in DELIM:
+                j -= 1
+            full = resolve(text[j:m.start()] + path.rstrip("/"), cwd, dirs)
+            if full is None or same(full, target) or guarded_elsewhere(full, path):
+                out.append(m.start())
+        return out
+
+    def names(w, cwd):
+        # A heredoc's placeholder names the path when its text does; a $( )'s
+        # when a part of its command does.
+        if mentions(w, cwd):
+            return True
+        for k in re.findall(r"__(?:DOC|SUB)\d+__", w):
+            if k in sub_parts:
+                if any(named(part) for part in sub_parts[k]):
+                    return True
+            elif names(texts.get(k, ""), cwd):
+                return True
+        return False
 
     def named(part):
-        words, outs, ins = part
+        words, outs, ins, cwd = part
         pre, command = split(words)
-        own = command if defined & set(command) else unread(command, scripts)
-        return any(names(w) for w in pre + own + outs + ins)
+        own = command if defined & set(command) else unread(command, scripts, cwd, dirs)
+        return any(names(w, cwd) for w in pre + own + outs + ins)
 
-    def inline_reads(command):
+    def inline_reads(command, cwd):
         # Each mention of the path in the script is the argument of a read call.
         flags = INLINE.get(os.path.basename(command[0]) if command else "")
         if not flags:
@@ -402,26 +620,26 @@ def writes(path, parsed):
                 script = next(args, "")
             else:
                 rest.append(w)
-        if script is None or "$" in script or any(names(w) for w in rest):
+        if script is None or "$" in script or any(names(w, cwd) for w in rest):
             return False
         spans = [m.span() for m in re.finditer(READ_CALL.format(whole), script)]
-        hits = [m.start() for m in pat.finditer(script)]
+        hits = mentions(script, cwd)
         return bool(hits) and all(any(a <= h < b for a, b in spans) for h in hits)
 
     def reading(part):
         # A function of the command's name runs its body instead.
         command = split(part[0])[1]
-        return not (command[:1] and command[0] in defined) and (reads(command) or inline_reads(command))
+        return not (command[:1] and command[0] in defined) and (reads(command) or inline_reads(command, part[3]))
 
     # A cd into a guarded directory, or a variable bound to text that names
     # the path, carries the path from one pipeline into the next: then the
     # whole command must read, with no redirect into a file.
     anywhere = any(named(part) for part in parts)
     carried = path.endswith("/") and re.search(r"\bcd\s+[\"']?(\./)?" + re.escape(path.rstrip("/")) + r"(/|[\"'\s;&|)]|$)", cmd)
-    for words, _, _ in parts:
+    for words, _, _, cwd in parts:
         pre, command = split(words)
-        carried = carried or any(names(w.partition("=")[2]) for w in pre if "=" in w) \
-            or (command[:1] in (["for"], ["select"]) and any(names(w) for w in command[3:])) \
+        carried = carried or any(names(w.partition("=")[2], cwd) for w in pre if "=" in w) \
+            or (command[:1] in (["for"], ["select"]) and any(names(w, cwd) for w in command[3:])) \
             or (anywhere and command[:1] and (command[0] in READERS or command[0] == "printf" and "-v" in command))
     if carried:
         return not all(reading(part) and not part[1] for part in parts)
@@ -429,7 +647,7 @@ def writes(path, parsed):
     # and every part after it must read, with no redirect into the path.
     def pipe_writes(pipe):
         first = next((k for k, part in enumerate(pipe) if named(part)), None)
-        return first is not None and not all(reading(part) and not any(names(t) for t in part[1])
+        return first is not None and not all(reading(part) and not any(names(t, part[3]) for t in part[1])
                                              for part in pipe[first:])
     return any(pipe_writes(pipe) for pipe in pipelines)
 
