@@ -1673,6 +1673,9 @@ func (a *app) evacuate(ctx context.Context, target string) error {
 	return a.side.Evacuate(ctx, target)
 }
 
+// terminalTitle is the title tmux gives its terminal, "" when it sets none.
+const terminalTitle = "#{?set-titles,#{T:set-titles-string},}"
+
 func (a *app) jump(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("jump", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -1692,7 +1695,11 @@ func (a *app) jump(ctx context.Context, args []string) error {
 		return err
 	}
 	// The terminal itself, when a notification click brought us here.
-	return ui.RaiseTerminal(ctx, a.getenv)
+	title, err := a.tmux.Output(ctx, "display-message", "-p", terminalTitle)
+	if err != nil {
+		return err
+	}
+	return ui.RaiseTerminal(ctx, a.getenv, title)
 }
 
 // notify is the notifier spawnNotify starts.

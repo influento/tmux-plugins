@@ -60,12 +60,6 @@ Open bugs, features and ideas for tmux-plugins, one entry each.
   another row before place puts it back. Minor and cosmetic. Check first
   whether it still shows since one background go at a time.
 
-- A notification's click can raise the wrong Ghostty (bug): `RaiseTerminal`
-  (`tmux-agent/internal/ui/ui.go`) focuses `[app_id="com.mitchellh.ghostty"]`,
-  which also matches the `ghostty -e nvim` windows that xdg-open starts.
-  Dotfiles now titles tmux's terminal "tmux" (`set-titles on`,
-  `set-titles-string "tmux"`), so the criteria can add `title="^tmux$"`.
-
 ## tmux-agent: contract
 
 - Version field in `list --json` (feature; waits for a second reader of

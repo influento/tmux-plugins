@@ -354,14 +354,21 @@ const terminalAppID = "com.mitchellh.ghostty"
 
 // RaiseTerminal focuses the terminal window under sway, after a click on
 // a notification brought tmux to a pane. Without sway it does nothing.
-func RaiseTerminal(ctx context.Context, getenv func(string) string) error {
+// title is the one tmux gives its terminal ("" when it sets none): the
+// terminal program's other windows share its app id, and sway focuses
+// every match, the last one last.
+func RaiseTerminal(ctx context.Context, getenv func(string) string, title string) error {
 	if getenv("SWAYSOCK") == "" {
 		return nil
 	}
 	if _, err := exec.LookPath("swaymsg"); err != nil {
 		return nil
 	}
-	return exec.CommandContext(ctx, "swaymsg", fmt.Sprintf("[app_id=%q] focus", terminalAppID)).Run()
+	criteria := fmt.Sprintf("app_id=%q", terminalAppID)
+	if title != "" && !strings.ContainsAny(title, `"\`) {
+		criteria += ` title="^` + regexp.QuoteMeta(title) + `$"`
+	}
+	return exec.CommandContext(ctx, "swaymsg", "["+criteria+"] focus").Run()
 }
 
 // PanelState is what the panel shows: its view and the sessions whose
