@@ -370,7 +370,9 @@ Rules:
 - The panel (`prefix f` runs `popup`, which opens or closes it): a tmux
   pane at the left edge, full height, 40 columns, one per client (pane
   option `@sidebar_client`), that moves with join-pane into every window
-  the client goes to. Each window keeps its main area's layout (its panes
+  the client goes to. A window holds one panel: the clients of a session
+  show one window, so a panel that would join a window that holds another
+  closes, and a client's key opens none there. Each window keeps its main area's layout (its panes
   without the panel) in `@sidebar_main`; the panel's arrival, departure
   and every resize lay the whole window out again from it, in one command
   list with the move and the switch, so tmux draws once. tmux 3.8's

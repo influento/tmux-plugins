@@ -226,6 +226,22 @@ func (s *Sidebar) firstPane(ctx context.Context, w string) (string, error) {
 	return first, nil
 }
 
+// panelIn is the panel in window w other than pane, "" for none. Clients
+// of one session show one window, and a window holds one panel: the
+// layout has room for one.
+func (s *Sidebar) panelIn(ctx context.Context, w, pane string) (string, error) {
+	out, err := s.Tmux.Output(ctx, "list-panes", "-t", w, "-F", "#{pane_id}"+sep+"#{"+OptClient+"}")
+	if err != nil {
+		return "", err
+	}
+	for _, l := range lines(out) {
+		if f := split(l, 2); f[1] != "" && f[0] != pane {
+			return f[0], nil
+		}
+	}
+	return "", nil
+}
+
 // statusLines is how many rows the status line takes from a client.
 func (s *Sidebar) statusLines(ctx context.Context) int {
 	v, err := s.Tmux.Output(ctx, "show-options", "-gv", "status")
@@ -327,6 +343,12 @@ func (s *Sidebar) open(ctx context.Context, clientName, origin string) error {
 	}
 	w, err := s.window(ctx, origin)
 	if err != nil {
+		return err
+	}
+	if other, err := s.panelIn(ctx, w.id, ""); err != nil || other != "" {
+		if other != "" {
+			s.trace("open: client %s on %s, which has the panel %s", clientName, w.id, other)
+		}
 		return err
 	}
 	main, ok := mainNow(w, "")
@@ -562,8 +584,9 @@ func (s *Sidebar) goLocked(ctx context.Context, clientName, target string, once 
 			if once && p.went == to.id {
 				return false, nil
 			}
-			if err := s.moveTo(ctx, c, p, to, true, why+" "+target); err != nil {
-				return false, err
+			closed, err := s.moveTo(ctx, c, p, to, true, why+" "+target)
+			if err != nil || closed {
+				return true, err
 			}
 			_, err = s.Tmux.Run(ctx, "set-option", "-p", "-t", p.pane, OptWent, to.id)
 			return true, err
@@ -600,11 +623,29 @@ func (s *Sidebar) move(ctx context.Context, c client, p panel, target string, ta
 	if err != nil {
 		return err
 	}
-	return s.moveTo(ctx, c, p, to, take, why)
+	_, err = s.moveTo(ctx, c, p, to, take, why)
+	return err
 }
 
-// moveTo is move, to the window read already. why goes to the trace.
-func (s *Sidebar) moveTo(ctx context.Context, c client, p panel, to window, take bool, why string) error {
+// moveTo is move, to the window read already. why goes to the trace. A
+// panel whose way is barred by another panel closes: closed is true.
+func (s *Sidebar) moveTo(ctx context.Context, c client, p panel, to window, take bool, why string) (closed bool, err error) {
+	if to.id != p.window {
+		other, err := s.panelIn(ctx, to.id, p.pane)
+		if err != nil {
+			return false, err
+		}
+		if other != "" {
+			s.trace("%s: panel %s closes, %s has the panel %s; client %s → %s", why, p.pane, to.id, other, c.name, to.id)
+			if err := s.close(ctx, p, false, ""); err != nil {
+				return false, err
+			}
+			if take {
+				_, err = s.Tmux.Run(ctx, "switch-client", "-c", c.name, "-t", to.id)
+			}
+			return true, err
+		}
+	}
 	if take {
 		s.trace("%s: client %s %s → %s, panel %s %s → %s", why, c.name, c.window, to.id, p.pane, p.window, to.id)
 	} else if to.id != p.window {
@@ -612,22 +653,22 @@ func (s *Sidebar) moveTo(ctx context.Context, c client, p panel, to window, take
 	}
 	if to.id == p.window {
 		if !take {
-			return nil
+			return false, nil
 		}
 		_, err := s.Tmux.Run(ctx, "switch-client", "-c", c.name, "-t", to.id)
-		return err
+		return false, err
 	}
 	from, err := s.window(ctx, p.window)
 	if err != nil {
-		return err
+		return false, err
 	}
 	toMain, ok := mainNow(to, "")
 	if !ok {
-		return fmt.Errorf("sidebar: cannot read the layout of %s", to.id)
+		return false, fmt.Errorf("sidebar: cannot read the layout of %s", to.id)
 	}
 	first, err := s.firstPane(ctx, to.id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	w, h := c.width, c.height-s.statusLines(ctx)
 	if w < 3 || h < 1 { // no size known: the window's own
@@ -660,9 +701,9 @@ func (s *Sidebar) moveTo(ctx context.Context, c client, p panel, to window, take
 		"set-option", "-w", "-t", to.id, OptLast, to.active, ";",
 		"select-layout", "-t", to.id, craft(toMain, w, h, p.pane, width, p.active).String())
 	if _, err := s.Tmux.Run(ctx, args...); err != nil {
-		return err
+		return false, err
 	}
-	return s.setMark(ctx, to.id)
+	return false, s.setMark(ctx, to.id)
 }
 
 // Step goes to the next (+) or previous (-) window of the client's

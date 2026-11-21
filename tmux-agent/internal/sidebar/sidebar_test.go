@@ -560,3 +560,50 @@ func TestPanelHiddenFromSaves(t *testing.T) {
 		}
 	}
 }
+
+// Two clients of one session show one window, and the window keeps one
+// panel: the first one's, at the left. The other client's panel closes,
+// whether its client went there through Go or some other way, and its
+// key opens no second one there.
+func TestOnePanelForTwoClients(t *testing.T) {
+	for _, via := range []string{"follow", "go"} {
+		t.Run(via, func(t *testing.T) {
+			e := newEnv(t)
+			w0 := e.Display(t, "=proj-a:", "#{window_id}")
+			e.MustTmux(t, "split-window", "-h", "-t", w0)
+			wb := e.MustTmux(t, "new-session", "-d", "-s", "proj-b", "-P", "-F", "#{window_id}")
+			e.Attach(t, "proj-b", 120, 31)
+			b := strings.TrimSpace(e.MustTmux(t, "list-clients", "-F",
+				"#{?#{==:#{session_name},proj-b},#{client_name},}"))
+			must(t, e.side.Toggle(e.ctx(), e.client))
+			pa := e.panel(t)
+			must(t, e.side.Toggle(e.ctx(), b))
+
+			switch via {
+			case "follow":
+				e.MustTmux(t, "switch-client", "-c", b, "-t", w0)
+				must(t, e.side.Follow(e.ctx()))
+			case "go":
+				must(t, e.side.Go(e.ctx(), b, w0))
+			}
+			must(t, e.side.Follow(e.ctx()))
+			check := func(after string) {
+				t.Helper()
+				e.wantPanel(t, w0)
+				panels := strings.Fields(e.MustTmux(t, "list-panes", "-a", "-F",
+					"#{?#{"+sidebar.OptClient+"},#{pane_id},}"))
+				if !slices.Equal(panels, []string{pa}) {
+					t.Errorf("after %s: panels %v, want only the first client's, %s", after, panels, pa)
+				}
+				if got := strings.TrimSpace(e.MustTmux(t, "list-clients", "-F",
+					"#{?#{==:#{client_name},"+b+"},#{window_id},}")); got != w0 {
+					t.Errorf("after %s: second client on %s, want %s", after, got, w0)
+				}
+				e.wantFull(t, wb)
+			}
+			check(via)
+			must(t, e.side.Toggle(e.ctx(), b))
+			check("the second client's key")
+		})
+	}
+}
