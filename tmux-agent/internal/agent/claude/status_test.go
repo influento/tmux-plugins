@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// Claude Code's file for a process says when it went idle; busy, a
+// Claude Code's file for a process says when it went idle, also with a
+// background shell running; busy, a
 // dialog, another session or no file say nothing.
 func TestIdleSince(t *testing.T) {
 	home := t.TempDir()
@@ -23,6 +24,7 @@ func TestIdleSince(t *testing.T) {
 		ok         bool
 	}{
 		{"idle", `{"pid":42,"sessionId":"` + session + `","status":"idle","statusUpdatedAt":1794698366044}`, true},
+		{"idle with a background shell", `{"pid":42,"sessionId":"` + session + `","status":"shell","statusUpdatedAt":1794698366044}`, true},
 		{"busy", `{"pid":42,"sessionId":"` + session + `","status":"busy","statusUpdatedAt":1794698366044}`, false},
 		{"waiting", `{"pid":42,"sessionId":"` + session + `","status":"waiting","waitingFor":"dialog open","statusUpdatedAt":1794698366044}`, false},
 		{"another session", `{"pid":42,"sessionId":"22222222-2222-2222-2222-222222222222","status":"idle","statusUpdatedAt":1794698366044}`, false},

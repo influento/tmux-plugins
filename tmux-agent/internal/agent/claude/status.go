@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -11,10 +12,11 @@ import (
 // Claude Code keeps a file for each of its running processes,
 // sessions/<pid>.json in its folder, with the process's session and its
 // status: "busy" while a turn runs, "waiting" on a dialog, "idle" at the
-// prompt. statusUpdatedAt is when the status last changed, in Unix
-// milliseconds. A turn the user ends with Esc before the first token
-// sends no hook and writes no transcript line; only this file tells.
-// (Seen in 2.1.325.) name is the session's name, the address that
+// prompt, "shell" at the prompt while a background shell it started runs
+// (seen in 2.1.330, which counts it as idle too). statusUpdatedAt is when
+// the status last changed, in Unix milliseconds. A turn the user ends
+// with Esc before the first token sends no hook and writes no transcript
+// line; only this file tells. (Seen in 2.1.325.) name is the session's name, the address that
 // SendMessage and ListAgents use. (Seen in 2.1.329.)
 
 // processFile is what tmux-agent reads of the file.
@@ -44,12 +46,14 @@ func (c Claude) process(pid int, session string, getenv func(string) string) (pr
 	return f, true
 }
 
+var idleStatuses = []string{"idle", "shell"}
+
 // IdleSince reports when Claude Code's process pid went idle in session:
 // ok is false while it works or waits on a dialog, or when its file is
 // missing, unreadable or of another session.
 func (c Claude) IdleSince(pid int, session string, getenv func(string) string) (time.Time, bool) {
 	f, ok := c.process(pid, session, getenv)
-	if !ok || f.Status != "idle" || f.Since <= 0 {
+	if !ok || !slices.Contains(idleStatuses, f.Status) || f.Since <= 0 {
 		return time.Time{}, false
 	}
 	return time.UnixMilli(f.Since), true

@@ -260,8 +260,9 @@ Rules:
   transcript's last message: Claude Code's interrupt line, written at or
   after the flag, clears the flag. Esc before the first token writes no
   line: the watcher follows the file Claude Code keeps for its process
-  (`sessions/<pid>.json`), whose `idle` at or after the flag ends a
-  working turn, unless the turn is held or subagents run.
+  (`sessions/<pid>.json`), whose `idle` (or `shell`: idle while a
+  background shell runs) at or after the flag ends a working turn,
+  unless the turn is held or subagents run.
 - Subagents run beside their agent, in its session and pane; Claude Code
   2.1.322 runs every one in the background. A turn that ends while one
   runs (Stop's `background_tasks`) leaves the pane working: its report, or
