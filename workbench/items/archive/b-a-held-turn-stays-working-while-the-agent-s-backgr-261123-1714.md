@@ -48,3 +48,92 @@ FAIL
 ```
 
 After the fix, `make test` passed in full.
+
+End to end, 2026-11-23, run by an agent that did not write the fix
+(`<REDACTED>` is the session's scratch folder): the scripts `run.sh`,
+`stubs/claude` and `stubs/notify-send` of
+`b-the-launcher-leaves-its-tmux-agent-children-as-zom-261123-1714`, with
+one change in `stubs/claude`: the status that follows `hook Stop` is
+`shell`, not `idle`:
+
+```
+$ f=workbench/items/archive/b-the-launcher-leaves-its-tmux-agent-children-as-zom-261123-1714.md
+$ diff <(sed -n '/^`stubs\/claude`:/,/^`stubs\/notify/p' $f) "$D/stubs/claude" | head
+1,3d0
+< `stubs/claude`:
+< 
+< ```bash
+28c25
+<   status idle
+---
+>   status shell
+33,35d29
+< ```
+```
+
+Before the fix, `$OLD/bin/tmux-agent` a link to the installed v0.3.36:
+
+```
+$ $D/run.sh $D $OLD $(mktemp -d)
+@agent claude
+@agent_cwd <REDACTED>/held.MvB4/home/proj
+@agent_prompt_got "1795466432552 8f434346648f6b96"
+@agent_run 1885454
+@agent_session 11111111-1111-1111-1111-111111111111
+@agent_started 1795466426
+@agent_state working
+@agent_transcript <REDACTED>/held.MvB4/home/proj/t.jsonl
+@attention working
+@attention_at 1795466426
+@attention_at_ms 1795466426820
+@attention_mark "#[fg=blue]● "
+@attention_owner claude
+@attention_reason ''
+launcher: 1885454 claude run claude
+flag: working
+children:
+1885471 S+   bash <REDACTED>/held.MvB4/stubs/claude
+zombies: 0
+$ cat $D/home/trace
+after Stop: held=hook flag=working
+after Stop: held=hook flag=working
+after Stop: held=hook flag=working
+```
+
+After the fix, a `make build` of main at a37018c (`v0.3.36-8-ga37018c`):
+
+```
+$ $D/run.sh $D /home/<REDACTED>/tmux-plugins $(mktemp -d)
+@agent claude
+@agent_cwd <REDACTED>/held.MvB4/home/proj
+@agent_prompt_got "1795466450052 8f434346648f6b96"
+@agent_run 1888494
+@agent_session 11111111-1111-1111-1111-111111111111
+@agent_started 1795466444
+@agent_state working
+@agent_transcript <REDACTED>/held.MvB4/home/proj/t.jsonl
+@attention working
+@attention_at 1795466450
+@attention_at_ms 1795466450058
+@attention_mark "#[fg=blue]● "
+@attention_owner claude
+@attention_reason ''
+launcher: 1888494 claude run claude
+flag: done
+children:
+1888512 S+   bash <REDACTED>/held.MvB4/stubs/claude
+zombies: 0
+$ cat $D/home/trace
+after Stop: held=hook flag=working
+notify-send: notifier 1888719, its parent 1888494: claude run claude
+notify-send: notifier 1888719, its parent 1888494: claude run claude
+after Stop: held=hook flag=working
+notify-send: notifier 1889165, its parent 1888494: claude run claude
+notify-send: notifier 1889165, its parent 1888494: claude run claude
+after Stop: held=hook flag=working
+notify-send: notifier 1889759, its parent 1888494: claude run claude
+notify-send: notifier 1889759, its parent 1888494: claude run claude
+```
+
+The options list is read 6 s after the start, during the second turn;
+`flag:` is read at 12 s, after the third turn's `shell`.
