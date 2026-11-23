@@ -103,3 +103,36 @@ func TestTmuxHookFailureShowsNothing(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A hook's job whose program dies outside Go's error handling (the
+// runtime's fatal errors, a shell that cannot run it) shows nothing in
+// tmux either.
+func TestTmuxHookDeathShowsNothing(t *testing.T) {
+	sb := tmuxtest.NewSandbox(t)
+	selftest.Install(t, sb)
+	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	pane := s.Display(t, "=proj-a:0", "#{pane_id}")
+	if out, err := s.Command(t, pane, "tmux-agent", "tmux-init").CombinedOutput(); err != nil {
+		t.Fatalf("tmux-init: %v: %s", err, out)
+	}
+	ran := filepath.Join(sb.Home, "ran")
+	if err := os.Remove(filepath.Join(sb.Bin, "tmux-agent")); err != nil {
+		t.Fatal(err)
+	}
+	sb.Stub(t, "tmux-agent", "#!/bin/sh\necho fatal error >&2\n: > "+ran+"\nexit 3\n")
+	s.MustTmux(t, "set-option", "-g", "@sidebar_open", "1")
+	s.MustTmux(t, "new-window", "-t", "=proj-a:") // session-window-changed runs sidebar follow
+	tmuxtest.WaitFor(t, 10*time.Second, "the hook's job to run", func() bool {
+		_, err := os.Stat(ran)
+		return err == nil
+	})
+	deadline := time.Now().Add(2 * time.Second) // tmux handles the job's end right after it
+	for time.Now().Before(deadline) {
+		for l := range strings.SplitSeq(s.MustTmux(t, "list-panes", "-a", "-F", "#{pane_in_mode} #{pane_id}"), "\n") {
+			if p, ok := strings.CutPrefix(l, "1 "); ok {
+				t.Fatalf("pane %s shows the hook's end: %q", p, s.MustTmux(t, "capture-pane", "-p", "-M", "-t", p))
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

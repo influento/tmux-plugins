@@ -558,6 +558,33 @@ func TestTmuxHookFailureShowsNothing(t *testing.T) {
 	}
 }
 
+// A hook's save whose program dies outside Go's error handling (the
+// runtime's fatal errors, a shell that cannot run it) shows nothing in
+// tmux either.
+func TestTmuxHookDeathShowsNothing(t *testing.T) {
+	e := newEnv(t, "")
+	e.mustTmux(t, "new-session", "-d", "-s", "proj-a")
+	ran := filepath.Join(e.Home, "ran")
+	if err := os.Remove(filepath.Join(e.Bin, "tmux-revive")); err != nil {
+		t.Fatal(err)
+	}
+	e.Stub(t, "tmux-revive", "#!/bin/sh\necho fatal error >&2\n: > "+ran+"\nexit 3\n")
+	e.mustTmux(t, "new-window", "-t", "=proj-a:") // its hooks save
+	tmuxtest.WaitFor(t, 10*time.Second, "the hook's job to run", func() bool {
+		_, err := os.Stat(ran)
+		return err == nil
+	})
+	deadline := time.Now().Add(2 * time.Second) // tmux handles the job's end right after it
+	for time.Now().Before(deadline) {
+		for l := range strings.SplitSeq(e.mustTmux(t, "list-panes", "-a", "-F", "#{pane_in_mode} #{pane_id}"), "\n") {
+			if p, ok := strings.CutPrefix(l, "1 "); ok {
+				t.Fatalf("pane %s shows the hook's end: %q", p, e.mustTmux(t, "capture-pane", "-p", "-M", "-t", p))
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // tmux-revive attach in a terminal, with a server that takes connections
 // but does not answer (stopped, as a starved one is in effect), exits
 // non-zero with the reason instead of hanging, so the terminal's script

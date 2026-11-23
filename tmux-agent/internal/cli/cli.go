@@ -192,7 +192,7 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 	}
 	if args[0] == hookjob.Arg {
 		a := newApp(version, io.Discard, io.Discard, os.Getenv)
-		return hookjob.Run(args[1:], func(out io.Writer) int {
+		return hookjob.Run(args[1:], a.logPath, func(out io.Writer) int {
 			return Main(version, append([]string{self[0]}, args[1:]...), stdin, out, out)
 		}, func(line string) { a.logf("%s", line) })
 	}
@@ -1780,7 +1780,7 @@ func (a *app) tmuxInit(ctx context.Context) error {
 		if len(args) > 0 {
 			args = append(args, ";")
 		}
-		cmd := fmt.Sprintf(`run-shell -b "tmux-agent %s %s"`, hookjob.Arg, h.command)
+		cmd := fmt.Sprintf(`run-shell -b "tmux-agent %s %s%s"`, hookjob.Arg, h.command, hookjob.Guard)
 		if h.sidebar {
 			cmd = fmt.Sprintf(`if-shell -F "#{%s}" '%s'`, sidebar.OptOpen, cmd)
 		}

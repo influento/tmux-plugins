@@ -89,7 +89,7 @@ func Main(version string, args []string, stdout, stderr io.Writer) int {
 	}
 	if args[0] == hookjob.Arg {
 		a := newApp(version, io.Discard, io.Discard, os.Getenv)
-		return hookjob.Run(args[1:], func(out io.Writer) int {
+		return hookjob.Run(args[1:], filepath.Join(a.store.Dir, "log"), func(out io.Writer) int {
 			return Main(version, args[1:], out, out)
 		}, func(line string) { a.store.Logf(time.Now(), "%s", line) })
 	}
@@ -344,12 +344,12 @@ var saveHooks = []string{
 }
 
 // saveCommand is what each hook runs: a save in the background.
-var saveCommand = fmt.Sprintf(`run-shell -b "tmux-revive %s save"`, hookjob.Arg)
+var saveCommand = fmt.Sprintf(`run-shell -b "tmux-revive %s save%s"`, hookjob.Arg, hookjob.Guard)
 
 // optionHook saves after set-option, but only for the options a snapshot
 // holds: tmux-agent sets other pane options on every agent event.
 var optionHook = fmt.Sprintf(`if-shell -F "#{||:#{==:#{hook_argument_0},%s},#{==:#{hook_argument_0},automatic-rename}}" %q`,
-	revive.OptCommand, fmt.Sprintf(`run-shell -b 'tmux-revive %s save'`, hookjob.Arg))
+	revive.OptCommand, fmt.Sprintf(`run-shell -b 'tmux-revive %s save%s'`, hookjob.Arg, hookjob.Guard))
 
 // TmuxHookEvents lists the events tmux-init sets, for tests.
 func TmuxHookEvents() []string {
