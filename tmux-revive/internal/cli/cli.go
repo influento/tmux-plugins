@@ -176,7 +176,9 @@ func (a *app) withTimeout(d time.Duration, fn func(ctx context.Context) error) e
 }
 
 // attach restores, then becomes the tmux client. Whatever fails, the
-// terminal still gets a tmux session.
+// terminal still gets a tmux session, unless the server does not answer:
+// then a tmux client would hang too, so attach exits with the reason, and
+// the terminal's script can give the user a shell.
 func (a *app) attach(args []string) error {
 	if len(args) != 0 {
 		return errUsage
@@ -187,6 +189,9 @@ func (a *app) attach(args []string) error {
 		target, err = a.r.Attach(ctx)
 		return err
 	})
+	if target == "" && errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("tmux does not answer: %w", err)
+	}
 	if err != nil {
 		fmt.Fprintf(a.stderr, "tmux-revive attach: %v\n", err)
 	}

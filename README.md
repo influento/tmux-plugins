@@ -89,7 +89,9 @@ bind X confirm-before "run-shell 'tmux-revive forget-session \"#S\"; tmux kill-s
 ```
 
 The terminal runs `tmux-revive attach` instead of `tmux new-session -A`: it
-restores once per server, before any shell starts, then attaches. In zsh,
+restores once per server, before any shell starts, then attaches. When the
+tmux server does not answer, it exits non-zero with the reason instead, so
+the terminal's script can start a plain shell. In zsh,
 `eval "$(tmux-revive shell-init zsh)"` saves the folder on each `cd`.
 
 ## Installation

@@ -558,6 +558,34 @@ func TestTmuxHookFailureShowsNothing(t *testing.T) {
 	}
 }
 
+// tmux-revive attach in a terminal, with a server that takes connections
+// but does not answer (stopped, as a starved one is in effect), exits
+// non-zero with the reason instead of hanging, so the terminal's script
+// can give the user a shell.
+func TestAttachFailsWhenServerDoesNotAnswer(t *testing.T) {
+	e := newEnv(t, "")
+	e.mustTmux(t, "new-session", "-d", "-s", "proj-a")
+	var pid int
+	if _, err := fmt.Sscan(e.mustTmux(t, "display-message", "-p", "#{pid}"), &pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGCONT) }) // the server's cleanup needs it to answer
+	c := e.Terminal(t, "exec tmux-revive attach", 100, 30)
+	tmuxtest.WaitFor(t, 30*time.Second, "tmux-revive attach to exit", func() bool {
+		done, _ := c.Exited()
+		return done
+	})
+	if _, err := c.Exited(); err == nil {
+		t.Errorf("attach exited 0, want non-zero; output %q", c.Output())
+	}
+	if out := c.Output(); !strings.Contains(out, "tmux-revive attach: tmux does not answer: ") {
+		t.Errorf("attach printed %q, want the reason after \"tmux-revive attach: tmux does not answer: \"", out)
+	}
+}
+
 // writeSnapshot writes a snapshot of one session with one pane.
 func (e *env) writeSnapshot(t *testing.T, sessions []snapshot.Session) {
 	t.Helper()
