@@ -543,7 +543,7 @@ func TestTmuxHookFailureShowsNothing(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		data, _ := os.ReadFile(log) // none yet until a save logs
-		for _, l := range strings.Split(e.mustTmux(t, "list-panes", "-a", "-F", "#{pane_in_mode} #{pane_id}"), "\n") {
+		for l := range strings.SplitSeq(e.mustTmux(t, "list-panes", "-a", "-F", "#{pane_in_mode} #{pane_id}"), "\n") {
 			if p, ok := strings.CutPrefix(l, "1 "); ok {
 				t.Fatalf("pane %s shows the hook's output: %q", p, e.mustTmux(t, "capture-pane", "-p", "-M", "-t", p))
 			}
