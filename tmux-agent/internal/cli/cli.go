@@ -321,65 +321,43 @@ func (a *app) tracef(format string, args ...any) {
 	a.logf("%s", line)
 }
 
+// spawn starts tmux-agent with args in its own session, with no terminal
+// or pipes, so it outlives a hook and holds nothing open that the agent
+// waits on. A goroutine waits for it: a hook exits first and leaves it to
+// init, but the launcher lives on, and a child it never waited for would
+// stay a zombie until its agent ends.
+func (a *app) spawn(args ...string) {
+	cmd := exec.Command(a.self, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		a.logf("%s: %v", strings.Join(args, " "), err)
+		return
+	}
+	go func() { _ = cmd.Wait() }() // its exit tells nothing: it logs its own errors
+}
+
 // spawnNotify starts the notifier for a flag and returns: it waits a moment
-// and re-reads the flag, so a prompt that resolves at once stays quiet. It
-// runs in its own session with no terminal or pipes, so it outlives a hook
-// and holds nothing open that the agent waits on.
+// and re-reads the flag, so a prompt that resolves at once stays quiet.
 func (a *app) spawnNotify(pane string, s attention.State) {
-	cmd := exec.Command(a.self, "notify", pane, string(s))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		a.logf("notify: %v", err)
-		return
-	}
-	_ = cmd.Process.Release() // never waited for
+	a.spawn("notify", pane, string(s))
 }
 
-// spawnFill starts `subagents fill` for subagents that ended, in its own
-// session like the notifier: it waits for their files, which the hook must
-// not.
+// spawnFill starts `subagents fill` for subagents that ended: it waits for
+// their files, which the hook must not.
 func (a *app) spawnFill(ag agent.Agent, sf agent.SessionFiles, ids []string) {
-	cmd := exec.Command(a.self, append([]string{"subagents", "fill", ag.Name(), sf.Session, sf.Transcript}, ids...)...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		a.logf("subagents fill: %v", err)
-		return
-	}
-	_ = cmd.Process.Release() // never waited for
+	a.spawn(append([]string{"subagents", "fill", ag.Name(), sf.Session, sf.Transcript}, ids...)...)
 }
 
-// spawnScan starts `subagents scan` in its own session.
-func (a *app) spawnScan() {
-	cmd := exec.Command(a.self, "subagents", "scan")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		a.logf("subagents scan: %v", err)
-		return
-	}
-	_ = cmd.Process.Release() // never waited for
-}
+// spawnScan starts `subagents scan`.
+func (a *app) spawnScan() { a.spawn("subagents", "scan") }
 
-// spawnTokenScan starts `tokens scan` in its own session.
-func (a *app) spawnTokenScan() {
-	cmd := exec.Command(a.self, "tokens", "scan")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		a.logf("tokens scan: %v", err)
-		return
-	}
-	_ = cmd.Process.Release() // never waited for
-}
+// spawnTokenScan starts `tokens scan`.
+func (a *app) spawnTokenScan() { a.spawn("tokens", "scan") }
 
-// spawnWatch starts `watch` for an agent that runs without a watcher, in
-// its own session like the notifier: it lives as long as the agent.
+// spawnWatch starts `watch` for an agent that runs without a watcher: it
+// lives as long as the agent.
 func (a *app) spawnWatch(ag agent.Agent, pane string, pid int) {
-	cmd := exec.Command(a.self, "watch", ag.Name(), pane, strconv.Itoa(pid))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		a.logf("watch: %v", err)
-		return
-	}
-	_ = cmd.Process.Release() // never waited for
+	a.spawn("watch", ag.Name(), pane, strconv.Itoa(pid))
 }
 
 // watch follows the agent in a pane until the agent exits (Env.Watch).

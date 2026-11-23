@@ -2,13 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
+	"github.com/influento/tmux-plugins/tmux-agent/internal/agent"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/attention"
 )
 
@@ -222,4 +227,75 @@ func TestStartRowSkipsLabels(t *testing.T) {
 			t.Errorf("startRow(%s) = %d, want %d", c.window, got, c.want)
 		}
 	}
+}
+
+// A process that lives on, such as the launcher with its watcher, reaps
+// each tmux-agent it starts in the background once it exits: none stays
+// a zombie. The test process stands in for the launcher, and true for
+// tmux-agent.
+func TestSpawnedReaped(t *testing.T) {
+	self, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no true on PATH")
+	}
+	a := newApp("test", io.Discard, io.Discard, func(string) string { return "" })
+	a.self = self
+	claude := a.reg.Get("claude")
+	spawns := []struct {
+		name  string
+		spawn func()
+	}{
+		{"notify", func() { a.spawnNotify("%0", attention.Done) }},
+		{"subagents fill", func() { a.spawnFill(claude, agent.SessionFiles{Session: "s", Transcript: "t"}, []string{"a1"}) }},
+		{"subagents scan", a.spawnScan},
+		{"tokens scan", a.spawnTokenScan},
+		{"watch", func() { a.spawnWatch(claude, "%0", 1) }},
+	}
+	for _, sp := range spawns {
+		t.Run(sp.name, func(t *testing.T) {
+			sp.spawn()
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				left := childrenNamed(t, "true")
+				if len(left) == 0 {
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("children left after 5s, not reaped: %v", left)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
+
+// childrenNamed lists the test process's children named comm, each as
+// "pid state".
+func childrenNamed(t *testing.T, comm string) []string {
+	t.Helper()
+	stats, err := filepath.Glob("/proc/[0-9]*/stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, f := range stats {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue // gone meanwhile
+		}
+		// pid (comm) state ppid ...; comm can hold spaces and parentheses.
+		s := string(data)
+		open, end := strings.IndexByte(s, '('), strings.LastIndexByte(s, ')')
+		if open < 0 || end < open {
+			continue
+		}
+		rest := strings.Fields(s[end+1:])
+		if len(rest) < 2 || s[open+1:end] != comm {
+			continue
+		}
+		if ppid, _ := strconv.Atoi(rest[1]); ppid == os.Getpid() {
+			out = append(out, strings.TrimSpace(s[:open])+" "+rest[0])
+		}
+	}
+	return out
 }
