@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/influento/tmux-plugins/internal/tmux/tmuxtest"
 	"github.com/influento/tmux-plugins/tmux-agent/internal/selftest"
@@ -59,5 +60,46 @@ func TestHookLog(t *testing.T) {
 	hook(prompt, "TMUX="+filepath.Join(sb.RuntimeDir, "none")+",1,0")
 	if got := log(); !strings.Contains(got, "hook claude: ") || strings.Contains(got, "UserPromptSubmit") {
 		t.Errorf("log of a failed hook = %q, want its error alone", got)
+	}
+}
+
+// A hook's job that fails shows nothing in tmux, which prints a background
+// job's output or failure into its client's current pane (and tmux 3.8
+// crashes when that client's session has no window): its error goes to the
+// log alone.
+func TestTmuxHookFailureShowsNothing(t *testing.T) {
+	sb := tmuxtest.NewSandbox(t)
+	selftest.Install(t, sb)
+	s := tmuxtest.StartIn(t, sb, tmuxtest.Options{Session: "proj-a"})
+	pane := s.Display(t, "=proj-a:0", "#{pane_id}")
+	if out, err := s.Command(t, pane, "tmux-agent", "tmux-init").CombinedOutput(); err != nil {
+		t.Fatalf("tmux-init: %v: %s", err, out)
+	}
+	// No lock can be taken: sidebar follow fails.
+	locks := filepath.Join(sb.RuntimeDir, "tmux-agent")
+	if err := os.RemoveAll(locks); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(locks, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sb.StateHome, "tmux-agent", "log")
+	s.MustTmux(t, "set-option", "-g", "@sidebar_open", "1")
+	s.MustTmux(t, "new-window", "-t", "=proj-a:") // session-window-changed runs sidebar follow
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, _ := os.ReadFile(path) // none yet until the hook logs
+		for _, l := range strings.Split(s.MustTmux(t, "list-panes", "-a", "-F", "#{pane_in_mode} #{pane_id}"), "\n") {
+			if p, ok := strings.CutPrefix(l, "1 "); ok {
+				t.Fatalf("pane %s shows the hook's output: %q", p, s.MustTmux(t, "capture-pane", "-p", "-M", "-t", p))
+			}
+		}
+		if strings.Contains(string(data), "sidebar follow") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after 10s: no error of sidebar follow in the log %q, and no pane shows anything", data)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

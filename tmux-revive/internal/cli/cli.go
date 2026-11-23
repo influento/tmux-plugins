@@ -17,6 +17,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/influento/tmux-plugins/internal/hookjob"
 	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/internal/tmux"
 	"github.com/influento/tmux-plugins/tmux-revive/internal/revive"
@@ -85,6 +86,12 @@ func Main(version string, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
+	}
+	if args[0] == hookjob.Arg {
+		a := newApp(version, io.Discard, io.Discard, os.Getenv)
+		return hookjob.Run(args[1:], func(out io.Writer) int {
+			return Main(version, args[1:], out, out)
+		}, func(line string) { a.store.Logf(time.Now(), "%s", line) })
 	}
 	a := newApp(version, stdout, stderr, os.Getenv)
 	cmd, rest := args[0], args[1:]
@@ -332,12 +339,12 @@ var saveHooks = []string{
 }
 
 // saveCommand is what each hook runs: a save in the background.
-const saveCommand = `run-shell -b "tmux-revive save"`
+var saveCommand = fmt.Sprintf(`run-shell -b "tmux-revive %s save"`, hookjob.Arg)
 
 // optionHook saves after set-option, but only for the options a snapshot
 // holds: tmux-agent sets other pane options on every agent event.
 var optionHook = fmt.Sprintf(`if-shell -F "#{||:#{==:#{hook_argument_0},%s},#{==:#{hook_argument_0},automatic-rename}}" %q`,
-	revive.OptCommand, `run-shell -b 'tmux-revive save'`)
+	revive.OptCommand, fmt.Sprintf(`run-shell -b 'tmux-revive %s save'`, hookjob.Arg))
 
 // TmuxHookEvents lists the events tmux-init sets, for tests.
 func TmuxHookEvents() []string {
@@ -355,8 +362,8 @@ func (a *app) tmuxInit(ctx context.Context) error {
 		args = append(args, "set-hook", "-g", fmt.Sprintf("%s[%d]", ev, hookIndex), saveCommand, ";")
 	}
 	args = append(args, "set-hook", "-g", fmt.Sprintf("after-set-option[%d]", hookIndex), optionHook, ";")
-	args = append(args, "run-shell", "-b", "tmux-revive scrollback-loop", ";")
-	args = append(args, "run-shell", "-b", "tmux-revive shutdown-guard")
+	args = append(args, "run-shell", "-b", "tmux-revive "+hookjob.Arg+" scrollback-loop", ";")
+	args = append(args, "run-shell", "-b", "tmux-revive "+hookjob.Arg+" shutdown-guard")
 	if _, err := a.tmux.RunAll(ctx, args...); err != nil {
 		return err
 	}

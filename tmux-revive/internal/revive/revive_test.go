@@ -506,8 +506,55 @@ func TestTmuxInitOwnsIndex20(t *testing.T) {
 			t.Errorf("hook %d = %q, want session-created%s", i, lines[i], idx)
 		}
 	}
-	if !strings.Contains(lines[2], "tmux-revive save") {
-		t.Errorf("[20] = %q, want tmux-revive save", lines[2])
+	if !strings.Contains(lines[2], "tmux-revive --tmux-hook save") {
+		t.Errorf("[20] = %q, want tmux-revive --tmux-hook save", lines[2])
+	}
+}
+
+// A hook's save that fails shows nothing in tmux, which prints a background
+// job's output or failure into its client's current pane (and tmux 3.8
+// crashes when that client's session has no window): its error goes to the
+// log alone.
+func TestTmuxHookFailureShowsNothing(t *testing.T) {
+	e := newEnv(t, "")
+	e.mustTmux(t, "new-session", "-d", "-s", "proj-a")
+	e.mustTmux(t, "set-option", "-g", revive.OptReady, "1")
+	// No lock can be taken: every save fails.
+	locks := filepath.Join(e.RuntimeDir, "tmux-revive")
+	if err := revive.WaitIdle(context.Background(), locks); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(locks); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(locks, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(locks); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(locks, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	log := filepath.Join(e.store.Dir, "log")
+	e.mustTmux(t, "new-window", "-t", "=proj-a:") // its hooks save
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, _ := os.ReadFile(log) // none yet until a save logs
+		for _, l := range strings.Split(e.mustTmux(t, "list-panes", "-a", "-F", "#{pane_in_mode} #{pane_id}"), "\n") {
+			if p, ok := strings.CutPrefix(l, "1 "); ok {
+				t.Fatalf("pane %s shows the hook's output: %q", p, e.mustTmux(t, "capture-pane", "-p", "-M", "-t", p))
+			}
+		}
+		if strings.Contains(string(data), "save") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after 10s: no error of save in the log %q, and no pane shows anything", data)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

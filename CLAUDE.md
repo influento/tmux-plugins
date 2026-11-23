@@ -15,6 +15,7 @@ tmux-plugins/
   internal/lockfile/   # flock locks: Lock waits until ctx ends, TryLock does not
   internal/layout/     # tmux 3.8 JSON layouts: remove panes, scale, number
   internal/applog/     # a log file that moves to .old past a size
+  internal/hookjob/    # a tmux hook's job prints nothing and exits 0 (tmux 3.8 crash)
   tmux-warp/           # search-and-jump; tmux-warp.sh stays at this path
   tmux-agent/          # agent flags, pickers, hooks, launcher (P0 step 2)
     internal/          # its packages; the compiler keeps them from tmux-revive

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/influento/tmux-plugins/internal/applog"
+	"github.com/influento/tmux-plugins/internal/hookjob"
 	"github.com/influento/tmux-plugins/internal/lockfile"
 	"github.com/influento/tmux-plugins/internal/shell"
 	"github.com/influento/tmux-plugins/internal/tmux"
@@ -188,6 +189,12 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
+	}
+	if args[0] == hookjob.Arg {
+		a := newApp(version, io.Discard, io.Discard, os.Getenv)
+		return hookjob.Run(args[1:], func(out io.Writer) int {
+			return Main(version, append([]string{self[0]}, args[1:]...), stdin, out, out)
+		}, func(line string) { a.logf("%s", line) })
 	}
 	a := newApp(version, stdout, stderr, os.Getenv)
 	cmd, rest := args[0], args[1:]
@@ -1773,7 +1780,7 @@ func (a *app) tmuxInit(ctx context.Context) error {
 		if len(args) > 0 {
 			args = append(args, ";")
 		}
-		cmd := fmt.Sprintf(`run-shell -b "tmux-agent %s"`, h.command)
+		cmd := fmt.Sprintf(`run-shell -b "tmux-agent %s %s"`, hookjob.Arg, h.command)
 		if h.sidebar {
 			cmd = fmt.Sprintf(`if-shell -F "#{%s}" '%s'`, sidebar.OptOpen, cmd)
 		}
