@@ -17,7 +17,19 @@ conf_count() {
   if [[ "$v" =~ ^[1-9][0-9]{0,8}$ ]]; then echo "$v"; else echo "$2"; fi
 }
 IN=$(cat)
-OUT=$(bash go-gate/scripts/gate.sh --local 2>&1) && exit 0
+# The checkouts this session worked in, each checked by its own copy of the
+# gate: another session's work in this project is not this one's to fix.
+# When worked-in.py cannot tell, this checkout, as before.
+HERE=$(pwd -P)
+mapfile -t TOPS < <(printf '%s' "$IN" | python3 -I go-gate/scripts/worked-in.py go-gate 2>/dev/null || echo "$HERE")
+OUT="" RED=0
+for TOP in "${TOPS[@]}"; do
+  RUN=$(cd "$TOP" && bash go-gate/scripts/gate.sh --local 2>&1) && continue
+  RED=1
+  [ "$TOP" = "$HERE" ] || RUN="== in $TOP =="$'\n'"$RUN"
+  OUT+="${OUT:+$'\n'}$RUN"
+done
+[ "$RED" -eq 1 ] || exit 0
 CAP=$(conf_count go-gate.repeat_cap 3)
 MAX_LINES=$(conf_count go-gate.output_lines 80)
 

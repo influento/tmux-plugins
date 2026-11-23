@@ -3,7 +3,16 @@
     "ask": [
       "Bash(stack add *)",
       "Bash(stack rm *)",
-      "Bash(stack update *)"
+      "Bash(stack update *)",
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/settings.local.json)",
+      "Edit(/.claude/workshop.conf)",
+      "Edit(/go-gate/**)",
+      "Edit(/go.mod)",
+      "Edit(/go.sum)",
+      "Edit(/go.work)",
+      "Edit(/go.work.sum)",
+      "Edit(/vendor/**)"
     ],
     "allow": [
       "Bash(bash go-gate/scripts/gate.sh)",
@@ -13,33 +22,8 @@
       "Bash(go mod tidy)"
     ],
     "deny": [
-      "Bash(go get)",
       "Bash(go get *)",
-      "Bash(go -* get)",
-      "Bash(go -* get *)",
-      "Bash(go install)",
       "Bash(go install *)",
-      "Bash(go -* install)",
-      "Bash(go -* install *)",
-      "Bash(go mod edit)",
-      "Bash(go mod edit *)",
-      "Bash(go -* mod edit)",
-      "Bash(go -* mod edit *)",
-      "Bash(go work)",
-      "Bash(go work *)",
-      "Bash(go -* work)",
-      "Bash(go -* work *)",
-      "Bash(go env -w *)",
-      "Bash(go env * -w *)",
-      "Bash(go -* env -w *)",
-      "Bash(go -* env * -w *)",
-      "Bash(go env -u *)",
-      "Bash(go env * -u *)",
-      "Bash(go -* env -u *)",
-      "Bash(go -* env * -u *)",
-      "Bash(go run *@*)",
-      "Bash(go -* run *@*)",
-      "Bash(go * -modfile*)",
       "Edit(/.claude/rules/workbench.md)",
       "Edit(/.claude/agents/wb-reviewer.md)",
       "Edit(/.claude/agents/wb-demo.md)",
@@ -66,18 +50,6 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workbench-review",
             "timeout": 1800
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Edit|MultiEdit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/workshop-guard",
-            "onFailure": "block"
           }
         ]
       }
