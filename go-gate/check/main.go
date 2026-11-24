@@ -1,7 +1,7 @@
 // Command check holds go-gate's own rules and the plumbing gate.sh needs.
 // Every command runs in the project root, the first argument.
 //
-//	check <root> rules         the source rules; one line per finding with its fix
+//	check <root> rules         the source rules and legacy-list; one line per finding with its fix
 //	check <root> deps          go.mod and the imports against go-gate/deps.txt, and no-excluded
 //	check <root> approved      the list a first install writes: go.mod's direct requires, tools, replaces
 //	check <root> tests         reads `go test -json` on stdin: prints each failure, and fails a
@@ -11,8 +11,8 @@
 //	check <root> legacy        reads tool output on stdin: the files it names, leaf packages first
 //	check <root> legacy-files  the files go-gate-legacy.txt lists
 //	check <root> excluded      reads paths on stdin: those that no exclude glob covers
-//	check <root> only-tests-args  deadcode's arguments for only-tests-use; none without a program
-//	check <root> only-tests    reads deadcode's output on stdin: only-tests-use, one line per finding
+//	check <root> only-tests <deadcode>  only-tests-use, one line per finding: runs deadcode, the
+//	                           binary named, from the project's programs
 package main
 
 import (
@@ -20,7 +20,7 @@ import (
 	"os"
 )
 
-const usage = "usage: check <root> rules|deps|approved|tests|config [--local]|pkgs|legacy|legacy-files|excluded|only-tests-args|only-tests"
+const usage = "usage: check <root> rules|deps|approved|tests|config [--local]|pkgs|legacy|legacy-files|excluded|only-tests <deadcode>"
 
 func main() {
 	if len(os.Args) < 3 {
@@ -40,14 +40,19 @@ func run(cmd string, args []string) int {
 	var n int
 	switch cmd {
 	case "rules":
-		n = report(rules(conf))
+		listed, err := legacyList()
+		n = report(conf, append(rules(conf), listed...))
+		if err != nil {
+			fmt.Fprintln(os.Stdout, err)
+			return 1
+		}
 	case "deps":
 		found, err := deps(conf)
 		if err != nil {
 			fmt.Fprintln(os.Stdout, err)
 			return 1
 		}
-		n = report(found)
+		n = report(conf, found)
 	case "approved":
 		return printLines(approved())
 	case "tests":
@@ -62,15 +67,17 @@ func run(cmd string, args []string) int {
 		return printLines(legacyFiles())
 	case "excluded":
 		return printLines(notExcluded(conf, os.Stdin))
-	case "only-tests-args":
-		return printLines(onlyTestsArgs(conf))
 	case "only-tests":
-		found, err := onlyTests(conf, os.Stdin)
+		if len(args) != 1 {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		found, err := onlyTests(conf, args[0])
 		if err != nil {
 			fmt.Fprintln(os.Stdout, err)
 			return 1
 		}
-		n = report(found)
+		n = report(conf, found)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return 2

@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -55,19 +58,19 @@ type listedPkg struct {
 	} `json:"Module"`
 }
 
-// goCmd runs the go command with the project's GOFLAGS, which gate.sh passes in GO_GATE_GOFLAGS:
-// the check itself runs under -mod=readonly, from its own module.
+// goCmd runs the go command with the GOFLAGS that check inherits from gate.sh.
 func goCmd(args ...string) ([]byte, error) { return goCmdEnv(nil, args...) }
 
-// goCmdEnv: goCmd with env added to the environment.
+// goCmdEnv: goCmd with env added to the environment. The error holds go's stderr without its last
+// newline, as the callers print it with Fprintln.
 func goCmdEnv(env []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(context.Background(), "go", args...)
-	cmd.Env = append(append(os.Environ(), "GOFLAGS="+os.Getenv("GO_GATE_GOFLAGS")), env...)
+	cmd.Env = append(os.Environ(), env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, stderr.String())
+		return nil, fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, strings.TrimRight(stderr.String(), "\n"))
 	}
 	return out, nil
 }
@@ -228,19 +231,22 @@ func unapproved(m goMod, pkgs []listedPkg, ok map[string]bool) []finding {
 		}
 	}
 	var out []finding
-	fix := "Remove what brought it in and run go mod tidy, or ask the user to approve it: after the user " +
-		"approves, add the line on a new line in " + depsFile
+	fix := func(remove, what string) string {
+		return "If you added it, remove it (" + remove + "). If you did not, ask the user to approve or " +
+			"remove it. After the user approves it, add " + what + " on a new line in " + depsFile
+	}
 	for _, mod := range slices.Sorted(maps.Keys(mods)) {
 		if !ok[mod] {
 			out = append(out, finding{"go.mod", goModLine(mod), "deps", fmt.Sprintf(
-				"the project depends on module %s, which the user did not approve (%s). %s", mod, depsFile, fix)})
+				"the project depends on module %s, which the user did not approve (%s). %s", mod, depsFile,
+				fix("remove what brought it in and run go mod tidy", "its path"))})
 		}
 	}
 	for _, r := range m.Replace {
 		if line := replaceLine(r.Old, r.New); !ok[line] {
 			out = append(out, finding{"go.mod", goModLine(r.Old.Path), "deps", fmt.Sprintf(
 				"`replace %s` points a module at other code, and the user did not approve it (%s). %s",
-				line, depsFile, fix)})
+				line, depsFile, fix("`go mod edit -dropreplace="+strings.Split(line, " => ")[0]+"`", "`old[@v] => new[@v]`"))})
 		}
 	}
 	return out
@@ -269,8 +275,8 @@ func excludedPkg(s settings, p listedPkg) bool {
 	return true
 }
 
-// importsExcluded: no-excluded, as ts-gate's dependency-cruiser rule. What an excluded path holds can
-// go at any time.
+// importsExcluded: no-excluded, as ts-gate's dependency-cruiser rule, at each import of an excluded
+// package in the files of a package, its tests too. What an excluded path holds can go at any time.
 func importsExcluded(s settings, pkgs []listedPkg) []finding {
 	if len(s.exclude) == 0 {
 		return nil
@@ -285,19 +291,46 @@ func importsExcluded(s settings, pkgs []listedPkg) []finding {
 		if p.Module == nil || !p.Module.Main || excludedPkg(s, p) {
 			continue
 		}
+		// -test lists a package's test variant as `path [path.test]`, and its imports so too.
+		excluded := map[string]bool{}
 		for _, imp := range p.Imports {
-			d, found := byPath[imp]
-			at := relDir(p.Dir)
-			key := at + " " + d.ImportPath
-			if !found || !excludedPkg(s, d) || seen[key] || matches(s.off["no-excluded"], at+"/") {
-				continue
+			if d, found := byPath[imp]; found && excludedPkg(s, d) {
+				name, _, _ := strings.Cut(d.ImportPath, " ")
+				excluded[name] = true
 			}
-			seen[key] = true
-			name, _, _ := strings.Cut(d.ImportPath, " ")
-			out = append(out, finding{at, 1, "no-excluded", fmt.Sprintf("this package imports %s, which "+
-				"exclude in .claude/workshop.conf leaves out of the gate: what it holds can go at any time. "+
-				"Move the code you need into a checked package", name)})
 		}
+		if len(excluded) == 0 {
+			continue
+		}
+		for _, name := range slices.Concat(p.GoFiles, p.CgoFiles, p.TestFiles, p.XTestFiles) {
+			for _, f := range importsOf(filepath.Join(p.Dir, name), excluded) {
+				if key := f.String(); !seen[key] {
+					seen[key] = true
+					out = append(out, f)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// importsOf: a no-excluded finding at each import of file that names a package of excluded. A file
+// that does not parse is the compiler's to report.
+func importsOf(file string, excluded map[string]bool) []finding {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, file, nil, parser.ImportsOnly)
+	if err != nil {
+		return nil
+	}
+	var out []finding
+	for _, spec := range f.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || !excluded[path] {
+			continue
+		}
+		out = append(out, finding{relDir(file), fset.Position(spec.Pos()).Line, "no-excluded", fmt.Sprintf(
+			"this file imports %s, which exclude in .claude/workshop.conf leaves out of the gate: what it "+
+				"holds can go at any time. Copy what the code needs out of it into a checked path", path)})
 	}
 	return out
 }

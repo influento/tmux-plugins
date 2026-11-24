@@ -15,10 +15,10 @@ import (
 const gateConfig = "go-gate/golangci.gate.yml"
 
 // The gate's own rules: go-gate.off.<rule> turns one off in check's output, any other name is a
-// golangci-lint linter.
+// golangci-lint linter. deps, legacy-list and no-test-ran have no off switch: their key does nothing.
 var ownRules = map[string]bool{
 	"no-ignore-comment": true, "no-hidden-file": true, "no-disabled-test": true, "no-any-signature": true,
-	"no-excluded": true,
+	"no-excluded": true, "only-tests-use": true, "deps": true, "legacy-list": true, "no-test-ran": true,
 }
 
 // exclusionRule is one of golangci-lint's linters.exclusions.rules.
@@ -27,22 +27,13 @@ type exclusionRule struct {
 	Linters []string `json:"linters"`
 }
 
-func jsonStrings(v []string) string {
+// jsonLine: v as JSON on one line, `<` and `>` as they are; empty when v does not encode.
+func jsonLine[T []string | exclusionRule](v T, empty string) string {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		return "[]"
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func jsonRule(r exclusionRule) string {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(r); err != nil {
-		return "{}"
+		return empty
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -72,7 +63,7 @@ func writeConfig(s settings, local bool, w io.Writer) int {
 		switch {
 		case strings.HasSuffix(line, "# go-gate:paths"):
 			seen["paths"] = true
-			line = indent + "paths: " + jsonStrings(paths)
+			line = indent + "paths: " + jsonLine(paths, "[]")
 		case strings.HasSuffix(line, "# go-gate:rules"):
 			seen["rules"] = true
 			line = ""
@@ -84,7 +75,7 @@ func writeConfig(s settings, local bool, w io.Writer) int {
 				for _, g := range s.offGlob[name] {
 					res = append(res, "(?:"+globRegexp(g)+")")
 				}
-				out = append(out, indent+"- "+jsonRule(exclusionRule{strings.Join(res, "|"), []string{name}}))
+				out = append(out, indent+"- "+jsonLine(exclusionRule{strings.Join(res, "|"), []string{name}}, "{}"))
 			}
 		case strings.HasSuffix(line, "# go-gate:formatters"):
 			seen["formatters"] = true

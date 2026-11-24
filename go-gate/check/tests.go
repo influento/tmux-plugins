@@ -80,6 +80,12 @@ func tests(r io.Reader, w io.Writer) int {
 		}
 	}
 	n := 0
+	// test2json splits a test's output into short events, but not a build-output line. The events
+	// after an unread line are lost, and with them a package where no test ran: fail the run.
+	if err := sc.Err(); err != nil {
+		fmt.Fprintf(w, "go test -json: %v: the rest of its output is unread, so the run cannot pass\n", err)
+		n++
+	}
 	for _, name := range order {
 		p := pkgs[name]
 		switch {

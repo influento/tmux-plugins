@@ -10,22 +10,13 @@ TEST_LOCK_WAIT_LOCAL=240
 # flock's exit code when the wait runs out.
 TEST_LOCK_TIMED_OUT=75
 
+# conf_count: lib.sh, which the install copies beside this file.
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
 # The value of test_workers in .claude/workshop.conf when it is a positive
 # integer; nothing otherwise, and the runner keeps its own default.
-test_workers() {
-  local line k v=""
-  if [ -f .claude/workshop.conf ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
-      case "$line" in '#'*) continue ;; *=*) ;; *) continue ;; esac
-      k=${line%%=*}; k="${k%"${k##*[![:space:]]}"}"
-      [ "$k" = test_workers ] || continue
-      v=${line#*=}; v="${v#"${v%%[![:space:]]*}"}"
-    done < .claude/workshop.conf
-  fi
-  if [[ "$v" =~ ^[1-9][0-9]{0,8}$ ]]; then echo "$v"; fi
-  return 0
-}
+test_workers() { conf_count test_workers; }
 
 # test_locked <gate> <mode> <command> [<arg>...]: runs the command while it
 # holds the machine's test lock, and returns its exit code. --local waits

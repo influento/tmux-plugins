@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash go-gate/scripts/stop-hook.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/go-gate/scripts/stop-hook.sh",
             "timeout": 600
           }
         ]

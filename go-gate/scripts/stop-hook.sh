@@ -1,46 +1,72 @@
 #!/usr/bin/env bash
+# The Stop hook of every gate: its install copies this file in as
+# <gate>/scripts/stop-hook.sh, and the gate is the folder it sits in. What it
+# does and why: ecosystems/CLAUDE.md in the workshop repo, "Stop hook".
 set -uo pipefail
+GATE=${1:-$(basename "$(dirname "$(dirname "$0")")")}
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+. "$(dirname "$0")/lib.sh"
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
-FINDING='error|^[^ ]+:[0-9]+:|FAIL|no-test-ran|^diff |does not match|DATA RACE'
+# Per gate: FINDING, the lines a failure prints, one of which the last block
+# quotes; KEEP, the lines the repeat count compares; NORMALIZE, a sed -E script
+# that drops from them what changes between two runs of the same failure; ALL,
+# the command that prints all of the output.
+case "$GATE" in
+  ts-gate)
+    FINDING='error|unused|FAIL'
+    # A line that names a file, with or without :line:col: knip's items under its
+    # section header, biome's unformatted files, a cycle's files. The hash keeps
+    # them, so another unused export is another failure. Not a bare :line:col:
+    # vitest's "Start at" clock is HH:MM:SS.
+    KEEP="$FINDING|"'\.[[:alpha:]]+(:[0-9]+)*([[:space:]]|$)'
+    # The tools print their run times (biome's "Checked … in", vitest's "Start at"
+    # and "Duration") in lines that KEEP leaves out. A failed npm ci names its log
+    # file by the time it started (_logs/<time>-debug-0.log).
+    NORMALIZE='s#_logs/[^[:space:]]*-debug(-[0-9]+)?\.log#_logs/N-debug.log#'
+    ALL='npm run ts-gate:local'
+    ;;
+  py-gate)
+    FINDING='error|^[^ ]+:[0-9]+:|FAILED|DEP0|BROKEN'
+    KEEP=$FINDING
+    # pytest's run time at the end of its summary, the number of its temp folder
+    # (pytest-N), an object's address.
+    NORMALIZE='s/ in [0-9.]+s( \([0-9:]+\))?$//; s/pytest-[0-9]+/pytest-N/g; s/0x[0-9a-fA-F]+/0x/g'
+    ALL='bash py-gate/scripts/gate.sh --local'
+    ;;
+  go-gate)
+    FINDING='error|^[^ ]+:[0-9]+:|FAIL|no-test-ran|^diff |does not match|DATA RACE'
+    KEEP=$FINDING
+    # A run time, the shuffle seed, a goroutine's number, an address,
+    # t.TempDir's numbered folder.
+    NORMALIZE='s/ ?\([0-9.]+m?s\)//g; s/[[:space:]]+[0-9.]+m?s$//; s/-test\.shuffle [0-9]+/-test.shuffle N/; s/goroutine [0-9]+/goroutine N/g; s/0x[0-9a-fA-F]+/0x/g; s#(/Test[^/ ]*)[0-9]+/[0-9]+#\1N/N#g'
+    ALL='bash go-gate/scripts/gate.sh --local'
+    ;;
+  *) echo "stop-hook.sh: no gate named $GATE" >&2; exit 1 ;;
+esac
 
-conf_count() {
-  local line k v=""
-  if [ -f .claude/workshop.conf ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
-      case "$line" in '#'*) continue ;; *=*) ;; *) continue ;; esac
-      k=${line%%=*}; k="${k%"${k##*[![:space:]]}"}"
-      [ "$k" = "$1" ] || continue
-      v=${line#*=}; v="${v#"${v%%[![:space:]]*}"}"
-    done < .claude/workshop.conf
-  fi
-  if [[ "$v" =~ ^[1-9][0-9]{0,8}$ ]]; then echo "$v"; else echo "$2"; fi
-}
 IN=$(cat)
 # The checkouts this session worked in, each checked by its own copy of the
 # gate: another session's work in this project is not this one's to fix.
 # When worked-in.py cannot tell, this checkout, as before.
 HERE=$(pwd -P)
-mapfile -t TOPS < <(printf '%s' "$IN" | python3 -I go-gate/scripts/worked-in.py go-gate 2>/dev/null || echo "$HERE")
+mapfile -t TOPS < <(printf '%s' "$IN" | python3 -I "$GATE/scripts/worked-in.py" "$GATE" 2>/dev/null || echo "$HERE")
 OUT="" RED=0
 for TOP in "${TOPS[@]}"; do
-  RUN=$(cd "$TOP" && bash go-gate/scripts/gate.sh --local 2>&1) && continue
+  RUN=$(cd "$TOP" && bash "$GATE/scripts/gate.sh" --local 2>&1) && continue
   RED=1
   [ "$TOP" = "$HERE" ] || RUN="== in $TOP =="$'\n'"$RUN"
   OUT+="${OUT:+$'\n'}$RUN"
 done
 [ "$RED" -eq 1 ] || exit 0
-CAP=$(conf_count go-gate.repeat_cap 3)
-MAX_LINES=$(conf_count go-gate.output_lines 80)
+CAP=$(conf_count "$GATE.repeat_cap" 3)
+MAX_LINES=$(conf_count "$GATE.output_lines" 80)
 
 SID=$(printf '%s' "$IN" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 SAME=1
 if [ -n "$SID" ]; then
-  MARK="${TMPDIR:-/tmp}/go-gate-stop-$SID"
-  # A shuffled test order, a run time, the shuffle seed, a goroutine's number,
-  # an address or t.TempDir's numbered folder must not make the same failures
-  # look new.
-  FINDINGS=$(printf '%s\n' "$OUT" | grep -iE "$FINDING" | sed -E 's/ ?\([0-9.]+m?s\)//g; s/[[:space:]]+[0-9.]+m?s$//; s/-test\.shuffle [0-9]+/-test.shuffle N/; s/goroutine [0-9]+/goroutine N/g; s/0x[0-9a-fA-F]+/0x/g; s#(/Test[^/ ]*)[0-9]+/[0-9]+#\1N/N#g' | sort || true)
+  MARK="${TMPDIR:-/tmp}/$GATE-stop-$SID"
+  # Another order, or what NORMALIZE drops, must not make the same failures look new.
+  FINDINGS=$(printf '%s\n' "$OUT" | grep -iE "$KEEP" | sed -E "$NORMALIZE" | sort || true)
   HASH=$(printf '%s' "${FINDINGS:-$OUT}" | sha256sum | cut -c1-16)
   read -r LAST N 2>/dev/null < "$MARK" || { LAST=""; N=0; }
   [ "$HASH" = "$LAST" ] && SAME=$((N + 1))
@@ -50,11 +76,14 @@ fi
 
 LINES=$(printf '%s\n' "$OUT" | wc -l)
 if [ "$LINES" -gt "$MAX_LINES" ]; then
-  OUT=$(printf '%s\n' "$OUT" | head -n "$MAX_LINES"; echo "… $((LINES - MAX_LINES)) more lines; run bash go-gate/scripts/gate.sh --local for all of it")
+  OUT=$(printf '%s\n' "$OUT" | head -n "$MAX_LINES"; echo "… $((LINES - MAX_LINES)) more lines; run $ALL for all of it")
 fi
 if [ "$SAME" -eq "$CAP" ]; then
+  # A message no FINDING names (the dependency check's) gets the output's first
+  # line, not an empty quote.
+  QUOTE=$(printf '%s\n' "$OUT" | grep -m1 -iE "$FINDING" || printf '%s\n' "$OUT" | grep -m1 -v '^== in .* ==$')
   printf 'The gate failed the same way %s times. Do not try again. Ask the user what to do, through the question prompt of your environment. Quote this line to the user:\n%s\nThe next stop is allowed.\n' \
-    "$CAP" "$(printf '%s\n' "$OUT" | grep -m1 -iE "$FINDING" | cut -c1-120)" >&2
+    "$CAP" "$(printf '%s\n' "$QUOTE" | cut -c1-120)" >&2
 fi
 printf '%s\n' "$OUT" >&2
 exit 2

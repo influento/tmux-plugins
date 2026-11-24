@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -28,7 +30,23 @@ func (f finding) String() string {
 	return fmt.Sprintf("%s:%d: %s: %s", f.file, f.line, f.rule, f.msg)
 }
 
-func report(found []finding) int {
+var (
+	// unswitched: the rules that guard the approved list, the legacy list and the test run. Neither
+	// their off key nor the legacy list drops one of their findings.
+	unswitched = map[string]bool{"deps": true, "legacy-list": true, "no-test-ran": true}
+	// projectWide: the rules that judge a legacy file too. no-excluded is one, as ts-gate's
+	// dependency-cruiser checks a legacy file: an import of excluded code fails wherever it is.
+	projectWide = map[string]bool{"deps": true, "legacy-list": true, "no-test-ran": true, "no-excluded": true}
+)
+
+// report prints each finding but those in a file of the rule's go-gate.off.<rule> globs or, for a
+// rule that is not project-wide, of the legacy list, and returns how many it printed.
+func report(s settings, found []finding) int {
+	legacy, _ := legacyFiles()
+	found = slices.DeleteFunc(found, func(f finding) bool {
+		return !unswitched[f.rule] && matches(s.off[f.rule], f.file) ||
+			!projectWide[f.rule] && slices.Contains(legacy, f.file)
+	})
 	sort.SliceStable(found, func(i, j int) bool {
 		if found[i].file != found[j].file {
 			return found[i].file < found[j].file
@@ -42,7 +60,34 @@ func report(found []finding) int {
 }
 
 var (
-	ignoreRe = regexp.MustCompile(`^//\s*nolint\b|^//\s*lint:(file-)?ignore\b|#nosec\b`)
+	// Each comment that a linter of the gate's config honours, as its source matches it
+	// (golangci-lint 2.15.0 and the versions it pins):
+	//   - golangci-lint's //nolint: every leading / and space trimmed, then `nolint` and a space,
+	//     a colon or the end (pkg/result/processors/nolint_filter.go). `///nolint` hides; a tab does not.
+	//   - contextcheck's own: `//`, at most one space or tab, `nolint:`, and contextcheck after it.
+	//   - staticcheck's //lint:ignore and //lint:file-ignore, which unused honours: no space after //.
+	//   - gosec's //gosec:disable, with no space after //, then a space or the end. #nosec is
+	//     tested by strings.Contains: gosec takes the tag anywhere in a comment (`#nosecG101`).
+	//   - revive's disable, disable-line and disable-next-line (mgechev/revive lint/file.go);
+	//     its enable alone hides nothing.
+	// The other linters' own comments: hides.
+	ignoreRe = regexp.MustCompile(`^//[/ ]*nolint( |:|$)|^//\s?nolint:.*contextcheck|` +
+		`^//lint:(file-)?ignore( |$)|^//gosec:disable( |$)|` +
+		`^//\s*revive:disable(-line|-next-line)?(:\S+)?\s*( .+)?$`)
+	// makezero's `nozero`, matched on the comment's text without its markers
+	// (ashanbrown/makezero): `// nozero`, `/* nozero */`; `//nozero:x` is a directive, which
+	// the text leaves out.
+	nozeroRe = regexp.MustCompile(`^\s*nozero\b`)
+	// ginkgolinter's suppressions, each the whole line of a comment (nunnatsa/ginkgolinter config).
+	ginkgoIgnore = map[string]bool{
+		"ginkgo-linter:ignore-len-assert-warning":      true,
+		"ginkgo-linter:ignore-nil-assert-warning":      true,
+		"ginkgo-linter:ignore-err-assert-warning":      true,
+		"ginkgo-linter:ignore-compare-assert-warning":  true,
+		"ginkgo-linter:ignore-async-assert-warning":    true,
+		"ginkgo-linter:ignore-focus-container-warning": true,
+		"ginkgo-linter:ignore-type-compare-warning":    true,
+	}
 	// A call that takes an `any` as a decode target, or as the value to encode: either way the
 	// function does not read it.
 	decodeCall = map[string]bool{
@@ -80,7 +125,7 @@ func goFiles(s settings) (map[string][]string, []finding) {
 				return filepath.SkipDir
 			}
 			if mod := filepath.ToSlash(filepath.Join(p, "go.mod")); fileExists(mod) {
-				if !matches(s.exclude, mod) && !matches(s.off["no-hidden-file"], mod) {
+				if !matches(s.exclude, mod) {
 					nested = append(nested, finding{mod, 1, "no-hidden-file", "this go.mod makes the folder " +
 						"another module, which the project's ./... and so every check of the gate skip. Delete " +
 						"it; if the folder is not the project's code, ask the user to add it to exclude in " +
@@ -105,19 +150,8 @@ func fileExists(p string) bool {
 }
 
 func rules(s settings) []finding {
-	legacy, _ := legacyFiles()
-	skip := map[string]bool{}
-	for _, p := range legacy {
-		skip[p] = true
-	}
 	fset := token.NewFileSet()
-	byDir, nested := goFiles(s)
-	var out []finding
-	for _, f := range nested {
-		if !skip[f.file] {
-			out = append(out, f)
-		}
-	}
+	byDir, out := goFiles(s)
 	for _, dir := range slices.Sorted(maps.Keys(byDir)) {
 		parsed := map[string]*ast.File{}
 		for _, p := range byDir[dir] {
@@ -128,17 +162,12 @@ func rules(s settings) []finding {
 		}
 		decoders := packageDecoders(parsed)
 		for _, p := range slices.Sorted(maps.Keys(parsed)) {
-			if skip[p] || matches(s.exclude, p) {
-				continue
-			}
-			for _, f := range file(fset, p, parsed[p], decoders) {
-				if !matches(s.off[f.rule], f.file) {
-					out = append(out, f)
-				}
+			if !matches(s.exclude, p) {
+				out = append(out, file(fset, p, parsed[p], decoders)...)
 			}
 		}
 	}
-	return append(out, legacyList()...)
+	return out
 }
 
 // packageDecoders: the decode calls, and each function of the folder that only passes its any on to
@@ -166,6 +195,35 @@ func packageDecoders(files map[string]*ast.File) map[string]bool {
 	return decoders
 }
 
+// hides reports whether a linter of the gate's config takes the comment as an order to hide a
+// finding, each test as that linter's source makes it.
+func hides(c *ast.Comment) bool {
+	text := c.Text
+	switch {
+	case ignoreRe.MatchString(text), strings.Contains(text, "#nosec"):
+		return true
+	// godoclint (pkg/inspect): the tag anywhere in a line, then rule names or nothing.
+	case strings.Contains(text, "//godoclint:disable"):
+		return true
+	// bodyclose: a function's doc line, its // and surrounding space trimmed.
+	case strings.TrimSpace(strings.TrimPrefix(text, "//")) == "bodyclose:handled":
+		return true
+	case nozeroRe.MatchString((&ast.CommentGroup{List: []*ast.Comment{c}}).Text()):
+		return true
+	}
+	// iface (internal/directive): the comment trimmed, alone or with `=names`.
+	if t := strings.TrimSpace(text); t == "//iface:ignore" || strings.HasPrefix(t, "//iface:ignore=") {
+		return true
+	}
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(line, "//"), "/*"), "*/")
+		if ginkgoIgnore[strings.TrimSpace(line)] {
+			return true
+		}
+	}
+	return false
+}
+
 func file(fset *token.FileSet, rel string, f *ast.File, decoders map[string]bool) []finding {
 	var out []finding
 	at := func(n ast.Node) func(rule, msg string) {
@@ -176,8 +234,8 @@ func file(fset *token.FileSet, rel string, f *ast.File, decoders map[string]bool
 	test := strings.HasSuffix(rel, "_test.go")
 	for _, cg := range f.Comments {
 		for _, c := range cg.List {
-			if ignoreRe.MatchString(c.Text) || strings.Contains(c.Text, "#nosec") {
-				at(c)("no-ignore-comment", "an ignore comment has no effect: fix what the linter reports. "+
+			if hides(c) {
+				at(c)("no-ignore-comment", "the gate refuses ignore comments: fix what the linter reports. "+
 					"If the rule is wrong for this project, ask the user to turn it off with "+
 					"go-gate.off.<linter> in .claude/workshop.conf")
 			}
@@ -371,8 +429,8 @@ func disabled(at reporter, fn *ast.FuncDecl) {
 			switch s := s.(type) {
 			case *ast.ExprStmt:
 				if c, ok := s.X.(*ast.CallExpr); ok && slices.Contains([]string{"Skip", "Skipf", "SkipNow"}, callName(c)) && !cond {
-					at(c)("no-disabled-test", "a skip with no condition: the test never runs. Fix the test or "+
-						"delete it; a skip passes only under a real condition")
+					at(c)("no-disabled-test", "a skip with no condition, or under a constant one: the test never "+
+						"runs. Fix the test or delete it; a skip passes only under a real condition")
 				}
 			case *ast.IfStmt:
 				constant := false
@@ -391,64 +449,35 @@ func disabled(at reporter, fn *ast.FuncDecl) {
 	walk(fn.Body.List, false)
 }
 
-func git(args ...string) (string, bool) {
-	out, err := exec.CommandContext(context.Background(), "git", args...).Output()
-	return string(out), err == nil
-}
+// legacyLine: a line of legacy-list.py, `<list>:<line>: legacy-list: <how to fix>`.
+var legacyLine = regexp.MustCompile(`^(.+?):(\d+): (legacy-list): (.*)$`)
 
-// legacyList: go-gate-legacy.txt only gets shorter. Each line was on the list that go-gate's first
-// install wrote, the first version git has, no commit since deleted it, and it names a file that
-// exists. A list that turns up after the gate was committed fails.
-func legacyList() []finding {
-	data, err := os.ReadFile(legacyFile)
-	if err != nil {
-		return nil
+// legacyList: go-gate-legacy.txt only gets shorter. The findings of go-gate/scripts/legacy-list.py,
+// a copy of the workshop's ecosystems/shared/legacy-list.py, which ts-gate and py-gate run too.
+// Without the list there is nothing to check, and python3 is not needed.
+func legacyList() ([]finding, error) {
+	if !fileExists(legacyFile) {
+		return nil, nil
 	}
-	var out []finding
-	var allowed map[string]bool
-	added, _ := git("log", "--diff-filter=A", "--format=%H", "--", legacyFile)
-	shas := strings.Fields(added)
-	original, ok := "", false
-	if len(shas) > 0 {
-		original, ok = git("show", shas[len(shas)-1]+":./"+legacyFile)
+	cmd := exec.CommandContext(context.Background(), "python3", "-I", "go-gate/scripts/legacy-list.py", "go-gate")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+		return nil, fmt.Errorf("legacy-list: python3 go-gate/scripts/legacy-list.py: %w\n%s", err, stderr.String())
 	}
-	if !ok {
-		if _, gated := git("cat-file", "-e", "HEAD:./go-gate/check/main.go"); gated {
-			out = append(out, finding{legacyFile, 1, "legacy-list", "only go-gate's first install writes this " +
-				"list, and go-gate was in the project before it. Delete the file, and fix what the gate then reports"})
-		}
-	} else {
-		// A line a commit deleted never comes back, also when a later commit adds it again.
-		log, _ := git("log", "--format=", "-p", "--unified=0", "--no-renames", "--", legacyFile)
-		gone := map[string]bool{}
-		for r := range strings.SplitSeq(log, "\n") {
-			if strings.HasPrefix(r, "-") && !strings.HasPrefix(r, "--- ") {
-				gone[strings.TrimSpace(r[1:])] = true
-			}
-		}
-		allowed = map[string]bool{}
-		for r := range strings.SplitSeq(original, "\n") {
-			if r = strings.TrimSpace(r); !gone[r] {
-				allowed[r] = true
-			}
-		}
-	}
-	for n, row := range strings.Split(string(data), "\n") {
-		path := strings.TrimSpace(row)
-		if path == "" || strings.HasPrefix(path, "#") {
+	var found []finding
+	for l := range strings.SplitSeq(string(out), "\n") {
+		if l == "" {
 			continue
 		}
-		switch {
-		case allowed != nil && !allowed[path]:
-			out = append(out, finding{legacyFile, n + 1, "legacy-list", fmt.Sprintf("`%s` was not on the list "+
-				"go-gate's install wrote, and the list only gets shorter. Delete the line, and fix what the gate "+
-				"then reports in the file", path)})
-		case !fileExists(path):
-			out = append(out, finding{
-				legacyFile, n + 1, "legacy-list",
-				fmt.Sprintf("`%s` does not exist. Delete the line", path),
-			})
+		m := legacyLine.FindStringSubmatch(l)
+		if m == nil {
+			return nil, fmt.Errorf("legacy-list: go-gate/scripts/legacy-list.py printed %q", l)
 		}
+		n, _ := strconv.Atoi(m[2])
+		found = append(found, finding{m[1], n, m[3], m[4]})
 	}
-	return out
+	return found, nil
 }

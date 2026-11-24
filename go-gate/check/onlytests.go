@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"maps"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -81,34 +83,29 @@ func internalPkg(p listedPkg) bool {
 	return slices.Contains(strings.Split(strings.TrimPrefix(p.ImportPath, p.Module.Path), "/"), "internal")
 }
 
-// onlyTestsArgs: deadcode's arguments for only-tests-use, as py-gate's rule and ts-gate's knip run
+// deadcodeArgs: deadcode's arguments for only-tests-use, as py-gate's rule and ts-gate's knip run
 // in production mode, or none when the project has no program. deadcode (golang.org/x/tools)
 // starts from each main package of the project, tests not counted, and reports each function and
 // method no program reaches: only tests use it, or nothing does. It reports only in the packages a
 // program imports and that are not library, which leaves out packages that only tests import (test
 // helpers): onlyTests judges those. -generated: a generated-code header hides nothing, and deadcode
 // skips such a file without it (probed).
-func onlyTestsArgs(s settings) ([]string, error) {
-	sc, err := loadScope(s)
-	if err != nil || sc.cgoOff != "" || len(sc.mains) == 0 {
-		return nil, err
-	}
+func deadcodeArgs(sc onlyScope) []string {
 	var scope []string
 	for _, p := range slices.Sorted(maps.Keys(sc.ours)) {
 		if sc.reached[p] && !sc.library[p] {
 			scope = append(scope, regexp.QuoteMeta(p))
 		}
 	}
-	if len(scope) == 0 {
-		return nil, nil
+	if len(sc.mains) == 0 || len(scope) == 0 {
+		return nil
 	}
-	return append([]string{"-generated", "-filter=^(" + strings.Join(scope, "|") + ")$"}, sc.mains...), nil
+	return append([]string{"-generated", "-filter=^(" + strings.Join(scope, "|") + ")$"}, sc.mains...)
 }
 
-// onlyTests reads deadcode's output on stdin, empty when the project has no program: a finding for
-// each function it names, and for each unused package (unusedPkgs), but in the files the legacy
-// list, exclude or go-gate.off.only-tests-use leave out.
-func onlyTests(s settings, r io.Reader) ([]finding, error) {
+// onlyTests runs deadcode, the binary at bin, when the project has a program: a finding for each
+// function it names, and for each unused package (unusedPkgs), but in the files exclude covers.
+func onlyTests(s settings, bin string) ([]finding, error) {
 	scope, err := loadScope(s)
 	if err != nil {
 		return nil, err
@@ -118,8 +115,15 @@ func onlyTests(s settings, r io.Reader) ([]finding, error) {
 			"compiler (gcc) to turn it on.\n", scope.cgoOff)
 		return nil, nil
 	}
+	var out []byte
+	if args := deadcodeArgs(scope); args != nil {
+		out, err = exec.CommandContext(context.Background(), bin, args...).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("%sdeadcode failed: %w", out, err)
+		}
+	}
 	var found []finding
-	sc := bufio.NewScanner(r)
+	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		m := deadcodeLine.FindStringSubmatch(sc.Text())
 		if m == nil {
@@ -145,10 +149,7 @@ func onlyTests(s settings, r io.Reader) ([]finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	legacy, _ := legacyFiles()
-	return slices.DeleteFunc(append(found, pkgs...), func(f finding) bool {
-		return slices.Contains(legacy, f.file) || matches(s.exclude, f.file) || matches(s.off["only-tests-use"], f.file)
-	}), nil
+	return slices.DeleteFunc(append(found, pkgs...), func(f finding) bool { return matches(s.exclude, f.file) }), nil
 }
 
 // unusedPkgs: each internal package that no program, no library package and no other package's

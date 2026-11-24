@@ -74,7 +74,7 @@ linters:
         - fmt.Fprintf
         - fmt.Fprintln
     gosec:
-      # #nosec comments do nothing: the gate refuses them too
+      # #nosec and //gosec:disable comments do nothing: the gate refuses them too
       config:
         global:
           nosec: true
@@ -87,9 +87,21 @@ linters:
       # a replace is approved in go-gate/deps.txt, as a module is
       replace-local: true
     revive:
+      # a rules list replaces revive's default rules: without this, revive runs nothing
+      enable-default-rules: true
       rules:
         - name: exported
           disabled: true
+        # 8 of 8 on correct code: a parameter that a callback's type, a fake or a
+        # test table fixes; unparam reports one in a free signature
+        - name: unused-parameter
+          disabled: true
+        # each hit is a line predeclared reports too
+        - name: redefines-builtin-id
+          disabled: true
+    unused:
+      # true counts everything in a file with a generated-code header as used
+      generated-is-used: false
   exclusions:
     # A generated-code header on a hand-written file hid its issues.
     generated: disable

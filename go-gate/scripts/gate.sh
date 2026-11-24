@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2329  # tidy, lint, fmt, only_tests and tests are called through run
+# shellcheck disable=SC2329  # tidy, lint, fmt and tests are called through run
 # go-gate: go.mod against the imports, the approved modules, golangci-lint (lint
 # and format), the gate's own rules, the code no program reaches (deadcode), the
 # tests with -race. Modes: none (the whole project), --local (what the Stop hook
@@ -20,11 +20,10 @@ if git ls-files --error-unmatch go.work >/dev/null 2>&1; then export GOWORK="$PW
 # A non-empty GOFLAGS replaces the one `go env -w` wrote for every project, and
 # -mod=readonly stops a build from writing go.mod.
 if [ -f vendor/modules.txt ]; then GOFLAGS=-mod=vendor; else GOFLAGS=-mod=readonly; fi
-export GOFLAGS GO_GATE_GOFLAGS="$GOFLAGS"
-# When go.mod asks for a newer Go than the installed one, go switches for the
-# project's commands: the gate's tools build with the same Go.
-SELECTED=$(go env GOVERSION 2>/dev/null) || SELECTED=""
-[ -z "$SELECTED" ] || [ "$SELECTED" = "$(GOTOOLCHAIN=local go env GOVERSION 2>/dev/null)" ] || export GOTOOLCHAIN="$SELECTED"
+export GOFLAGS
+# The gate's tools build with the Go that go.mod selects.
+# shellcheck source-path=SCRIPTDIR source=toolchain.sh
+. go-gate/scripts/toolchain.sh
 
 # The gate's tools, each in its own module under go-gate/ (outside ./...): the
 # path of the cached build, which then runs with the project's settings.
@@ -39,30 +38,12 @@ LINT_BIN=$(tool go-gate/golangci golangci-lint) || exit 1
 CHECK_BIN=$(tool go-gate check) || exit 1
 DEADCODE_BIN=$(tool go-gate deadcode) || exit 1
 check() { "$CHECK_BIN" "$PWD" "$@"; }
+# shellcheck source-path=SCRIPTDIR/../../../shared source=lib.sh
+. go-gate/scripts/lib.sh
 # shellcheck source-path=SCRIPTDIR/../../../shared source=test-lock.sh
 . go-gate/scripts/test-lock.sh
 run() { "$@" || FAIL=1; }
-# A tool that prints a summary when it passes: its output only when it fails.
-quiet() { local out; out=$("$@" 2>&1) && return; printf '%s\n' "$out"; return 1; }
 LINT_FLAGS=(--output.text.print-issued-lines=false --show-stats=false)
-# only-tests-use: deadcode from each main package, tests not counted; check names
-# its arguments and reads what it reports, and adds the packages only tests use.
-# Without a program, deadcode does not run.
-only_tests() {
-  local args out=""
-  args=$(check only-tests-args) || { printf '%s\n' "$args"; return 1; }
-  if [ -n "$args" ]; then
-    mapfile -t args <<<"$args"
-    out=$("$DEADCODE_BIN" "${args[@]}" 2>&1) || { printf '%s\n' "$out"; echo "deadcode failed"; return 1; }
-  fi
-  check only-tests <<<"$out"
-}
-
-default_branch() {
-  git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null && return
-  local b; for b in main master; do git show-ref -q --verify "refs/heads/$b" && { echo "$b"; return; }; done
-  echo HEAD
-}
 
 CONFIG="$TMP/golangci.yml"
 check config > "$CONFIG" || exit 1
@@ -82,21 +63,22 @@ if [ "$MODE" = "--fix" ]; then
 fi
 
 if [ "$MODE" = "--legacy" ]; then
-  { [ ${#PKGS[@]} -eq 0 ] || "$LINT_BIN" run -c "$CONFIG" "${LINT_FLAGS[@]}" ./...; check rules; only_tests; } 2>&1 | check legacy
+  { [ ${#PKGS[@]} -eq 0 ] || "$LINT_BIN" run -c "$CONFIG" "${LINT_FLAGS[@]}" ./...; check rules; check only-tests "$DEADCODE_BIN"; } 2>&1 | check legacy
   exit 0
 fi
 
 FILES=()
 if [ "$MODE" = "--local" ]; then
-  RANGE=$(git merge-base HEAD "$(default_branch)" 2>/dev/null || echo HEAD)
-  mapfile -t CHANGED < <({ git diff --relative --name-only --diff-filter=ACMRD "$RANGE" -- .; git ls-files --others --exclude-standard -- .; } | sort -u | check excluded)
+  RANGE=$(merge_base)
+  mapfile -t CHANGED < <(changed_files "$RANGE" | check excluded)
   printf '%s\n' "${CHANGED[@]}" \
     | grep -qE '\.go$|(^|/)testdata/|^(go\.mod|go\.sum|go\.work|go\.work\.sum|vendor/.*|go-gate/.*|go-gate-legacy\.txt|\.claude/workshop\.conf)$' \
     || { echo "no Go or config changes"; exit 0; }
-  mapfile -t LEGACY < <(check legacy-files)
+  # A legacy file stays in: golangci-lint fmt skips a named file that formatters.exclusions.paths matches.
   for f in "${CHANGED[@]}"; do
-    [[ "$f" == *.go && -e "$f" ]] && ! printf '%s\n' "${LEGACY[@]}" | grep -qxF -- "$f" && FILES+=("$f")
+    [[ "$f" == *.go && -e "$f" ]] && FILES+=("$f")
   done
+  [ ${#FILES[@]} -gt 0 ] || echo "== no changed Go files; project-wide checks only =="
   # The format check runs on the changed files alone, so the lint runs without the formatters.
   check config --local > "$TMP/golangci-local.yml" || exit 1
 fi
@@ -147,19 +129,22 @@ tests() {
   # go test can fail before any test event: a go.mod it cannot use, a bad flag.
   [ "$rc" -ne 0 ] || [ "$trc" -eq 0 ] || { echo "go test failed (exit $trc)"; rc=1; }
   # Workbench asks for each test's run time when it runs the project's checks.
+  # Without the report it gets none, which the gate says; the tests judge the run.
   if [ -n "${WORKSHOP_TEST_REPORTS:-}" ]; then
-    local sum
-    sum=$(tool go-gate gotestsum) && "$sum" --format none --junitfile "$WORKSHOP_TEST_REPORTS/go-gate.xml" --raw-command -- cat "$TMP/test.json" >/dev/null 2>&1
+    local sum report="$WORKSHOP_TEST_REPORTS/go-gate.xml"
+    { sum=$(tool go-gate gotestsum) && "$sum" --format none --junitfile "$report" --raw-command -- cat "$TMP/test.json" >/dev/null 2>&1; } ||
+      echo "go-gate: gotestsum could not write $report, so the run has no test report"
   fi
   return "$rc"
 }
 
 run tidy
-run quiet check deps
+run check deps
 run lint
 run fmt
 run check rules
-run only_tests
+# only-tests-use: check runs deadcode from each main package, tests not counted.
+run check only-tests "$DEADCODE_BIN"
 run tests
 if [ -z "$MODE" ]; then
   mapfile -t LEGACY < <(check legacy-files)
