@@ -143,6 +143,9 @@ def dirs_of(name, args, cwd):
 
 
 def default_base(top):
+    # Before the first commit, the empty tree: every file in the index is a change.
+    if not git(top, "rev-parse", "-q", "--verify", "HEAD").strip():
+        return git(top, "hash-object", "-t", "tree", os.devnull).strip()
     head = git(top, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").strip()
     for b in () if head else ("main", "master"):
         if subprocess.run(["git", "-C", top, "show-ref", "-q", "--verify", f"refs/heads/{b}"], check=False).returncode == 0:

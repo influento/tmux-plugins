@@ -25,17 +25,19 @@ type modVersion struct {
 	Version string `json:"Version"`
 }
 
+type replace struct {
+	Old modVersion `json:"Old"`
+	New modVersion `json:"New"`
+}
+
 // goMod is what `go mod edit -json` prints.
 type goMod struct {
 	Require []struct {
 		Path     string `json:"Path"`
 		Indirect bool   `json:"Indirect"`
 	} `json:"Require"`
-	Replace []struct {
-		Old modVersion `json:"Old"`
-		New modVersion `json:"New"`
-	} `json:"Replace"`
-	Tool []struct {
+	Replace []replace `json:"Replace"`
+	Tool    []struct {
 		Path string `json:"Path"`
 	} `json:"Tool"`
 }
@@ -88,6 +90,27 @@ func readGoMod() (goMod, error) {
 	return m, nil
 }
 
+// readWorkReplaces: the replaces of the go.work that gate.sh names in GOWORK when git tracks one; none
+// when GOWORK is off. In workspace mode a go.work replace applies as one in go.mod does.
+func readWorkReplaces() ([]replace, error) {
+	file := os.Getenv("GOWORK")
+	if file == "" || file == "off" {
+		return nil, nil
+	}
+	out, err := goCmd("work", "edit", "-json", file)
+	if err != nil {
+		return nil, err
+	}
+	var w struct {
+		Replace []replace `json:"Replace"`
+	}
+	err = json.Unmarshal(out, &w)
+	if err != nil {
+		return nil, fmt.Errorf("go work edit -json: %w", err)
+	}
+	return w.Replace, nil
+}
+
 func listPackages(deps bool, env ...string) ([]listedPkg, error) {
 	args := []string{"list", "-e", "-json=ImportPath,Name,Dir,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,Imports,TestImports,XTestImports,Module"}
 	if deps {
@@ -134,9 +157,13 @@ func toolModule(m goMod, tool string) string {
 }
 
 // approved: what a first install puts on the list. go.mod's direct requires, the modules of its
-// tools and its replaces: the indirect requires come with them.
+// tools, its replaces and a tracked go.work's: the indirect requires come with them.
 func approved() ([]string, error) {
 	m, err := readGoMod()
+	if err != nil {
+		return nil, err
+	}
+	work, err := readWorkReplaces()
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +180,7 @@ func approved() ([]string, error) {
 	}
 	slices.Sort(out)
 	out = slices.Compact(out)
-	for _, r := range m.Replace {
+	for _, r := range slices.Concat(m.Replace, work) {
 		out = append(out, replaceLine(r.Old, r.New))
 	}
 	return out, nil
@@ -173,9 +200,9 @@ func readApproved() map[string]bool {
 	return ok
 }
 
-// goModLine: the line of go.mod that names path, for the finding's position.
-func goModLine(path string) int {
-	data, _ := os.ReadFile("go.mod")
+// fileLine: the line of file that names path, for the finding's position.
+func fileLine(file, path string) int {
+	data, _ := os.ReadFile(file)
 	for i, l := range strings.Split(string(data), "\n") {
 		if slices.Contains(strings.Fields(l), path) {
 			return i + 1
@@ -185,11 +212,15 @@ func goModLine(path string) int {
 }
 
 // deps: every direct require, every module the project's packages and tests import, every tool and
-// every replace of go.mod must be on go-gate/deps.txt, the list the user approved. `go mod tidy`
-// writes go.mod from the imports, from its own process, so a deny rule cannot stop a new module; this
-// check does. Also no-excluded: an import of a package that exclude covers.
+// every replace of go.mod and of a tracked go.work must be on go-gate/deps.txt, the list the user
+// approved. `go mod tidy` writes go.mod from the imports, from its own process, so a deny rule cannot
+// stop a new module; this check does. Also no-excluded: an import of a package that exclude covers.
 func deps(s settings) ([]finding, error) {
 	m, err := readGoMod()
+	if err != nil {
+		return nil, err
+	}
+	work, err := readWorkReplaces()
 	if err != nil {
 		return nil, err
 	}
@@ -199,12 +230,12 @@ func deps(s settings) ([]finding, error) {
 	}
 	var out []finding
 	if ok := readApproved(); ok != nil {
-		out = append(out, unapproved(m, pkgs, ok)...)
+		out = append(out, unapproved(m, work, pkgs, ok)...)
 	}
 	return append(out, importsExcluded(s, pkgs)...), nil
 }
 
-func unapproved(m goMod, pkgs []listedPkg, ok map[string]bool) []finding {
+func unapproved(m goMod, work []replace, pkgs []listedPkg, ok map[string]bool) []finding {
 	mods := map[string]bool{}
 	for _, r := range m.Require {
 		if !r.Indirect {
@@ -220,6 +251,8 @@ func unapproved(m goMod, pkgs []listedPkg, ok map[string]bool) []finding {
 	for _, p := range pkgs {
 		byPath[p.ImportPath] = p
 	}
+	// Once go mod tidy -diff passes, an imported module is a direct require already, but for a module
+	// that a tracked go.work uses: it is a main module, and go.mod lists its imports as indirect.
 	for _, p := range pkgs {
 		if p.Module == nil || !p.Module.Main {
 			continue
@@ -237,18 +270,24 @@ func unapproved(m goMod, pkgs []listedPkg, ok map[string]bool) []finding {
 	}
 	for _, mod := range slices.Sorted(maps.Keys(mods)) {
 		if !ok[mod] {
-			out = append(out, finding{"go.mod", goModLine(mod), "deps", fmt.Sprintf(
+			out = append(out, finding{"go.mod", fileLine("go.mod", mod), "deps", fmt.Sprintf(
 				"the project depends on module %s, which the user did not approve (%s). %s", mod, depsFile,
 				fix("remove what brought it in and run go mod tidy", "its path"))})
 		}
 	}
-	for _, r := range m.Replace {
-		if line := replaceLine(r.Old, r.New); !ok[line] {
-			out = append(out, finding{"go.mod", goModLine(r.Old.Path), "deps", fmt.Sprintf(
-				"`replace %s` points a module at other code, and the user did not approve it (%s). %s",
-				line, depsFile, fix("`go mod edit -dropreplace="+strings.Split(line, " => ")[0]+"`", "`old[@v] => new[@v]`"))})
+	// The same message for go.mod and go.work; its command names the file's go subcommand.
+	replaces := func(file string, rs []replace) {
+		for _, r := range rs {
+			if line := replaceLine(r.Old, r.New); !ok[line] {
+				drop := "`go " + strings.TrimPrefix(file, "go.") + " edit -dropreplace=" + strings.Split(line, " => ")[0] + "`"
+				out = append(out, finding{file, fileLine(file, r.Old.Path), "deps", fmt.Sprintf(
+					"`replace %s` points a module at other code, and the user did not approve it (%s). %s",
+					line, depsFile, fix(drop, "`old[@v] => new[@v]`"))})
+			}
 		}
 	}
+	replaces("go.mod", m.Replace)
+	replaces("go.work", work)
 	return out
 }
 

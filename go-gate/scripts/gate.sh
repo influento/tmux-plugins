@@ -148,6 +148,6 @@ run check only-tests "$DEADCODE_BIN"
 run tests
 if [ -z "$MODE" ]; then
   mapfile -t LEGACY < <(check legacy-files)
-  [ ${#LEGACY[@]} -eq 0 ] || echo "go-gate-legacy.txt: ${#LEGACY[@]} files the gate does not check yet. To bring one in, delete its line, then fix what the gate reports in it. The first line is the one to take next: ${LEGACY[0]}"
+  legacy_reminder go-gate "${LEGACY[@]}"
 fi
 exit $FAIL

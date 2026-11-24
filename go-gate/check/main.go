@@ -2,8 +2,10 @@
 // Every command runs in the project root, the first argument.
 //
 //	check <root> rules         the source rules and legacy-list; one line per finding with its fix
-//	check <root> deps          go.mod and the imports against go-gate/deps.txt, and no-excluded
-//	check <root> approved      the list a first install writes: go.mod's direct requires, tools, replaces
+//	check <root> deps          go.mod, GOWORK's replaces and the imports against go-gate/deps.txt,
+//	                           and no-excluded
+//	check <root> approved      the list a first install writes: go.mod's direct requires, tools,
+//	                           replaces, and GOWORK's replaces
 //	check <root> tests         reads `go test -json` on stdin: prints each failure, and fails a
 //	                           package with test files where no test ran
 //	check <root> config [--local]  golangci-lint's config for this run, on stdout
