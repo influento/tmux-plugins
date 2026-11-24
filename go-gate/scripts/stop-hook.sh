@@ -45,6 +45,9 @@ case "$GATE" in
 esac
 
 IN=$(cat)
+# On the default branch with no record of a passing run, the range --local has
+# without one, so that a commit the session makes from now on is in it.
+seed_green "$GATE"
 # The checkouts this session worked in, each checked by its own copy of the
 # gate: another session's work in this project is not this one's to fix.
 # When worked-in.py cannot tell, this checkout, as before.
@@ -66,7 +69,9 @@ SAME=1
 if [ -n "$SID" ]; then
   MARK="${TMPDIR:-/tmp}/$GATE-stop-$SID"
   # Another order, or what NORMALIZE drops, must not make the same failures look new.
-  FINDINGS=$(printf '%s\n' "$OUT" | grep -iE "$KEEP" | sed -E "$NORMALIZE" | sort || true)
+  # In the C locale each byte is a character: a path that is not UTF-8 matches
+  # [^ ], and grep does not take the output for binary.
+  FINDINGS=$(printf '%s\n' "$OUT" | LC_ALL=C grep -iE "$KEEP" | LC_ALL=C sed -E "$NORMALIZE" | LC_ALL=C sort || true)
   HASH=$(printf '%s' "${FINDINGS:-$OUT}" | sha256sum | cut -c1-16)
   read -r LAST N 2>/dev/null < "$MARK" || { LAST=""; N=0; }
   [ "$HASH" = "$LAST" ] && SAME=$((N + 1))
@@ -81,7 +86,7 @@ fi
 if [ "$SAME" -eq "$CAP" ]; then
   # A message no FINDING names (the dependency check's) gets the output's first
   # line, not an empty quote.
-  QUOTE=$(printf '%s\n' "$OUT" | grep -m1 -iE "$FINDING" || printf '%s\n' "$OUT" | grep -m1 -v '^== in .* ==$')
+  QUOTE=$(printf '%s\n' "$OUT" | LC_ALL=C grep -m1 -iE "$FINDING" || printf '%s\n' "$OUT" | LC_ALL=C grep -m1 -v '^== in .* ==$')
   printf 'The gate failed the same way %s times. Do not try again. Ask the user what to do, through the question prompt of your environment. Quote this line to the user:\n%s\nThe next stop is allowed.\n' \
     "$CAP" "$(printf '%s\n' "$QUOTE" | cut -c1-120)" >&2
 fi

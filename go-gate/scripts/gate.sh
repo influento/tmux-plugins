@@ -9,6 +9,9 @@
 # go-gate-legacy.txt). Every check runs even when another fails.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
+# HEAD as this run sees it: a passing run records it, and on the default branch
+# the next --local diffs from it (lib.sh, local_base).
+SEEN=$(git rev-parse -q --verify HEAD 2>/dev/null)
 FAIL=0
 MODE="${1:-}"
 TMP=$(mktemp -d)
@@ -69,11 +72,11 @@ fi
 
 FILES=()
 if [ "$MODE" = "--local" ]; then
-  RANGE=$(merge_base)
+  RANGE=$(local_base go-gate)
   mapfile -t CHANGED < <(changed_files "$RANGE" | check excluded)
   printf '%s\n' "${CHANGED[@]}" \
     | grep -qE '\.go$|(^|/)testdata/|^(go\.mod|go\.sum|go\.work|go\.work\.sum|vendor/.*|go-gate/.*|go-gate-legacy\.txt|\.claude/workshop\.conf)$' \
-    || { echo "no Go or config changes"; exit 0; }
+    || { echo "no Go or config changes"; record_green go-gate "$SEEN"; exit 0; }
   # A legacy file stays in: golangci-lint fmt skips a named file that formatters.exclusions.paths matches.
   for f in "${CHANGED[@]}"; do
     [[ "$f" == *.go && -e "$f" ]] && FILES+=("$f")
@@ -150,4 +153,5 @@ if [ -z "$MODE" ]; then
   mapfile -t LEGACY < <(check legacy-files)
   legacy_reminder go-gate "${LEGACY[@]}"
 fi
+[ "$FAIL" -ne 0 ] || record_green go-gate "$SEEN"
 exit $FAIL

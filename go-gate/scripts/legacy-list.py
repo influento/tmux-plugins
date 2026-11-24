@@ -59,6 +59,9 @@ def problems(gate: str) -> list[str]:
         if allowed is not None and path not in allowed:
             out.append(f"{listed}:{n}: legacy-list: `{path}` was not on the list {gate}'s install wrote, and the "
                        "list only gets shorter. Delete the line, and fix what the gate then reports in the file")
+        elif os.path.isdir(path):
+            out.append(f"{listed}:{n}: legacy-list: `{path}` is a folder, and the list names files, one per "
+                       "line. Delete the line, and fix what the gate then reports in the folder's files")
         elif not os.path.isfile(path):
             out.append(f"{listed}:{n}: legacy-list: `{path}` does not exist. Delete the line")
     return out

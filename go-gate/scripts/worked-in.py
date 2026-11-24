@@ -7,9 +7,11 @@
 #   python3 -I worked-in.py <gate> [--why]
 #
 # It prints the folder of each gate that judges a changed file of the
-# session's (the branch since the default branch, and the untracked ones): a
-# path that its Edit, Write, MultiEdit or NotebookEdit named, or a file whose
-# mtime falls inside one of its other tool calls that ran in the checkout.
+# session's (what the gate's --local diffs: the branch since the default
+# branch, on the default branch since the last passing run, and the untracked
+# ones): a path that its Edit, Write, MultiEdit or NotebookEdit named, or a
+# file whose mtime falls inside one of its other tool calls that ran in the
+# checkout.
 # That folder is the nearest one above the file, within its checkout, that
 # has <gate>/scripts/gate.sh: the checkout itself, or the project's folder
 # when the project sits in a subfolder of its repository. Only a file the
@@ -36,23 +38,28 @@ READS = {
     "ExitPlanMode", "EnterPlanMode", "ScheduleWakeup", "Agent", "Task",
 }
 # The files each gate's --local takes as a change (its gate.sh): its
-# languages by suffix, and by the end of the path its manifest and config
-# files, its legacy list, its own folder, the settings and test data. A gate
+# languages by suffix, test data at any depth, and from the gate's folder,
+# as gate.sh anchors them at the project's root (^package.json, ^go.mod,
+# ^vendor/), its manifest and config files, its legacy list, its own folder
+# and the settings. So sub/package.json is no change, as in gate.sh. A gate
 # not listed here counts every file.
 CODE = {
     "ts-gate": (
         {".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"},
+        None,
         r"package(-lock)?\.json|tsconfig[^/]*\.json|biome\.jsonc?|eslint\.config\.[a-z]+|vite(st)?\.[a-z.]+"
         r"|ts-gate-legacy\.txt|ts-gate/.*|\.claude/eslint/.*|\.claude/workshop\.conf",
     ),
     "py-gate": (
         {".py", ".pyi"},
+        None,
         r"pyproject\.toml|uv\.lock|\.python-version|ruff\.toml|pyrightconfig\.json|pytest\.toml"
         r"|py-gate-legacy\.txt|py-gate/.*|\.claude/workshop\.conf",
     ),
     "go-gate": (
         {".go"},
-        r"go\.(mod|sum|work|work\.sum)|go-gate-legacy\.txt|go-gate/.*|testdata/.*|vendor/.*|\.claude/workshop\.conf",
+        r"testdata/",
+        r"go\.(mod|sum|work|work\.sum)|go-gate-legacy\.txt|go-gate/.*|vendor/.*|\.claude/workshop\.conf",
     ),
 }
 # A clock step between the transcript's stamp and the file system's.
@@ -73,8 +80,10 @@ def stamp(text):
 
 
 def git(cwd, *args):
+    # Decoded as os.fsdecode does, so a name matches the paths the transcript names.
     try:
-        return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, check=False).stdout
+        done = subprocess.run(["git", "-C", cwd, *args], capture_output=True, check=False)
+        return os.fsdecode(done.stdout)
     except OSError:
         return ""
 
@@ -142,7 +151,25 @@ def dirs_of(name, args, cwd):
     return out
 
 
-def default_base(top):
+GREEN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def green(top, gate):
+    """The commit of the gate's last passing run in the checkout, when HEAD's history holds it (lib.sh, green_commit)."""
+    path = git(top, "rev-parse", "--git-path", f"{gate}-green").strip()
+    try:
+        with open(os.path.join(top, path), encoding="utf-8") as fh:
+            commit = fh.readline().strip()
+    except (OSError, ValueError):
+        return ""
+    if not GREEN.fullmatch(commit):
+        return ""
+    ancestor = subprocess.run(["git", "-C", top, "merge-base", "--is-ancestor", commit, "HEAD"], capture_output=True, check=False)
+    return commit if ancestor.returncode == 0 else ""
+
+
+def default_base(top, gate):
+    """What the gate's --local diffs against (lib.sh, local_base)."""
     # Before the first commit, the empty tree: every file in the index is a change.
     if not git(top, "rev-parse", "-q", "--verify", "HEAD").strip():
         return git(top, "hash-object", "-t", "tree", os.devnull).strip()
@@ -151,21 +178,33 @@ def default_base(top):
         if subprocess.run(["git", "-C", top, "show-ref", "-q", "--verify", f"refs/heads/{b}"], check=False).returncode == 0:
             head = b
             break
+    # On the default branch, from the last passing run: a file the session
+    # edited and then committed there is still a change.
+    if not head or git(top, "symbolic-ref", "-q", "--short", "HEAD").strip() == head.removeprefix("origin/"):
+        commit = green(top, gate)
+        if commit:
+            return commit
     base = git(top, "merge-base", "HEAD", head).strip() if head else ""
     return base or "HEAD"
 
 
 def judged(gate, path):
+    """Whether the gate's --local takes path, relative to the gate's folder, as a change."""
     if gate not in CODE:
         return True
-    suffixes, ends = CODE[gate]
-    return os.path.splitext(path)[1] in suffixes or re.search(rf"(?:^|/)(?:{ends})$", path) is not None
+    suffixes, anywhere, root = CODE[gate]
+    return (
+        os.path.splitext(path)[1] in suffixes
+        or (anywhere is not None and re.search(rf"(?:^|/){anywhere}", path) is not None)
+        or re.fullmatch(root, path) is not None
+    )
 
 
-def changed(top):
-    base = default_base(top)
-    names = git(top, "diff", "--name-only", "--diff-filter=ACMRD", base).splitlines()
-    names += git(top, "ls-files", "--others", "--exclude-standard").splitlines()
+def changed(top, gate):
+    base = default_base(top, gate)
+    # -z: a name as it is, where git quotes a non-ASCII one by default ("caf\303\251.ts").
+    names = git(top, "diff", "--name-only", "-z", "--diff-filter=ACMRD", base).split("\0")
+    names += git(top, "ls-files", "-z", "--others", "--exclude-standard").split("\0")
     return sorted({os.path.join(top, n) for n in names if n and not n.endswith("/") and not AGENT_FILE.search(n)})
 
 
@@ -228,9 +267,9 @@ def main():
     found = {}  # gate folder -> its first file of the session's, and why
     for top in sorted(tops):
         spans = windows.get(top, [])
-        for f in (f for f in changed(top) if judged(gate, f)):
+        for f in changed(top, gate):
             folder = gate_folder(gate, top, f)
-            if folder is None or folder in found:
+            if folder is None or folder in found or not judged(gate, os.path.relpath(f, folder)):
                 continue
             if f in named:
                 reason = "edited"

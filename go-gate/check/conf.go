@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // legacyFile lists the files that failed the gate when it came into an existing project.
@@ -65,7 +66,10 @@ func splitGlobs(v string) []string {
 }
 
 // globRegexp is a glob as Python's fnmatch reads it, anchored: `*` matches any run of characters, `/`
-// too, `?` one character, `[...]` a class and `[!...]` its complement.
+// too, `?` one character, `[...]` a class and `[!...]` its complement. Every other character stands for
+// itself, a multi-byte one as a whole: one byte at a time, `é`'s two bytes became `Ã©`. A byte that is
+// not UTF-8 matches a byte that is not UTF-8, as close as Go's regexp gets: it reads such a byte, in
+// the pattern and in the path, as U+FFFD.
 func globRegexp(g string) string {
 	var b strings.Builder
 	b.WriteString("^")
@@ -88,7 +92,13 @@ func globRegexp(g string) string {
 			}
 			b.WriteString("[" + strings.ReplaceAll(class, `\`, `\\`) + "]")
 		default:
-			b.WriteString(regexp.QuoteMeta(string(c)))
+			r, size := utf8.DecodeRuneInString(g[i:])
+			if r == utf8.RuneError && size == 1 {
+				b.WriteString(`\x{FFFD}`)
+			} else {
+				b.WriteString(regexp.QuoteMeta(g[i : i+size]))
+			}
+			i += size - 1
 		}
 	}
 	b.WriteString("$")

@@ -47,13 +47,74 @@ merge_base() {
   git merge-base HEAD "$(default_branch)" 2>/dev/null || echo HEAD
 }
 
+# On the default branch, --local diffs from the commit that the gate's last
+# passing run in this checkout saw, so a commit made on main is checked too.
+# Why and the edge cases: ecosystems/CLAUDE.md in the workshop repo, "What
+# --local diffs against".
+
+# green_file <gate>: the record, <gate>-green under the checkout's own git dir:
+# each worktree has its own.
+green_file() { git rev-parse --git-path "$1-green" 2>/dev/null; }
+
+# on_default_branch: HEAD is the default branch, or the repository has none to
+# compare with.
+on_default_branch() {
+  local d
+  d=$(default_branch)
+  [ "$d" = HEAD ] || [ "$(git symbolic-ref -q --short HEAD 2>/dev/null)" = "${d#origin/}" ]
+}
+
+# green_commit <gate>: the recorded commit, when --local diffs from it: on the
+# default branch, and in HEAD's history. Nothing for no record, or one that a
+# reset or a rewrite left out of HEAD's history.
+green_commit() {
+  on_default_branch || return 0
+  local f c=""
+  f=$(green_file "$1") && [ -f "$f" ] || return 0
+  read -r c < "$f" || true
+  [[ "$c" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || return 0
+  if git merge-base --is-ancestor "$c" HEAD 2>/dev/null; then echo "$c"; fi
+}
+
+# local_base <gate>: what --local diffs against: the recorded commit, else the
+# merge base.
+local_base() {
+  local c
+  c=$(green_commit "$1")
+  if [ -n "$c" ]; then echo "$c"; else merge_base; fi
+}
+
+# record_green <gate> <commit>: a passing run records the commit it saw, HEAD
+# when it started; none before the first commit.
+record_green() {
+  [ -n "${2:-}" ] || return 0
+  local f
+  f=$(green_file "$1") || return 0
+  { printf '%s\n' "$2" > "$f.$$" && mv -f "$f.$$" "$f"; } 2>/dev/null || rm -f "$f.$$"
+}
+
+# seed_green <gate>: on the default branch with no record that --local can
+# use, record the merge base, the range --local has without one. The Stop hook
+# calls it at each stop: a session that commits before it stops leaves the
+# hook nothing to run, and no run would ever pass to write the first record.
+seed_green() {
+  git rev-parse -q --verify HEAD >/dev/null 2>&1 && on_default_branch || return 0
+  [ -z "$(green_commit "$1")" ] || return 0
+  record_green "$1" "$(git rev-parse -q --verify "$(merge_base)^{commit}")"
+}
+
 # changed_files <range> [<pathspec>...]: the files under the current folder
 # that changed since <range>, deleted ones too, and the files git does not
-# track, relative to the current folder, each once.
+# track, relative to the current folder, each once. git quotes a name with a
+# byte above 0x7f by default ("src/caf\303\251.ts"), which no -e test finds:
+# core.quotePath=false prints it as it is.
 changed_files() {
   local range="$1"
   shift
-  { git diff --relative --name-only --diff-filter=ACMRD "$range" -- . "$@"; git ls-files --others --exclude-standard -- . "$@"; } | sort -u
+  {
+    git -c core.quotePath=false diff --relative --name-only --diff-filter=ACMRD "$range" -- . "$@"
+    git -c core.quotePath=false ls-files --others --exclude-standard -- . "$@"
+  } | sort -u
 }
 
 # legacy_reminder <gate> [<path>...]: a full run's last line while the gate's

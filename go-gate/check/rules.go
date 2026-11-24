@@ -235,7 +235,7 @@ func file(fset *token.FileSet, rel string, f *ast.File, decoders map[string]bool
 	for _, cg := range f.Comments {
 		for _, c := range cg.List {
 			if hides(c) {
-				at(c)("no-ignore-comment", "the gate refuses ignore comments: fix what the linter reports. "+
+				at(c)("no-ignore-comment", "the gate refuses this comment: fix what the linter reports. "+
 					"If the rule is wrong for this project, ask the user to turn it off with "+
 					"go-gate.off.<linter> in .claude/workshop.conf")
 			}

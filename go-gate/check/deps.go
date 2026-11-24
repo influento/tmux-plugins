@@ -272,7 +272,7 @@ func unapproved(m goMod, work []replace, pkgs []listedPkg, ok map[string]bool) [
 		if !ok[mod] {
 			out = append(out, finding{"go.mod", fileLine("go.mod", mod), "deps", fmt.Sprintf(
 				"the project depends on module %s, which the user did not approve (%s). %s", mod, depsFile,
-				fix("remove what brought it in and run go mod tidy", "its path"))})
+				fix("delete the import, require or tool line that brought it in, then run `go mod tidy`", "its path"))})
 		}
 	}
 	// The same message for go.mod and go.work; its command names the file's go subcommand.
