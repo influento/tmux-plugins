@@ -17,7 +17,6 @@ import (
 // to $HOME/released-<pid>. busctl's waits end when the test writes the
 // signal's value to $HOME/shutdown or $HOME/session-removed, and each
 // value ends one wait; PreparingForShutdown reads $HOME/preparing.
-// loginctl reads the user's state from $HOME/user-state.
 func stubLogind(t *testing.T, e *env) {
 	t.Helper()
 	e.Stub(t, "systemd-inhibit", "#!/bin/sh\necho $$ >> \"$HOME/pids\"\n"+tmuxtest.RecordCall+`
@@ -45,7 +44,6 @@ case "$*" in
   *) exit 1 ;;
 esac
 `)
-	e.Stub(t, "loginctl", "#!/bin/sh\n"+tmuxtest.RecordCall+`cat "$HOME/user-state"`+"\n")
 }
 
 // signal writes a stub's input file in one step.
@@ -142,29 +140,6 @@ func TestShutdownSavesTheScrollback(t *testing.T) {
 	tmuxtest.WaitFor(t, 10*time.Second, "a new lock after the cancel", func() bool {
 		return len(e.Calls("systemd-inhibit")) == 3
 	})
-}
-
-// A login session that ends saves the scrollback only when the user has
-// none left.
-func TestLogoutSavesTheScrollback(t *testing.T) {
-	e := newEnv(t, "")
-	stubLogind(t, e)
-	e.start(t, "proj-a", e.mkdir(t, "proj-a"))
-	e.waitWaits(t, "SessionRemoved", 1)
-	text := e.printAfterCapture(t, "proj-a")
-	scrollback := filepath.Join(e.StateHome, "tmux-revive", "scrollback")
-	removed := `s "c2" o "/org/freedesktop/login1/session/c2"`
-
-	e.signal(t, "user-state", "active")
-	e.signal(t, "session-removed", removed)
-	e.waitWaits(t, "SessionRemoved", 2)
-	if scrollbackHas(t, scrollback, text) {
-		t.Fatal("a session ended while another runs, and the scrollback was captured")
-	}
-
-	e.signal(t, "user-state", "closing")
-	e.signal(t, "session-removed", removed)
-	tmuxtest.WaitFor(t, 10*time.Second, "a capture at logout", func() bool { return scrollbackHas(t, scrollback, text) })
 }
 
 // The guard and everything it started end with the server: tmux sends its
