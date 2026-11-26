@@ -72,7 +72,9 @@ Unit tests use synthetic data. Integration tests use `internal/tmux/tmuxtest`:
   leaves out the user's home, so installed copies in `~/.local/bin` never
   run in place of the code under test. At cleanup the sandbox kills every
   process still running with its environment (a notifier a hook left in
-  the background), before its folders go.
+  the background), the tmux server too, before its folders go. No test
+  cleanup runs `kill-server`: an exiting server starts its
+  `session-closed` hook jobs, which can outrun the kill.
 - The socket goes in a short directory with `-S`: a unix socket path must fit
   in 108 bytes, and `t.TempDir()` paths do not.
 - Servers start with `-f` and a test config, never the user's.

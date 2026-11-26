@@ -20,7 +20,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -143,29 +142,40 @@ func NewSandbox(t testing.TB) *Sandbox {
 // stopLeftovers kills every process still running with the sandbox's
 // environment (marker is one of its variables), such as a notifier a hook
 // left in the background, and waits until they are gone: one could write
-// into the sandbox while it is removed.
+// into the sandbox while it is removed. The tmux server goes the same way,
+// never through kill-server: a server that exits on its own runs its
+// session-closed hooks, whose jobs start as it goes.
 func stopLeftovers(t testing.TB, marker string) {
 	t.Helper()
 	// A killed process lets go of its memory, environment included, before
 	// it exits: it no longer shows the marker, so each one killed is
-	// followed until it is a zombie or gone.
+	// followed until it is a zombie or gone, and only a scan after that
+	// counts. A scan lists /proc and then reads each process: one that
+	// forks and exits in between hides itself and its child, which the
+	// next scan finds.
+	const cleanScans = 2
 	killed := map[int]bool{}
+	clean := 0
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		pids := processesWith(marker)
+	for clean < cleanScans {
+		var left []int
 		for pid := range killed {
-			if alive(pid) && !slices.Contains(pids, pid) {
-				pids = append(pids, pid)
+			if alive(pid) {
+				left = append(left, pid)
 			}
 		}
-		if len(pids) == 0 {
-			return
+		if len(left) == 0 {
+			if left = processesWith(marker); len(left) == 0 {
+				clean++
+				continue
+			}
+			clean = 0
 		}
 		if time.Now().After(deadline) {
-			t.Errorf("processes %v outlived the sandbox", pids)
+			t.Errorf("processes %v outlived the sandbox", left)
 			return
 		}
-		for _, pid := range pids {
+		for _, pid := range left {
 			_ = syscall.Kill(pid, syscall.SIGKILL) // gone already: nothing to stop
 			killed[pid] = true
 		}
@@ -400,7 +410,6 @@ func StartIn(t testing.TB, sb *Sandbox, opts Options) *Server {
 	if _, err := s.Client.Run(context.Background(), args...); err != nil {
 		t.Fatalf("start tmux: %v", err)
 	}
-	t.Cleanup(func() { s.Client.Run(context.Background(), "kill-server") })
 	return s
 }
 
