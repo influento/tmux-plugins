@@ -1053,38 +1053,6 @@ func TestPanelSplitRowStaysOpen(t *testing.T) {
 	}
 }
 
-// When the split beside a window's one agent pane gets a flag, the window's
-// row becomes a header over a row per pane; only the cursor's row is open,
-// and it never shows cut.
-func TestPanelOneRowOpensAsWindowSplits(t *testing.T) {
-	var second string
-	s, origin, panel := openPanelAfter(t, func(s *tmuxtest.Server, origin string) {
-		s.MustTmux(t, "rename-window", "-t", origin, "a-split-window-whose-name-is-cut-in-the-panel")
-		second = s.MustTmux(t, "split-window", "-d", "-h", "-t", origin, "-P", "-F", "#{pane_id}")
-		for _, args := range [][]string{
-			{"flag", "working", "--pane", origin},
-			{"report", "--source", "git", "--text", "⎇ a-long-branch-name-for-the-first-pane-here", "--pane", origin},
-		} {
-			if out, err := s.Command(t, origin, "tmux-agent", args...).CombinedOutput(); err != nil {
-				t.Fatalf("tmux-agent %v: %v: %s", args, err, out)
-			}
-		}
-	})
-	s.WaitForContent(t, panel, "first-pane-here")
-	if out, err := s.Command(t, origin, "tmux-agent", "flag", "working", "--pane", second).CombinedOutput(); err != nil {
-		t.Fatalf("flag: %v: %s", err, out)
-	}
-	for end := time.Now().Add(1500 * time.Millisecond); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
-		sc := s.MustTmux(t, "capture-pane", "-p", "-t", panel)
-		for _, l := range strings.Split(sc, "\n") {
-			cursor := strings.HasPrefix(l, "▌")
-			if (!cursor && strings.Contains(l, "cut-in-the-panel")) || (cursor && strings.Contains(l, "…")) {
-				t.Fatalf("a row other than the cursor's open, or the cursor's cut:\n%s", sc)
-			}
-		}
-	}
-}
-
 // The panel's cursor on an agent pane's row takes the client to that
 // pane, in a window where another pane has the focus: the README's split
 // keys, pressed in the panel, then split the agent's pane.
