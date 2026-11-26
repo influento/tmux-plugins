@@ -1026,8 +1026,8 @@ func (s *Sidebar) adopt(ctx context.Context, w window, p panel) (bool, error) {
 }
 
 // alone moves a panel that is all its window has left to another window,
-// with its client, which tmux would have moved there. With nowhere to
-// go, or no client, the panel closes.
+// with its client, which tmux would have moved there, and without the
+// focus. With nowhere to go, or no client, the panel closes.
 func (s *Sidebar) alone(ctx context.Context, p panel, open int) error {
 	cs, err := s.clients(ctx)
 	if err != nil {
@@ -1044,6 +1044,9 @@ func (s *Sidebar) alone(ctx context.Context, p panel, open int) error {
 	if to == "" {
 		return s.close(ctx, p, open == 1, "")
 	}
+	// Alone, the panel is its window's active pane whether or not it had
+	// the focus: the focus stays with the pane the window it goes to had.
+	p.active = false
 	return s.move(ctx, c, p, to, true, "the panel alone in its window")
 }
 

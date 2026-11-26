@@ -1195,3 +1195,27 @@ func TestPanelPlacesSharedWindowInClientsSession(t *testing.T) {
 		})
 	}
 }
+
+// A window closed by the exit of its last shell takes the client back,
+// the panel with it, and the focus to the pane it had there, as tmux does
+// without a panel: what the user types next goes to that pane, not into
+// the panel's search, which would take the client to the first match.
+func TestPanelLeftAloneLeavesFocus(t *testing.T) {
+	s, origin, panel := openPanel(t, []string{"new-session", "-d", "-s", "proj-b"})
+	home := s.Display(t, origin, "#{window_id}")
+	s.MustTmux(t, "select-pane", "-t", origin)
+	shell := s.MustTmux(t, "new-window", "-t", "=proj-a:", "-P", "-F", "#{pane_id}")
+	other := s.Display(t, shell, "#{window_id}")
+	tmuxtest.WaitFor(t, 5*time.Second, "the panel in the new window", func() bool {
+		return s.Display(t, panel, "#{window_id}") == other
+	})
+	s.MustTmux(t, "send-keys", "-t", shell, "exit", "Enter")
+	tmuxtest.WaitFor(t, 5*time.Second, "the client and the panel back", func() bool {
+		return s.MustTmux(t, "list-clients", "-F", "#{window_id}") == home && s.Display(t, panel, "#{window_id}") == home
+	})
+	if got := s.Display(t, home, "#{pane_id}"); got != origin {
+		t.Fatalf("focus on %s, want %s, the pane it had", got, origin)
+	}
+	s.MustTmux(t, "send-keys", "-t", home, "-l", "proj-b")
+	s.WaitForContent(t, origin, "proj-b")
+}
