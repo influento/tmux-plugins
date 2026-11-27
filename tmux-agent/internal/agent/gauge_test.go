@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,12 +18,23 @@ type gaugeAgent struct {
 	used, limit *int64
 	reads       *int
 	env         *string
+	window      *int64 // the window the last read was given
 }
 
-func (g gaugeAgent) Context(_, _, _ string, getenv func(string) string) (int64, int64, bool) {
+func (g gaugeAgent) Context(_, _, _ string, window int64, getenv func(string) string) (int64, int64, bool) {
 	*g.reads++
 	*g.env = getenv("TEST_GAUGE")
+	if g.window != nil {
+		*g.window = window
+	}
 	return *g.used, *g.limit, *g.used > 0
+}
+
+// ReadStatus reads a status line input of the form "SESSION WINDOW".
+func (gaugeAgent) ReadStatus(input []byte) (Status, bool) {
+	session, window, ok := strings.Cut(string(input), " ")
+	n, err := strconv.ParseInt(window, 10, 64)
+	return Status{Session: session, Window: n}, ok && err == nil
 }
 
 // The context share is read at a session start, a compaction and the main
@@ -80,5 +93,74 @@ func TestContextShare(t *testing.T) {
 	}
 	if env != "seen" {
 		t.Errorf("the gauge read %q from the environment, want the Env's", env)
+	}
+}
+
+// The window an agent's status line tells counts for the session it names:
+// told before that session's start it waits for it, a session that starts
+// without one reads with none, and it goes when the session ends for good,
+// not at an end the agent cannot explain. A pane that runs another agent,
+// or is gone, takes none.
+func TestStatusWindow(t *testing.T) {
+	s := tmuxtest.Start(t, tmuxtest.Options{Session: "proj-a", Command: "exec bash -c 'exec -a fakeagent sleep 600'"})
+	pane := s.Display(t, "proj-a:0.0", "#{pane_id}")
+	tmuxtest.WaitFor(t, 5*time.Second, "the pane to run fakeagent", func() bool {
+		return s.Display(t, pane, "#{pane_current_command}") == "fakeagent"
+	})
+	used, limit, window := int64(40_000), int64(400_000), int64(-1)
+	reads, env := 0, ""
+	a := gaugeAgent{Generic: "fakeagent", used: &used, limit: &limit, reads: &reads, env: &env, window: &window}
+	e := &Env{
+		Tmux: s.Client, Registry: NewRegistry(), Pane: pane,
+		Core:   &attention.Core{Tmux: s.Client, Changed: func(context.Context) {}},
+		Nested: func([]string, int) bool { return false },
+		Git:    func(context.Context, string) (git.Head, error) { return git.Head{}, git.ErrNotARepo },
+		Getenv: func(string) string { return "" },
+	}
+	ctx := context.Background()
+	for _, step := range []struct {
+		name   string
+		status string // a status line input, or
+		ev     Event  // an event
+		want   int64  // the window the share's read is given; -1 for no read
+		held   bool   // the pane holds a window after it
+	}{
+		{"told before the session's start", "s-1 200000", Event{}, -1, true},
+		{"the session's start", "", Event{Kind: SessionStart, SessionID: "s-1"}, 200_000, true},
+		{"told again, the same", "s-1 200000", Event{}, -1, true},
+		{"another window", "s-1 300000", Event{}, 300_000, true},
+		{"another session starts with none told", "", Event{Kind: SessionStart, SessionID: "s-2"}, 0, true},
+		{"its window", "s-2 500000", Event{}, 500_000, true},
+		{"an end the agent cannot explain", "", Event{Kind: SessionEnd, SessionID: "s-2", End: EndUnknown}, -1, true},
+		{"the session ends", "", Event{Kind: SessionEnd, SessionID: "s-2", End: EndExited}, -1, false},
+	} {
+		window = -1
+		var err error
+		if step.status != "" {
+			err = e.Status(ctx, a, []byte(step.status))
+		} else {
+			err = e.Apply(ctx, a, step.ev)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if window != step.want {
+			t.Errorf("%s: the share was read with window %d, want %d", step.name, window, step.want)
+		}
+		if held := s.Display(t, pane, "#{"+optWindow+"}") != ""; held != step.held {
+			t.Errorf("%s: the pane holds a window: %v, want %v", step.name, held, step.held)
+		}
+	}
+	s.MustTmux(t, "set-option", "-p", "-t", pane, optAgent, "otheragent")
+	if err := e.Status(ctx, a, []byte("s-3 100000")); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Display(t, pane, "#{"+optWindow+"}"); got != "" {
+		t.Errorf("a pane that runs another agent holds the window %q", got)
+	}
+	s.MustTmux(t, "new-window", "-d", "-t", "proj-a")
+	s.MustTmux(t, "kill-pane", "-t", pane)
+	if err := e.Status(ctx, a, []byte("s-3 100000")); err != nil {
+		t.Errorf("a status for a pane that is gone: %v", err)
 	}
 }

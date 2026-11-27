@@ -4,6 +4,29 @@ Open bugs, features and ideas for tmux-plugins, one entry each.
 
 ## tmux-agent: bugs
 
+- The context share misses some of what sets Claude Code's compaction
+  point (bug): `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, which wins over every
+  settings file; `modelSettings.<model>.autoCompactWindow`, which wins over
+  the top-level value; an `autoCompactWindow` of `auto` (tmux-agent skips
+  that whole file); with no `autoCompactWindow` set anywhere, a default
+  below the context window (the catalog's
+  `runtime.default_auto_compact_window`, a server's or an experiment's);
+  and, for a pane whose agent has no status line command,
+  a window below the catalog's (a model whose long window is an opt-in, an
+  account held to less). Read from Claude Code 2.1.332's code, none seen
+  on the user's machine.
+- The window a status line told is wrong for a moment in three orders
+  (bug, minor; each ends at the agent's next status line run): a session
+  resumed in a new process with another model reads with the old
+  process's window; `/clear`, when the new session's status line runs
+  before the old session's SessionEnd hook, loses the new window; a
+  second agent of the same type with a status line inside the pane takes
+  the pane's window away. Found by a review, 2026-11-28; none seen.
+- A hook for a pane that is gone fails instead of noting the session's end
+  (bug): tmux 3.8 answers `display-message -p -t %99` for a missing pane
+  with empty fields and exit 0, so `Apply` never takes its `isGone` branch;
+  a SessionEnd then fails at `paneOpts` with "no such pane", and the
+  session's record gets no end. Found by a review, 2026-11-28.
 - Phantom working flag (bug; waits for it to happen again): an idle agent pane
   went back to working with nothing to cause it. Seen once, on 2026-11-14 with
   v0.3.7: the turn ended at 03:16:51, and at 03:19:53 the flag went to

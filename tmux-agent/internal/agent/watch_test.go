@@ -45,7 +45,7 @@ func (fileAgent) read(transcript string) fileState {
 	return s
 }
 
-func (f fileAgent) Context(transcript, _, _ string, _ func(string) string) (int64, int64, bool) {
+func (f fileAgent) Context(transcript, _, _ string, _ int64, _ func(string) string) (int64, int64, bool) {
 	s := f.read(transcript)
 	return s.Used, s.Limit, s.Used > 0
 }

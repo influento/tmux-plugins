@@ -35,7 +35,7 @@ func (e *Env) refresh(ctx context.Context, a Agent, ev Event, l live, session st
 			}
 		}
 	}
-	return e.gauge(ctx, a, ev, l)
+	return e.gauge(ctx, a, ev, l, session)
 }
 
 // place keeps the pane's folder and its git label current: at a session

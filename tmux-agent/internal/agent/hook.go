@@ -155,6 +155,7 @@ type live struct {
 	heldBy                                                              string // heldRuns or heldHooks
 	panePid                                                             int
 	run, oneShot, resume, revive, context                               string
+	window                                                              string // optWindow
 	starting                                                            string // the channel of a start that waits
 	task, role                                                          string // the pane's task binding, its agent's role
 	flag                                                                attention.State
@@ -173,9 +174,10 @@ var liveFormat = strings.Join([]string{
 	"#{" + attention.OptContext + "}", "#{" + OptStarting + "}",
 	"#{" + attention.OptTask + "}", "#{" + attention.OptRole + "}",
 	"#{" + OptName + "}", "#{" + OptNameGiven + "}", "#{pane_in_mode}",
+	"#{" + optWindow + "}",
 }, "\x1f")
 
-const liveFields = 28
+const liveFields = 29
 
 func (e *Env) readLive(ctx context.Context) (live, error) { return e.liveOf(ctx, e.Pane) }
 
@@ -197,6 +199,7 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 		nested: strings.Fields(f[18]), held: f[19] != "", heldBy: f[19], panePid: atoi(f[20]), context: f[21],
 		starting: f[22], task: f[23], role: f[24],
 		name: f[25], nameGiven: f[26], inMode: f[27] == "1",
+		window: f[28],
 	}, nil
 }
 
@@ -667,7 +670,7 @@ func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 
 // sessionOpts are the pane options that name the pane's session; they go
 // when the session ends for good.
-var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive, attention.OptSubagents, attention.OptNested, attention.OptNestedRoles, optHeld, attention.OptContext, attention.OptRole}
+var sessionOpts = []string{optAgent, optSession, optTranscript, optCwd, optState, optReason, optWait, optWaitBy, OptRevive, attention.OptSubagents, attention.OptNested, attention.OptNestedRoles, optHeld, attention.OptContext, optWindow, attention.OptRole}
 
 // releaseTitle gives the window of pane back to tmux when its name is
 // still the title the pane's agent set.

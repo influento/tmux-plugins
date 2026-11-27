@@ -134,9 +134,24 @@ type Answer struct {
 // each time, so a changed setting shows at the next turn end. ok is false
 // before the first model call. cwd is the session's folder now; start, when
 // known, the folder the agent process started in, for a reader whose
-// environment is not the agent's (a watcher).
+// environment is not the agent's (a watcher). window is the context window
+// the agent gave its status line command (StatusReader), 0 when it gave
+// none.
 type ContextGauge interface {
-	Context(transcript, cwd, start string, getenv func(string) string) (used, limit int64, ok bool)
+	Context(transcript, cwd, start string, window int64, getenv func(string) string) (used, limit int64, ok bool)
+}
+
+// Status is what an agent tells its status line command.
+type Status struct {
+	Session string // the session it is of
+	Window  int64  // the context window the agent counts with, in tokens
+	Project string // the folder the agent started in
+}
+
+// StatusReader reads the input the agent gives its status line command. ok
+// is false for input that names no session or no window.
+type StatusReader interface {
+	ReadStatus(input []byte) (s Status, ok bool)
 }
 
 // FileWatcher names the files and folders of the agent's own that the

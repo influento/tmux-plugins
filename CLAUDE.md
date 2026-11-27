@@ -205,7 +205,9 @@ Rules:
 - `tmux-agent hook <agent>` prints nothing on stdout (Claude Code adds hook
   stdout to the model's context), recovers panics and exits 0 (exit 2 from
   PreToolUse blocks the tool call), and has a timeout on its lock and on
-  every tmux call.
+  every tmux call. `tmux-agent statusline <agent>` runs the same way:
+  Claude Code shows a status line command's stdout, and keeps an empty row
+  under its input box for one that prints nothing.
 - tmux-init sets hooks only at a fixed index: `[10]` tmux-agent, `[20]`
   tmux-revive. Never `set-hook -u` without an index: it clears the whole
   array.
@@ -529,16 +531,30 @@ Rules:
 - The context share (step 4): the pane option `@agent_context`, a percent
   the panel shows before the age: dim, in the failed colour from 80, the
   needs-you colour from 95. Read by the watcher at each write of the
-  transcript, and by the hook at a session start, a compaction and the
-  main agent's turn end; written only when it changes. The tokens of the transcript's last main-agent model
+  transcript, by the hook at a session start, a compaction and the
+  main agent's turn end, and by `statusline` when the window it tells
+  changes; written only when it changes. The tokens of the transcript's last main-agent model
   call (input and cache; Claude Code's own `<synthetic>` lines skipped),
   or what a compaction left, over the limit read again each time: Claude
   Code's `autoCompactWindow` (managed, `$CLAUDE_PROJECT_DIR` local and
   shared, user settings; the first that sets it; a watcher takes the
   agent process's folder for the project), capped by the model's
   window, less the 33k Claude Code keeps free (20k for the answer, a 13k
-  buffer): its `% until auto-compact` counts to that point. The transcript does not name the window: 1M for a `[1m]` model
-  or a call past 200k, else 200k. It goes with the session.
+  buffer): its `% until auto-compact` counts to that point. The window
+  is the one Claude Code gave its status line command for the pane's
+  session: `tmux-agent statusline claude` as the `statusLine` command
+  keeps `context_window.context_window_size` in the pane option
+  `@agent_window`, with its session's id. Claude Code runs the command
+  without waiting for its session-start hook, so a window can come before
+  the pane holds its session: it counts once the pane does.
+  Without one it is the model catalog's (`cache/model-catalog/*-cc.json`
+  in Claude Code's folder): `runtime.max_input_tokens` of the last call's
+  model, from the newest catalog that lists it; 1M for a model none lists.
+  The catalog gives the most a model takes: Claude Code counts a model
+  whose long window is an opt-in (`claude-opus-4-6` without `[1m]`) with
+  200k, which only the status line tells. The share goes with the session;
+  the window when the session ends for good (one told after that stays,
+  and counts for no session).
 - Token analytics (step 4b): `tokens` reads every transcript in the
   agent's files (not only the sessions tmux-agent ran) from where the
   session's tally stopped, then reports. Each model call counts once, by
@@ -580,7 +596,8 @@ Rules:
   somewhere on its own. A run from fzf adds `$FZF_ACTION`, fzf's last
   action: in a key's transform, the one before the key. With
   `TMUX_AGENT_DEBUG` in the agent's environment it also gets each hook
-  event, a dropped one too, each change of the context share, and each
+  event, a dropped one too, each change of the context share and of the
+  window a status line told, and each
   panel `sidebar go` with its `$FZF_ACTION`: where to look when a flag,
   a share or a panel move was wrong. Panel tests set it and print the
   log when they fail. A watcher's look that fails

@@ -179,7 +179,7 @@ func (e *Env) look(ctx context.Context, w *watchState, scan, git bool) error {
 		e.cutShort(ctx, e.Pane, w.a, l.session, l.transcript),
 		e.wentIdle(ctx, w, l),
 		e.typeName(ctx, w, l),
-		e.setShare(ctx, w.a, l.transcript, l.cwd, w.start, l.context),
+		e.setShare(ctx, w.a, l.transcript, l.cwd, w.start, l),
 		e.endedSubagents(ctx, w.a, l),
 	)
 	if git && l.cwd != "" {

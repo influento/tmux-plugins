@@ -58,6 +58,7 @@ var (
 	_ agent.Titler        = Claude{}
 	_ agent.Interrupter   = Claude{}
 	_ agent.ContextGauge  = Claude{}
+	_ agent.StatusReader  = Claude{}
 	_ agent.FileWatcher   = Claude{}
 	_ agent.SubagentEnder = Claude{}
 	_ agent.Idler         = Claude{}

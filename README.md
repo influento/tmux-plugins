@@ -44,6 +44,19 @@ stdin. It refuses an agent that works or waits on you (exit 3); `tmux-agent
 read [--last N] NAME` prints the last answers. Both work over ssh on
 another machine's agents.
 
+The panel shows how full each agent's context is: the tokens of its last
+call over the point where Claude Code compacts. For each session's exact
+context window, make tmux-agent Claude Code's status line command, in
+Claude Code's `settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "tmux-agent statusline claude" }
+```
+
+It prints nothing; Claude Code keeps an empty row for it. Without it
+tmux-agent takes the window from Claude Code's model catalog, which is too
+long for a model whose 1M window is an opt-in.
+
 The panel is a tmux pane at the left edge, full height, 40 columns, that
 follows its client to every window and session; the same key closes it.
 `tmux-agent tmux-init` sets its hooks. These keys move the panel and switch

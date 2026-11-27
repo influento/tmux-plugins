@@ -32,7 +32,9 @@ var agents = []string{"claude", "fakeagent"}
 
 // stub stands in for an agent's program. It records how it was started in
 // $STUB_DIR/$STUB_TAG.* (tag "agent" by default), sends each line of
-// $STUB_HOOK to tmux-agent hook claude, writes its pid as the sign that it
+// $STUB_HOOK to tmux-agent hook claude and the file $STUB_STATUS to
+// tmux-agent statusline claude ($STUB_STATUS_FIRST before the hooks),
+// writes its pid as the sign that it
 // is ready, and then does what $STUB_MODE says:
 //
 //	exit    exit with $STUB_CODE (0 by default)
@@ -78,10 +80,16 @@ tag=${STUB_TAG:-agent}
 printf '%s\n' "${TMUX_AGENT_RUN-}" > "$d/$tag.run"
 printf '%s\n' "$PPID" > "$d/$tag.ppid"
 printf '%s\0' "$@" > "$d/$tag.args"
+if [[ -n ${STUB_STATUS_FIRST:-} ]]; then
+  tmux-agent statusline claude < "$STUB_STATUS_FIRST"
+fi
 if [[ -n ${STUB_HOOK:-} ]]; then
   while IFS= read -r line; do
     tmux-agent hook claude <<< "$line"
   done < "$STUB_HOOK"
+fi
+if [[ -n ${STUB_STATUS:-} ]]; then
+  tmux-agent statusline claude < "$STUB_STATUS"
 fi
 mkfifo "$d/$tag.fifo"
 exec {nap}<> "$d/$tag.fifo"

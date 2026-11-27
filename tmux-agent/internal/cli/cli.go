@@ -72,6 +72,9 @@ const usage = `usage:
   tmux-agent revive AGENT SESSION      resume a session through the launcher, as a
                                        restore types it; nothing when it is gone
   tmux-agent hook AGENT                handle one hook event (JSON on stdin)
+  tmux-agent statusline AGENT          as the agent's status line command: take the
+                                       context window from its input (JSON on stdin);
+                                       prints nothing
   tmux-agent flag STATE [--reason TEXT] [--pane ID] [--owner CMD] [--quiet] [--failed]
                                        flag a pane: needs-you, done, working or clear;
                                        --failed marks a done flag as a failure;
@@ -202,7 +205,9 @@ func Main(version string, self []string, stdin io.Reader, stdout, stderr io.Writ
 	cmd, rest := args[0], args[1:]
 	switch cmd {
 	case "hook":
-		return a.hook(rest, stdin)
+		return a.fromAgent(cmd, rest, stdin, a.env.Hook)
+	case "statusline":
+		return a.fromAgent(cmd, rest, stdin, a.env.Status)
 	case "run":
 		if len(rest) == 0 {
 			fmt.Fprint(stderr, usage)
@@ -554,10 +559,12 @@ func (a *app) scanTokens(wait bool) int {
 	return code
 }
 
-// hook handles one hook event. It never writes stdout, which Claude Code
-// adds to the model's context; never fails, since exit 2 from PreToolUse
-// blocks the tool call; and gives up in time, since the agent waits.
-func (a *app) hook(args []string, stdin io.Reader) (code int) {
+// fromAgent handles what an agent sends a command it runs itself: one hook
+// event, or its status line's input. It never writes stdout, which Claude
+// Code adds to the model's context (a hook) or shows (a status line);
+// never fails, since exit 2 from PreToolUse blocks the tool call; and gives
+// up in time, since the agent waits.
+func (a *app) fromAgent(cmd string, args []string, stdin io.Reader, apply func(context.Context, agent.Agent, []byte) error) (code int) {
 	if devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
 		_ = syscall.Dup3(int(devnull.Fd()), 1, 0) // nothing can reach the agent through fd 1
 		devnull.Close()
@@ -565,8 +572,8 @@ func (a *app) hook(args []string, stdin io.Reader) (code int) {
 	a.stdout = io.Discard
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(a.stderr, "tmux-agent hook: panic: %v\n", r)
-			a.logf("hook panic: %v", r)
+			fmt.Fprintf(a.stderr, "tmux-agent %s: panic: %v\n", cmd, r)
+			a.logf("%s panic: %v", cmd, r)
 			code = 0
 		}
 	}()
@@ -584,9 +591,9 @@ func (a *app) hook(args []string, stdin io.Reader) (code int) {
 		return 0
 	}
 	a.env.Log, a.env.Debug = a.logf, a.debugf
-	if err := a.env.Hook(ctx, ag, payload); err != nil {
-		fmt.Fprintf(a.stderr, "tmux-agent hook %s: %v\n", args[0], err)
-		a.logf("hook %s: %v", args[0], err)
+	if err := apply(ctx, ag, payload); err != nil {
+		fmt.Fprintf(a.stderr, "tmux-agent %s %s: %v\n", cmd, args[0], err)
+		a.logf("%s %s: %v", cmd, args[0], err)
 	}
 	return 0
 }
