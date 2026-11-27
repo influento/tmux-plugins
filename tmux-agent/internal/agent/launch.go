@@ -33,8 +33,8 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 		e.signalStartNow()
 		return 127
 	}
-	argv := append([]string{a.Command()}, args...)
 	if e.Pane == "" || InsideAgent(e.Registry.ProcessNames()) {
+		argv := append([]string{a.Command()}, args...)
 		err := syscall.Exec(path, argv, os.Environ())
 		fmt.Fprintf(stderr, "tmux-agent: %s: %v\n", path, err)
 		return 126
@@ -54,7 +54,10 @@ func (e *Env) Launch(a Agent, args, self []string, stderr io.Writer) int {
 	if o, ok := a.(OneShotter); ok {
 		oneShot = o.OneShot(args)
 	}
-	e.register(a, args, oneShot)
+	if name := e.register(a, args, oneShot); name != "" {
+		args = a.(Namer).WithName(args, name)
+	}
+	argv := append([]string{a.Command()}, args...)
 
 	// Ctrl-C and Ctrl-\ reach the agent from the terminal; the launcher
 	// catches them so it outlives them, and does not ignore them, which the
@@ -186,9 +189,10 @@ func dieBy(sig syscall.Signal) {
 
 // register marks the pane as running this launcher's run, before the agent
 // starts, so its first hook finds the run. A run replaces whatever the
-// pane's last agent left.
-func (e *Env) register(a Agent, args []string, oneShot bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+// pane's last agent left. It returns the name to start an interactive
+// agent under; "" for none.
+func (e *Env) register(a Agent, args []string, oneShot bool) (name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	defer e.lock(ctx)()
 	resume := ""
@@ -216,7 +220,13 @@ func (e *Env) register(a Agent, args []string, oneShot bool) {
 	}
 	if err := e.paneOpts(ctx, opts); err != nil {
 		e.logf("register run: %v", err)
-		return
+		return ""
+	}
+	if n, ok := a.(Namer); ok && !oneShot {
+		var err error
+		if name, err = e.nameRun(ctx, a, n.Named(args), resume); err != nil {
+			e.logf("name run: %v", err)
+		}
 	}
 	if oneShot {
 		// One turn, working from the start; the launcher ends it.
@@ -224,6 +234,7 @@ func (e *Env) register(a Agent, args []string, oneShot bool) {
 			e.logf("flag run: %v", err)
 		}
 	}
+	return name
 }
 
 // finish records the run's end. A kill keeps the pane's session for a
@@ -260,7 +271,7 @@ func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
 	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
 		e.logf("title end: %v", err)
 	}
-	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: "", attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "", attention.OptContext: ""}
+	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: "", optName: "", optNameGiven: "", attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "", attention.OptContext: ""}
 	end := EndKilled
 	if !killed {
 		end = EndExited

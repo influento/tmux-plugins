@@ -189,8 +189,7 @@ func fromSubagent(ev Event) Event {
 
 // A turn that ends while a subagent still runs leaves the pane working: the
 // subagent's report starts the next turn, and that turn's end is done. A
-// background shell (a dev server) does not count. The window is named at
-// either turn end.
+// background shell (a dev server) does not count.
 func TestHookStopWithSubagentsKeepsWorking(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -214,9 +213,6 @@ func TestHookStopWithSubagentsKeepsWorking(t *testing.T) {
 				e.wantFlag(t, p, c.wantState, c.wantReason)
 				if r := e.d.Record(t, e.Server, p); r.State != c.wantState {
 					t.Errorf("record state = %q, want %s", r.State, c.wantState)
-				}
-				if name, _ := e.windowName(t, p); name != "fix the waybar" {
-					t.Errorf("window = %q, want %q", name, "fix the waybar")
 				}
 			})
 		})
@@ -281,79 +277,6 @@ func TestHookSubagentDecisions(t *testing.T) {
 			e.d.Hook(t, e.Server, p, fromSubagent(toolEvent("PreToolUse", "Read", map[string]any{"file_path": "/src/proj-a/main.go"})))
 			e.wantFlag(t, p, "working", "")
 		})
-	})
-}
-
-// The window takes its name from the first prompt on Stop: openers dropped,
-// three words, cut at 15 characters, trailing punctuation trimmed. Slash
-// commands, tagged harness messages and tool results are not prompts.
-func TestHookStopTitlesTheWindow(t *testing.T) {
-	toolResult := map[string]any{"type": "user", "message": map[string]any{"content": []any{
-		map[string]any{"type": "tool_result", "content": "done"},
-	}}}
-	textParts := map[string]any{"type": "user", "message": map[string]any{"content": []any{
-		map[string]any{"type": "text", "text": "update the"},
-		map[string]any{"type": "text", "text": "readme now"},
-	}}}
-	cases := []struct {
-		name  string
-		lines []map[string]any
-		want  string
-	}{
-		{"opener", []map[string]any{userPrompt("can you fix the waybar clock please")}, "fix the waybar"},
-		{"cut at 15", []map[string]any{userPrompt("Hello, please refactor the parser module")}, "refactor the pa"},
-		{"trailing punctuation", []map[string]any{userPrompt("fix: the thing! now")}, "fix: the thing"},
-		{"several openers", []map[string]any{userPrompt("ok so let's add tests for jump")}, "add tests for"},
-		{"skips non-prompts", []map[string]any{
-			userPrompt("/clear"),
-			userPrompt("<command-name>/model</command-name>"),
-			toolResult,
-			textParts,
-		}, "update the read"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			each(t, func(t *testing.T, e *env) {
-				p := e.claudeWindow(t, "proj-a")
-				tr := e.writeTranscript(t, c.lines...)
-				e.d.Hook(t, e.Server, p, Event{Name: "Stop", Payload: map[string]any{"transcript_path": tr}})
-				name, auto := e.windowName(t, p)
-				if name != c.want || auto {
-					t.Errorf("window = %q (automatic %v), want %q, named", name, auto, c.want)
-				}
-				if got := e.opt(t, "-w", p, e.d.TitleOption()); got != c.want {
-					t.Errorf("%s = %q, want %q", e.d.TitleOption(), got, c.want)
-				}
-				if r := e.d.Record(t, e.Server, p); r.Title != c.want {
-					t.Errorf("record title = %q, want %q", r.Title, c.want)
-				}
-			})
-		})
-	}
-}
-
-// A window named once is never renamed, and a name the user set is never
-// touched.
-func TestHookStopKeepsNamedWindows(t *testing.T) {
-	each(t, func(t *testing.T, e *env) {
-		p := e.claudeWindow(t, "proj-a")
-		stop := func(prompt string) {
-			tr := e.writeTranscript(t, userPrompt(prompt))
-			e.d.Hook(t, e.Server, p, Event{Name: "Stop", Payload: map[string]any{"transcript_path": tr}})
-		}
-		stop("first task here")
-		stop("second task here")
-		if name, _ := e.windowName(t, p); name != "first task here" {
-			t.Errorf("window = %q after a second Stop, want the first title", name)
-		}
-
-		q := e.claudeWindow(t, "proj-a")
-		e.MustTmux(t, "rename-window", "-t", q, "mine")
-		tr := e.writeTranscript(t, userPrompt("another task here"))
-		e.d.Hook(t, e.Server, q, Event{Name: "Stop", Payload: map[string]any{"transcript_path": tr}})
-		if name, _ := e.windowName(t, q); name != "mine" {
-			t.Errorf("user-named window = %q, want mine", name)
-		}
 	})
 }
 
@@ -469,8 +392,7 @@ func TestHookOutsideTmux(t *testing.T) {
 
 // A resumed conversation brings back what it was waiting on, as
 // information: a pending decision as "before restart", a turn cut mid-work
-// as "interrupted mid-turn", an unread done as done. Its title comes back
-// too.
+// as "interrupted mid-turn", an unread done as done.
 func TestHookResumeReflags(t *testing.T) {
 	cases := []struct {
 		state, reason         string
@@ -493,9 +415,6 @@ func TestHookResumeReflags(t *testing.T) {
 				}, true)
 				e.d.Hook(t, e.Server, p, startEvent("resume", tr, e.Home))
 				e.wantFlag(t, p, c.wantState, c.wantReason)
-				if name, _ := e.windowName(t, p); name != "write the docs" {
-					t.Errorf("window = %q, want the recorded title", name)
-				}
 			})
 		})
 	}
@@ -522,8 +441,8 @@ func TestAgentSweepReleasesTitlesOfDeadAgents(t *testing.T) {
 	each(t, func(t *testing.T, e *env) {
 		agent := e.claudeWindow(t, "proj-a")
 		shell := e.split(t, agent, "")
-		tr := e.writeTranscript(t, userPrompt("write the docs"))
-		e.d.Hook(t, e.Server, agent, Event{Name: "Stop", Payload: map[string]any{"transcript_path": tr}})
+		e.MustTmux(t, "rename-window", "-t", agent, "write the docs", ";",
+			"set-option", "-w", "-t", agent, e.d.TitleOption(), "write the docs")
 		e.MustTmux(t, "kill-pane", "-t", agent)
 		e.d.AgentSweep(t, e.Server)
 		if _, auto := e.windowName(t, shell); !auto {

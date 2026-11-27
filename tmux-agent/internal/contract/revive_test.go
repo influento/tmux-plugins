@@ -3,6 +3,7 @@ package contract
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -164,8 +165,8 @@ func TestRestoredResume(t *testing.T) {
 	e.MustTmux(t, "set-option", "-p", "-t", e.pane, "@revive_cmd", cmd)
 	hooks := e.hooks(t, "resume.jsonl", hookEvent("SessionStart", sessionA, "source", "resume", "cwd", e.Home, "transcript_path", transcript))
 	e.launch(t, "rc", "STUB_MODE=wait STUB_HOOK="+shellQuote(hooks)+" "+cmd)
-	if got := e.args(t, "agent"); len(got) != 2 || got[0] != "--resume" || got[1] != sessionA {
-		t.Errorf("agent args = %q, want --resume %s", got, sessionA)
+	if got, want := e.args(t, "agent"), []string{"--resume", sessionA, "--name", "write the docs"}; !slices.Equal(got, want) {
+		t.Errorf("agent args = %q, want %q", got, want)
 	}
 	e.wantFlag(t, "needs-you", "before restart: Bash(make)")
 	if got := e.MustTmux(t, "show-options", "-wqv", "-t", e.pane, "@agent_title"); got != "write the docs" {

@@ -109,6 +109,8 @@ const usage = `usage:
   tmux-agent sweep [--window ID]       drop dead flags, sessions and titles; set the
                                        window's borders
   tmux-agent borders WINDOW            borders on for a split window, off otherwise
+  tmux-agent renamed WINDOW            give the window's agents its new name (the
+                                       window-renamed hook)
   tmux-agent shell-init SHELL [NAME...]  shell functions that start agents through run
   tmux-agent tmux-init                 set tmux-agent's hooks, at index [10]
   tmux-agent subagents scan            fill the records of ended subagents from each
@@ -643,6 +645,11 @@ func (a *app) command(ctx context.Context, cmd string, args []string) error {
 			return errUsage
 		}
 		return a.core.Borders(ctx, args[0])
+	case "renamed":
+		if len(args) != 1 {
+			return errUsage
+		}
+		return errors.Join(a.env.Renamed(ctx, args[0]), a.reloadPanels(ctx))
 	case "list":
 		return a.list(ctx, args)
 	case "rows":
@@ -1768,7 +1775,7 @@ var tmuxHooks = []struct {
 	{"after-select-layout", "sidebar keep", true},
 	{"window-linked", "sidebar reload", true},
 	{"window-unlinked", "sidebar reload", true},
-	{"window-renamed", "sidebar reload", true},
+	{"window-renamed", "renamed #{window_id}", false},
 }
 
 // tmuxInit sets tmux-agent's hooks at its own index, so prefix r leaves no
@@ -1781,8 +1788,14 @@ func (a *app) tmuxInit(ctx context.Context) error {
 			args = append(args, ";")
 		}
 		cmd := fmt.Sprintf(`run-shell -b "tmux-agent %s %s%s"`, hookjob.Arg, h.command, hookjob.Guard)
-		if h.sidebar {
+		switch {
+		case h.sidebar:
 			cmd = fmt.Sprintf(`if-shell -F "#{%s}" '%s'`, sidebar.OptOpen, cmd)
+		case h.event == "window-renamed":
+			// tmux renames a window it names after each program that
+			// runs in it: that names no agent, and only an open panel
+			// shows it.
+			cmd = fmt.Sprintf(`if-shell -F "#{?automatic-rename,#{%s},1}" '%s'`, sidebar.OptOpen, cmd)
 		}
 		if h.event == "after-select-pane" {
 			cmd += " ; " + sidebar.RecordLast

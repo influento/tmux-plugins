@@ -129,13 +129,15 @@ const (
 	optReason     = "@agent_reason"     // the state's reason
 	optWait       = "@agent_wait"       // the tool a needs-you waits on
 	optWaitBy     = "@agent_wait_by"    // the subagent it waits on; unset for the agent
-	optNamed      = "@agent_named"      // the window title this pane's agent set
+	optNamed      = "@agent_named"      // the window name this pane's agent gave
 	optRun        = "@agent_run"        // the launcher's pid
 	optOneShot    = "@agent_oneshot"    // "1" for a one-turn run
 	optResume     = "@agent_resume"     // the session the run resumes
 	optStarted    = "@agent_started"    // when the run started, unix seconds
 	optHeld       = "@agent_held"       // the turn ended, but heldRuns or heldHooks still run
 	optPromptGot  = "@agent_prompt_got" // the last prompt the agent took: unix ms, then its PromptKey
+	optName       = "@agent_name"       // the name the agent runs under, or will once it is typed
+	optNameGiven  = "@agent_name_given" // the name the agent got: at its start, or typed in last
 	// OptTitle is the window option that holds the title an agent gave
 	// the window.
 	OptTitle = "@agent_title"
@@ -155,8 +157,9 @@ type live struct {
 	starting                                                            string // the channel of a start that waits
 	task, role                                                          string // the pane's task binding, its agent's role
 	flag                                                                attention.State
-	autoRename                                                          bool
+	autoRename, inMode                                                  bool
 	windowName, title                                                   string
+	name, nameGiven                                                     string
 }
 
 var liveFormat = strings.Join([]string{
@@ -168,7 +171,10 @@ var liveFormat = strings.Join([]string{
 	"#{" + attention.OptNested + "}", "#{" + optHeld + "}", "#{pane_pid}",
 	"#{" + attention.OptContext + "}", "#{" + OptStarting + "}",
 	"#{" + attention.OptTask + "}", "#{" + attention.OptRole + "}",
+	"#{" + optName + "}", "#{" + optNameGiven + "}", "#{pane_in_mode}",
 }, "\x1f")
+
+const liveFields = 28
 
 func (e *Env) readLive(ctx context.Context) (live, error) { return e.liveOf(ctx, e.Pane) }
 
@@ -177,8 +183,8 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 	if err != nil {
 		return live{}, err
 	}
-	f := strings.SplitN(out, "\x1f", 25)
-	for len(f) < 25 {
+	f := strings.SplitN(out, "\x1f", liveFields)
+	for len(f) < liveFields {
 		f = append(f, "")
 	}
 	return live{
@@ -189,6 +195,7 @@ func (e *Env) liveOf(ctx context.Context, pane string) (live, error) {
 		waitBy: f[16], subagents: strings.Fields(f[17]),
 		nested: strings.Fields(f[18]), held: f[19] != "", heldBy: f[19], panePid: atoi(f[20]), context: f[21],
 		starting: f[22], task: f[23], role: f[24],
+		name: f[25], nameGiven: f[26], inMode: f[27] == "1",
 	}, nil
 }
 
@@ -420,9 +427,10 @@ func (e *Env) oneShot(ctx context.Context, a Agent, ev Event, l live) error {
 // (the launcher's --resume names this session) brings back what the
 // session was waiting on, as information: a pending decision as "before
 // restart", a turn cut mid-work as "interrupted mid-turn", an unread done
-// as done; and its window title. Anything else starts clean.
+// as done. Anything else starts clean. The record keeps the name the
+// pane's agent gave its window, which a restore marks as such again.
 func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
-	state, reason, title := attention.Idle, "", ""
+	state, reason := attention.Idle, ""
 	restoring := ev.Resume && ev.SessionID != "" && l.resume == ev.SessionID
 	var rec store.Session
 	if restoring && e.Store != nil && store.ValidName(ev.SessionID) {
@@ -432,7 +440,7 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 		}
 		if ok && r.End != string(EndExited) {
 			rec = r
-			state, reason, title = attention.State(r.State), r.Reason, r.Title
+			state, reason = attention.State(r.State), r.Reason
 		}
 	}
 	var err error
@@ -456,12 +464,6 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 		optState: string(state), optReason: reason, optWait: "", optWaitBy: "", optResume: "",
 		attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "",
 	}
-	if title != "" {
-		if err := e.applyTitle(ctx, title); err != nil {
-			return err
-		}
-		opts[optNamed] = title
-	}
 	opts[OptRevive] = e.revive(a, ev.SessionID)
 	opts[attention.OptRole] = e.roleOf(a)
 	task := l.task
@@ -483,9 +485,7 @@ func (e *Env) start(ctx context.Context, a Agent, ev Event, l live) error {
 		if s.Started == 0 {
 			s.Started = now
 		}
-		if restoring {
-			s.Title = rec.Title
-		}
+		s.Title = l.named
 		s.End, s.Ended, s.Exit = "", 0, ""
 	})
 	return nil
@@ -547,10 +547,7 @@ func (e *Env) needsInput(ctx context.Context, a Agent, ev Event, session string)
 	return nil
 }
 
-// turnEnd flags done, and names the window while tmux still names it: once
-// named, automatic-rename is off and the name stays. The one change is the
-// agent's own title for the session, which replaces a stand-in this pane's
-// agent gave, as long as the window still carries it.
+// turnEnd flags done.
 //
 // A turn that ends while subagents run is not done: the pane stays working
 // until the turn their reports start ends, and the pending decision of a
@@ -566,36 +563,9 @@ func (e *Env) turnEnd(ctx context.Context, a Agent, ev Event, l live, session st
 		if err := e.markWorking(ctx, a, session); err != nil {
 			return err
 		}
-		if err := e.paneOpts(ctx, map[string]string{optHeld: heldHooks}); err != nil {
-			return err
-		}
-	} else if err := e.markTurnEnd(ctx, a, ev, l, session); err != nil {
-		return err
+		return e.paneOpts(ctx, map[string]string{optHeld: heldHooks})
 	}
-	return e.retitle(ctx, a, or(ev.Transcript, l.transcript), l, session)
-}
-
-// retitle names the pane's window from its agent's transcript while tmux
-// still names it, or replaces a stand-in title this pane's agent gave with
-// the agent's own. The caller holds the lock.
-func (e *Env) retitle(ctx context.Context, a Agent, transcript string, l live, session string) error {
-	t, ok := a.(Titler)
-	ours := l.named != "" && l.title == l.named && l.windowName == l.named
-	if !ok || (!l.autoRename && !ours) {
-		return nil
-	}
-	title, sure := t.Title(transcript)
-	if title == "" || (!l.autoRename && (!sure || title == l.named)) {
-		return nil
-	}
-	if err := e.applyTitle(ctx, title); err != nil {
-		return err
-	}
-	if err := e.paneOpts(ctx, map[string]string{optNamed: title}); err != nil {
-		return err
-	}
-	e.remember(a, session, func(s *store.Session) { s.Title = title })
-	return nil
+	return e.markTurnEnd(ctx, a, ev, l, session)
 }
 
 // What holds a turn that ended (optHeld).
@@ -659,15 +629,20 @@ func (e *Env) applyTitle(ctx context.Context, title string) error {
 // end: the flag goes, the window name goes back to tmux if it is still the
 // one this pane's agent set, and a session the user ended lets its resume
 // go. A session that may have been killed keeps it: at shutdown tmux tears
-// down every session before the agent hears of it.
+// down every session before the agent hears of it. A run the launcher
+// named keeps its name: its agent can go on to another session (/clear),
+// and the launcher gives the window back when the run ends.
 func (e *Env) end(ctx context.Context, a Agent, ev Event, l live) error {
 	if err := e.Core.Clear(ctx, e.Pane); err != nil {
 		return err
 	}
-	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
-		return err
+	opts := map[string]string{attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "", attention.OptContext: ""}
+	if l.name == "" {
+		if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
+			return err
+		}
+		opts[optNamed] = ""
 	}
-	opts := map[string]string{optNamed: "", attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "", attention.OptContext: ""}
 	if ev.End == EndExited {
 		for _, o := range sessionOpts {
 			opts[o] = ""

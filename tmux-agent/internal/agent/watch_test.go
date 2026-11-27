@@ -89,7 +89,7 @@ func (fileAgent) SubagentEnded(transcript, id string) Outcome {
 }
 
 // A watcher keeps the pane live from what no hook tells: the context
-// share, the title, a turn cut short, a subagent stopped, a branch
+// share, a turn cut short, a subagent stopped, a branch
 // switched elsewhere and the runs the agent starts, which hold its turn
 // until they end. It is the pane's only one, and it ends the session when
 // the agent exits without a word.
@@ -202,10 +202,6 @@ func TestWatch(t *testing.T) {
 	state(st)
 	shows("the share after a model call", "#{"+attention.OptContext+"}", "25")
 
-	st.Title = "probe"
-	state(st)
-	shows("the title", "#{window_name}", "probe")
-
 	if err := e.Apply(ctx, a, Event{Kind: Working, SessionID: sessionA}); err != nil {
 		t.Fatal(err)
 	}
@@ -240,9 +236,10 @@ func TestWatch(t *testing.T) {
 		{Session: sessionA, Idle: time.Now().Add(-time.Hour)},
 	} {
 		status(idle)
-		st.Title = "barrier-" + strconv.Itoa(i) // a look after the status
+		share := 30 + i // a look after the status
+		st.Used = int64(share) * st.Limit / 100
 		state(st)
-		shows("the title after the status", "#{window_name}", st.Title)
+		shows("the share after the status", "#{"+attention.OptContext+"}", strconv.Itoa(share))
 		if got := show("#{@attention}"); got != "working" {
 			t.Fatalf("flag %q after %+v, want working", got, idle)
 		}
@@ -265,9 +262,9 @@ func TestWatch(t *testing.T) {
 	if got := show("#{@attention} #{" + optHeld + "}"); got != "working hook" {
 		t.Fatalf("flag and hold %q after a turn end with hooks running, want working hook", got)
 	}
-	st.Title = "barrier-hooks"
+	st.Used = 40 * st.Limit / 100
 	state(st)
-	shows("the title after the hooks' turn end", "#{window_name}", st.Title)
+	shows("the share after the hooks' turn end", "#{"+attention.OptContext+"}", "40")
 	if got := show("#{@attention}"); got != "working" {
 		t.Fatalf("flag %q while the hooks run, want working", got)
 	}

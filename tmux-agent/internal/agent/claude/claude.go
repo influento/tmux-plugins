@@ -61,6 +61,7 @@ var (
 	_ agent.FileWatcher   = Claude{}
 	_ agent.SubagentEnder = Claude{}
 	_ agent.Idler         = Claude{}
+	_ agent.Namer         = Claude{}
 )
 
 // Name is the registry name.

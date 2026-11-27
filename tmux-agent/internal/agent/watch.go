@@ -91,7 +91,7 @@ func (e *Env) watch(ctx context.Context, a Agent, agentPid int, started <-chan i
 			if word == wakePing {
 				continue
 			}
-			scan = true
+			scan = scan || word != wakeLook
 		case p := <-files.changes:
 			if w.gitDir != "" && p == w.gitDir {
 				git = true
@@ -149,7 +149,8 @@ func (w *watchState) pids(runs []int) []int {
 }
 
 // look brings the pane up to date with its agent's files: a turn cut
-// short, the context share, the title, and subagents that ended; with
+// short, the context share, subagents that ended, and a new name to type
+// in; with
 // scan, the runs below the agent; with git, the branch. It follows the
 // files of the session it finds before it reads them, so a write during
 // the read wakes the next look, and also when a step then fails: the
@@ -172,8 +173,8 @@ func (e *Env) look(ctx context.Context, w *watchState, scan, git bool) error {
 	err = errors.Join(
 		e.cutShort(ctx, e.Pane, w.a, l.session, l.transcript),
 		e.wentIdle(ctx, w, l),
+		e.typeName(ctx, w, l),
 		e.setShare(ctx, w.a, l.transcript, l.cwd, w.start, l.context),
-		e.retitle(ctx, w.a, l.transcript, l, l.session),
 		e.endedSubagents(ctx, w.a, l),
 	)
 	if git && l.cwd != "" {

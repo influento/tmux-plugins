@@ -177,12 +177,14 @@ Packages in `tmux-agent/internal/`:
 - `attention`: the core. Flags in the `@attention*` pane options, status
   counts, sweep, list, borders, jump, notifications. Knows no agent.
 - `agent`: the agent layer. Neutral events, the hook handler, the launcher,
-  the nested-agent rule, the title sweep, the git label, the context share, the watcher.
+  the nested-agent rule, agent names, the title sweep, the git label, the
+  context share, the watcher.
   Knows no particular agent.
 - `agent/claude`: the Claude Code adapter: hook mapping, one-shot and resume
-  arguments, the window title (Claude Code's own `ai-title` from the
-  transcript, cut at a word to 24 characters; the first prompt until then),
-  the interrupt line of a turn cut short, the context used.
+  arguments, the session's name (`--name`, `/rename`, its input box), the
+  session's title for the token report (Claude Code's own `ai-title` from
+  the transcript, cut at a word to 24 characters; the first prompt until
+  then), the interrupt line of a turn cut short, the context used.
 - `git`: the one place that runs git: a folder's branch and whether it is
   a linked worktree, in one `rev-parse` (a second for a detached HEAD).
 - `store`: one JSON record per session in
@@ -208,7 +210,7 @@ Rules:
   tmux-revive. Never `set-hook -u` without an index: it clears the whole
   array.
 - A pane's live record is in pane options (`@agent*`, and `@revive_cmd` for
-  tmux-revive); the window title an agent set is `@agent_title`.
+  tmux-revive); a window name an agent's run gave is `@agent_title`.
 - `@revive_cmd` is `tmux-agent revive <agent> <session id>`, for a UUID
   session id only. A one-shot run sets none, also one the launcher did not
   start (the arguments of the hook's nearest agent process). revive marks
@@ -247,7 +249,7 @@ Rules:
   Code's status file goes idle. Hooks of one event start within a second.
 - A watcher keeps a pane live from what no hook tells, while
   its agent runs: a turn cut short, a subagent stopped, the context share,
-  the title, the branch, the nested runs. It waits on inotify (the
+  a new name to type in, the branch, the nested runs. It waits on inotify (the
   transcript, or its folder until Claude Code writes it at the first
   prompt; the adapter's `WatchedFiles`; the git folder's HEAD), pidfds
   (the runs, and the agent when it watches one the launcher did not
@@ -328,6 +330,21 @@ Rules:
   `@agent_prompt_got` and `@attention_wait`: a demo of a
   dev build sets the agent's PATH in the window's command, as the default
   shell rebuilds it from /etc/profile.
+- Names: an agent's name in its own channel (`Peer`, Claude Code's
+  session name) is its window's name, so the user and the agents call it
+  one thing. The launcher starts an interactive agent of an adapter that
+  names (`Namer`) under the name its arguments give, else its window's,
+  else, in a window tmux names, `<repo>-<agent>` (the git label's `repo`;
+  outside git the folder's name), which the window takes as a name the run
+  gave (released at the run's end). A name another window or another
+  agent has gets `-2`, `-3`; the window takes the number too, except for a
+  second agent split into an agent's window. The window-renamed hook
+  (`renamed`, only for a window tmux does not name) puts the window's new
+  name on each agent pane (`@agent_name`); the pane's watcher types the
+  adapter's rename (`/rename NAME`) once `Ready` says the agent idles (its
+  status file: idle, or no status before the first turn) at an empty
+  input box (read from the screen: a draft, vim's normal mode, a dialog
+  wait). `@agent_name_given` is the name typed last.
 - An agent's own channel between its sessions (Claude Code's
   `SendMessage`) is the other way agents talk; `prompt` is the one for
   any agent and any caller. Each adapter that has one gives its address

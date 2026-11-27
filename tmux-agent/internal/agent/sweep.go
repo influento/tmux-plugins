@@ -81,7 +81,7 @@ func (e *Env) SweepTitles(ctx context.Context) error {
 }
 
 func (e *Env) recordedTitle(agent, session string) string {
-	if agent == "" || session == "" {
+	if e.Store == nil || agent == "" || session == "" {
 		return ""
 	}
 	r, ok, err := e.Store.Load(agent, session)

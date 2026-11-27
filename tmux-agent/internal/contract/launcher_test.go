@@ -61,6 +61,12 @@ var agents = []string{"claude", "fakeagent"}
 //	        typed before a paste joins it, and the submit hook carries the
 //	        prompt; a prompt that starts with "/" is a command of the input
 //	        box: no turn, only $STUB_DIR/$tag.commandN.
+//	named   start session $STUB_SESSION, keep Claude Code's file for the
+//	        process (sessions/<pid>.json in $HOME/.claude) with the name
+//	        --name gave, idle, and draw an input box under that name.
+//	        Each line typed in and sent with Enter: "/rename NAME" renames
+//	        the session, appended to $STUB_DIR/$tag.renames; "draft TEXT"
+//	        draws TEXT in the box as a draft, "clear" an empty box again.
 //
 // It waits on a FIFO, not with sleep, so the terminal's signals reach no
 // child of its own.
@@ -188,6 +194,41 @@ case ${STUB_MODE:-exit} in
           hook Stop
           ;;
       esac
+    done
+    ;;
+  named)
+    t=$d/$tag.transcript
+    : > "$t"
+    tmux-agent hook claude <<< "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"$STUB_SESSION\",\"transcript_path\":\"$t\",\"cwd\":\"$d\",\"source\":\"startup\"}"
+    name=
+    args=("$@")
+    for ((i = 0; i < ${#args[@]}; i++)); do
+      [[ ${args[i]} == --name ]] && name=${args[i + 1]}
+    done
+    sessions=$HOME/.claude/sessions
+    mkdir -p "$sessions"
+    status() {
+      printf '{"pid":%s,"sessionId":"%s","status":"idle","name":"%s"}' "$$" "$STUB_SESSION" "$name" > "$sessions/$$.json.tmp"
+      mv "$sessions/$$.json.tmp" "$sessions/$$.json"
+    }
+    box() {
+      printf '\e[2J\e[H%s\n%s\n%s\n%s\n' "──────── $name ─" "❯ $1" "──────────" "  -- INSERT --"
+    }
+    status
+    box ""
+    : > "$d/$tag.drawn"
+    while IFS= read -r line; do
+      case $line in
+        "/rename "*)
+          name=${line#/rename }
+          printf '%s\n' "$name" >> "$d/$tag.renames"
+          status
+          box ""
+          ;;
+        "draft "*) box "${line#draft }" ;;
+        clear) box "" ;;
+      esac
+      : > "$d/$tag.drawn"
     done
     ;;
 esac
@@ -456,11 +497,17 @@ func waitState(t *testing.T, pid int, want byte) byte {
 }
 
 // The pane runs shell, launcher, agent: the launcher waits on the same
-// terminal under the agent's name, and the agent gets the run's pid.
+// terminal under the agent's name, and the agent gets the run's pid, and,
+// when it takes one, its window's name.
 func TestRunProcessTree(t *testing.T) {
 	each(t, func(t *testing.T, e *env, agent string) {
 		e.launch(t, "rc", "STUB_MODE=wait tmux-agent run "+agent+" --model x 'two words'")
-		if got, want := e.args(t, "agent"), []string{"--model", "x", "two words"}; !slices.Equal(got, want) {
+		got := e.args(t, "agent")
+		want := []string{"--model", "x", "two words"}
+		if agent == "claude" {
+			want = append(want, "--name", e.Display(t, e.pane, "#{window_name}"))
+		}
+		if !slices.Equal(got, want) {
 			t.Errorf("agent args = %q, want %q", got, want)
 		}
 		run := e.run(t)

@@ -200,6 +200,7 @@ func (x *exitWatch) close() { x.set(nil) }
 const (
 	wakePing = "ping" // only: is a watcher there?
 	wakeScan = "scan" // something the watcher follows may have changed
+	wakeLook = "look" // the pane changed: look, without the runs
 )
 
 // watchSocket is where the watcher of pane on the tmux server in $TMUX

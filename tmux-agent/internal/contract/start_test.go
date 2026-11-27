@@ -79,7 +79,7 @@ func TestStartReady(t *testing.T) {
 	if w := e.Display(t, got.Pane, "#{window_id} #{window_name} #{window_active} #{pane_current_path}"); w != got.Window+" rev-a 0 "+e.Home {
 		t.Errorf("window = %q", w)
 	}
-	if args := e.args(t, "agent"); !slices.Equal(args, []string{"--agent", "wb x"}) {
+	if args := e.args(t, "agent"); !slices.Equal(args, []string{"--agent", "wb x", "--name", "rev-a"}) {
 		t.Errorf("agent args = %q", args)
 	}
 	if run := e.MustTmux(t, "show-options", "-pqv", "-t", got.Pane, "@agent_run"); run != e.file(t, "agent.ppid") {

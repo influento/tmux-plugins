@@ -57,11 +57,31 @@ type ProcessNamer interface {
 	ProcessNames() []string
 }
 
-// Titler names a window from the agent's transcript, or returns "". A
-// title the agent gave the session itself is sure, and replaces a stand-in
-// (such as the first prompt's first words) at a later turn end.
+// Titler reads a session's title from the agent's transcript, or returns
+// "": the token report names a session's rows by it. A title the agent
+// gave the session itself is sure, and replaces a stand-in (such as the
+// first prompt's first words).
 type Titler interface {
 	Title(transcript string) (title string, sure bool)
+}
+
+// Namer names an agent's session, the name its own channel (Peer) knows
+// it by. The launcher starts the agent under its window's name, and a
+// window renamed later renames the running session through its input box.
+type Namer interface {
+	// Named is the name args start the agent under; "" for none.
+	Named(args []string) string
+	// WithName returns args that start the agent under name, in place of
+	// a name they give.
+	WithName(args []string, name string) []string
+	// RenameInput is the text that, typed into the agent's input box and
+	// sent with Enter, renames its running session.
+	RenameInput(name string) string
+	// Ready tells that the agent process pid idles in session at an
+	// empty input box that takes text, from the agent's own files and the
+	// pane's screen (capture-pane -e): a rename typed in then joins no
+	// draft, answers no dialog and queues behind no turn.
+	Ready(pid int, session, screen string, getenv func(string) string) bool
 }
 
 // InputCommander tells text that the agent's input box takes as a command
