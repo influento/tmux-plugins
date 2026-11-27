@@ -338,18 +338,22 @@ Rules:
   outside git the folder's name), which the window takes as a name the run
   gave (released at the run's end). A name another window or another
   agent has gets `-2`, `-3`; the window takes the number too, except for a
-  second agent split into an agent's window. The window-renamed hook
-  (`renamed`, only for a window tmux does not name) puts the window's new
-  name on each agent pane (`@agent_name`); the pane's watcher types the
+  second agent split into an agent's window: the agent that took the
+  window's name holds it (`@agent_holds`), whatever the pane order. The
+  window-renamed hook (`renamed`, only for a window tmux does not name,
+  and not for an empty name) puts the window's new name on each agent pane
+  (`@agent_name`), the holder first; the pane's watcher types the
   adapter's rename (`/rename NAME`) once `Ready` says the agent idles (its
   status file: idle, or no status before the first turn) at an empty
   input box (read from the screen: a draft, vim's normal mode, a dialog
-  wait), and no client that shows the pane had a key for 2 s (tmux keeps
-  `client_activity` in seconds; a look that waits on that alone looks
-  again in 1 s). A rename a draft held is tried again when the user
+  wait), and no client that shows the pane had a key in the last 1 to 2 s
+  (tmux keeps `client_activity` in whole seconds; a look that waits on
+  that alone looks again in 1 s). A rename a draft held is tried again when the user
   leaves the pane (`pane-focus-out`, needs `focus-events`) or at the
   watcher's next look. `@agent_name_given` is the name typed last. No
-  Claude Code command renames a running session from outside it.
+  Claude Code command renames a running session from outside it. A name
+  goes to `rename-window` after `--`, its `#` as `##`. `start --name N`
+  exits 3 also when an agent runs under `N`.
 - An agent's own channel between its sessions (Claude Code's
   `SendMessage`) is the other way agents talk; `prompt` is the one for
   any agent and any caller. Each adapter that has one gives its address

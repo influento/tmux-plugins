@@ -18,20 +18,21 @@ import (
 // window-renamed hook puts the new name on the pane (Renamed), and the
 // pane's watcher types it into the agent once it idles at an empty input
 // box (typeName). No two agents, and no agent and another window, share a
-// name: the later one gets -2, -3. The window's name is its first agent
-// pane's; another agent split into the window gets a number.
+// name: the later one gets -2, -3. The window's name is the name of the
+// agent that held the window first (@agent_holds); another agent split
+// into the window gets a number.
 
 // nameRow is one pane and its window, as names are read.
 type nameRow struct {
 	window, windowName, pane, name, given string
-	auto                                  bool
+	auto, holds                           bool
 }
 
 // nameTable is every pane of the server, each once.
 type nameTable []nameRow
 
 func (e *Env) names(ctx context.Context) (nameTable, error) {
-	format := strings.Join([]string{"#{window_id}", "#{window_name}", "#{pane_id}", "#{" + OptName + "}", "#{automatic-rename}", "#{" + OptNameGiven + "}"}, "\x1f")
+	format := strings.Join([]string{"#{window_id}", "#{window_name}", "#{pane_id}", "#{" + OptName + "}", "#{automatic-rename}", "#{" + OptNameGiven + "}", "#{" + optHolds + "}"}, "\x1f")
 	out, err := e.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		return nil, err
@@ -39,12 +40,12 @@ func (e *Env) names(ctx context.Context) (nameTable, error) {
 	var t nameTable
 	seen := map[string]bool{}
 	for l := range strings.SplitSeq(out, "\n") {
-		f := strings.SplitN(l, "\x1f", 6)
-		if len(f) < 6 || seen[f[2]] { // a linked window lists its panes again
+		f := strings.SplitN(l, "\x1f", 7)
+		if len(f) < 7 || seen[f[2]] { // a linked window lists its panes again
 			continue
 		}
 		seen[f[2]] = true
-		t = append(t, nameRow{window: f[0], windowName: f[1], pane: f[2], name: f[3], auto: f[4] == "1", given: f[5]})
+		t = append(t, nameRow{window: f[0], windowName: f[1], pane: f[2], name: f[3], auto: f[4] == "1", given: f[5], holds: f[6] == "1"})
 	}
 	return t, nil
 }
@@ -79,11 +80,10 @@ func (t nameTable) row(pane string) (nameRow, bool) {
 	return nameRow{}, false
 }
 
-// otherAgent reports whether an agent of another pane in window has a
-// name.
-func (t nameTable) otherAgent(pane, window string) bool {
+// held reports whether the agent of another pane holds window's name.
+func (t nameTable) held(pane, window string) bool {
 	for _, r := range t {
-		if r.window == window && r.pane != pane && r.name != "" {
+		if r.window == window && r.pane != pane && r.holds {
 			return true
 		}
 	}
@@ -119,10 +119,13 @@ func (e *Env) nameRun(ctx context.Context, a Agent, given, resume string) (strin
 		want = e.projectName(ctx) + "-" + a.Name()
 	}
 	name := t.free(want, e.Pane, r.window)
-	if err := e.paneOpts(ctx, map[string]string{OptName: name, OptNameGiven: name}); err != nil {
+	if t.held(e.Pane, r.window) {
+		return name, e.paneOpts(ctx, map[string]string{OptName: name, OptNameGiven: name})
+	}
+	if err := e.paneOpts(ctx, map[string]string{OptName: name, OptNameGiven: name, optHolds: "1"}); err != nil {
 		return "", err
 	}
-	if t.otherAgent(e.Pane, r.window) || (name == l.windowName && !l.autoRename) {
+	if name == l.windowName && !l.autoRename {
 		return name, nil
 	}
 	if l.autoRename || l.title == l.windowName {
@@ -132,8 +135,24 @@ func (e *Env) nameRun(ctx context.Context, a Agent, given, resume string) (strin
 		}
 		return name, e.paneOpts(ctx, map[string]string{optNamed: name})
 	}
-	_, err = e.Tmux.Run(ctx, "rename-window", "-t", r.window, name)
+	_, err = e.Tmux.Run(ctx, renameWindow(r.window, name)...)
 	return name, err
+}
+
+// AgentNamed is the pane whose agent runs under name, or will once it is
+// typed in; "" for none. A launcher would give a window of that name a
+// number.
+func (e *Env) AgentNamed(ctx context.Context, name string) (string, error) {
+	t, err := e.names(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range t {
+		if name != "" && r.name == name {
+			return r.pane, nil
+		}
+	}
+	return "", nil
 }
 
 // projectName is the repository the launcher runs in, the main
@@ -149,40 +168,55 @@ func (e *Env) projectName(ctx context.Context) string {
 	return filepath.Base(dir)
 }
 
-// Renamed gives the agents of window its new name: the first agent pane
-// the name, the others the name with a number. A name another window has
+// Renamed gives the agents of window its new name: the agent that holds
+// the window the name, the others the name with a number; with none, the
+// first agent pane takes the window. A name another window has
 // renames the window too, which runs this again. The watcher of each pane
 // whose agent's name is not typed in yet looks again: also when the user
 // leaves the pane (pane-focus-out), which can leave a draft behind. A
 // window tmux names keeps its agents' names: tmux renames it after the
-// programs that run in it.
+// programs that run in it. So does a window named nothing.
 func (e *Env) Renamed(ctx context.Context, window string) error {
 	defer e.lock(ctx)()
 	t, err := e.names(ctx)
 	if err != nil {
 		return err
 	}
-	first := true
+	var agents []int // the window's agent rows, the holder first
 	for i, r := range t {
 		if r.window != window || r.name == "" {
 			continue
 		}
-		if r.auto {
-			return nil
+		if r.auto || r.windowName == "" {
+			return nil // names no agent
 		}
+		if r.holds {
+			agents = append([]int{i}, agents...)
+		} else {
+			agents = append(agents, i)
+		}
+	}
+	for n, i := range agents {
+		r := t[i]
 		name := t.free(r.windowName, r.pane, window)
-		if first && name != r.windowName {
-			if _, err := e.Tmux.Run(ctx, "rename-window", "-t", window, name); err != nil {
-				return err
+		opts := map[string]string{}
+		if n == 0 {
+			if name != r.windowName {
+				if _, err := e.Tmux.Run(ctx, renameWindow(window, name)...); err != nil {
+					return err
+				}
+			}
+			if !r.holds {
+				opts[optHolds] = "1"
 			}
 		}
-		first = false
 		if name != r.name {
-			if err := e.optsOf(ctx, r.pane, map[string]string{OptName: name}); err != nil {
-				return err
-			}
+			opts[OptName] = name
 			t[i].name = name
 			e.debugf("rename %s: %s to %s", r.pane, r.name, name)
+		}
+		if err := e.optsOf(ctx, r.pane, opts); err != nil {
+			return err
 		}
 		if name != r.given {
 			e.wake(r.pane, wakeLook)

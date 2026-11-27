@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Named is the name --name (or -n) gives the session; "" for none.
@@ -79,13 +80,15 @@ func (c Claude) Ready(pid int, session, screen string, getenv func(string) strin
 
 // inputEmpty finds Claude Code's input box, one line between two rules,
 // the upper one with the session's name in it, and the line that starts
-// with ❯ in it. It is empty when nothing but the faint placeholder
+// with ❯ at column 0 in it. It is empty when nothing but the faint placeholder
 // follows the ❯, and vim mode, when on, inserts.
 func inputEmpty(screen string) bool {
 	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
 	plain := make([]string, len(lines))
 	for i, l := range lines {
-		plain[i] = strings.TrimSpace(sgr.ReplaceAllString(l, ""))
+		// Only the right: the box starts at column 0, and a draft's
+		// next lines start two columns in, whatever they hold.
+		plain[i] = strings.TrimRightFunc(sgr.ReplaceAllString(l, ""), unicode.IsSpace)
 	}
 	for i := len(plain) - 1; i >= 2; i-- {
 		if !isRule(plain[i]) {

@@ -507,7 +507,14 @@ func TestRunProcessTree(t *testing.T) {
 		got := e.args(t, "agent")
 		want := []string{"--model", "x", "two words"}
 		if agent == "claude" {
-			want = append(want, "--name", e.Display(t, e.pane, "#{window_name}"))
+			// The window is tmux's to name: the agent takes its repo's.
+			out, err := e.Cmd(t, "git", "-C", e.Display(t, e.pane, "#{pane_current_path}"),
+				"rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo := filepath.Base(filepath.Dir(strings.TrimSpace(string(out))))
+			want = append(want, "--name", repo+"-claude")
 		}
 		if !slices.Equal(got, want) {
 			t.Errorf("agent args = %q, want %q", got, want)

@@ -73,6 +73,9 @@ func TestInputEmpty(t *testing.T) {
 		{"vim normal", screen("", "\x1b[38;5;246m-- NORMAL --\x1b[39m"), false},
 		{"vim visual", screen("", "-- VISUAL LINE --"), false},
 		{"two lines of draft", strings.Replace(screen("first", insert), "❯ first", "❯ first\nsecond", 1), false},
+		// A pasted draft that ends like an empty box: Claude Code draws a
+		// draft's next lines two columns in.
+		{"draft ending in a box", strings.Replace(screen("some text", insert), "❯ some text", "❯ some text\n  ──────────\n  ❯", 1), false},
 		{"no input box", "Do you want to proceed?\n❯ 1. Yes\n  2. No\n", false},
 		{"nothing", "", false},
 	}

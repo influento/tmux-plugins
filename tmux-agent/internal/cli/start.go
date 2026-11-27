@@ -96,6 +96,13 @@ func (a *app) start(args []string) int {
 			}
 			return fail(exitNameInUse, "a window %s is open: %s", *name, w)
 		}
+		p, err := a.env.AgentNamed(ctx, *name)
+		if err != nil {
+			return fail(1, "%v", err)
+		}
+		if p != "" {
+			return fail(exitNameInUse, "an agent named %s runs in %s", *name, p)
+		}
 	}
 	dir, err := a.startDir(*cwd)
 	if err != nil {

@@ -138,6 +138,7 @@ const (
 	optPromptGot  = "@agent_prompt_got" // the last prompt the agent took: unix ms, then its PromptKey
 	OptName       = "@agent_name"       // the name the agent runs under, or will once it is typed
 	OptNameGiven  = "@agent_name_given" // the name the agent got: at its start, or typed in last
+	optHolds      = "@agent_holds"      // "1": the window's name is this agent's
 	// OptTitle is the window option that holds the title an agent gave
 	// the window.
 	OptTitle = "@agent_title"
@@ -621,9 +622,15 @@ func (e *Env) markTurnEnd(ctx context.Context, a Agent, ev Event, l live, sessio
 
 // applyTitle names the pane's window and marks the name as an agent's.
 func (e *Env) applyTitle(ctx context.Context, title string) error {
-	_, err := e.Tmux.Run(ctx, "rename-window", "-t", e.Pane, title, ";",
-		"set-option", "-w", "-t", e.Pane, OptTitle, title)
+	_, err := e.Tmux.Run(ctx, append(renameWindow(e.Pane, title), ";",
+		"set-option", "-w", "-t", e.Pane, OptTitle, title)...)
 	return err
+}
+
+// renameWindow is the command that names target's window name as it is:
+// rename-window reads a leading - as a flag, and expands # as a format.
+func renameWindow(target, name string) []string {
+	return []string{"rename-window", "-t", target, "--", strings.ReplaceAll(name, "#", "##")}
 }
 
 // end: the flag goes, the window name goes back to tmux if it is still the

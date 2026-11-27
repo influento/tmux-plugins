@@ -34,7 +34,8 @@ func TestRunNamesTheAgent(t *testing.T) {
 	sessions := 0
 	var startIn func(dir, tag, window, agent string, split ...string) string
 	// start runs agent in a new window, named window unless that is "",
-	// or split into the window of pane split.
+	// or split into the window of pane split[0], with split-window's
+	// flags split[1:].
 	start := func(tag, window, agent string, split ...string) string {
 		t.Helper()
 		return startIn(proj, tag, window, agent, split...)
@@ -46,7 +47,7 @@ func TestRunNamesTheAgent(t *testing.T) {
 			args = append(args, "-n", window)
 		}
 		if len(split) > 0 {
-			args = []string{"split-window", "-d", "-t", split[0], "-c", dir, "-P", "-F", "#{pane_id}"}
+			args = append([]string{"split-window", "-d", "-t", split[0], "-c", dir, "-P", "-F", "#{pane_id}"}, split[1:]...)
 		}
 		pane := e.MustTmux(t, args...)
 		e.WaitForContent(t, pane, "$")
@@ -95,6 +96,7 @@ func TestRunNamesTheAgent(t *testing.T) {
 	look := func(tag, pane string) {
 		t.Helper()
 		calls++
+		before := e.paneOpt(t, pane, "@agent_context")
 		f, err := os.OpenFile(filepath.Join(e.dir, tag+".transcript"), os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			t.Fatal(err)
@@ -106,7 +108,6 @@ func TestRunNamesTheAgent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		before := e.paneOpt(t, pane, "@agent_context")
 		tmuxtest.WaitFor(t, 10*time.Second, tag+"'s watcher to look", func() bool {
 			got := e.paneOpt(t, pane, "@agent_context")
 			return got != "" && got != before
@@ -159,6 +160,75 @@ func TestRunNamesTheAgent(t *testing.T) {
 		waitRenames("agent-s", "plan-2\n")
 		if got := e.paneOpt(t, s, "@agent_name"); got != "plan-2" {
 			t.Errorf("@agent_name = %q, want plan-2", got)
+		}
+	})
+	t.Run("start refuses a name an agent has", func(t *testing.T) {
+		// agent-s, split into agent-a's window, is plan-2; no window is.
+		if got := e.paneOpt(t, e.MustTmux(t, "list-panes", "-a", "-f", "#{==:#{@agent_name},plan-2}", "-F", "#{pane_id}"), "@agent_name"); got != "plan-2" {
+			t.Fatalf("fixture: no agent named plan-2")
+		}
+		out, stderr, code := e.tmuxAgent(t, "start", "--name", "plan-2", "--json", "claude")
+		if code != 3 {
+			t.Errorf("start --name plan-2: exit %d, %s%s; want 3, the name is in use", code, out, stderr)
+		}
+	})
+	t.Run("a rename keeps the window's name on the agent that holds it", func(t *testing.T) {
+		h := start("agent-h", "fold", "claude")
+		wantName("agent-h", h, "fold")
+		i := start("agent-i", "", "claude", h, "-b") // the window's first pane now
+		if args := e.args(t, "agent-i"); !slices.Equal(args, []string{"--name", "fold-2"}) {
+			t.Fatalf("agent-i started with %q, want --name fold-2", args)
+		}
+		win := e.Display(t, h, "#{window_id}")
+		names := func() string {
+			return name(h) + " " + e.paneOpt(t, h, "@agent_name") + " " + e.paneOpt(t, i, "@agent_name")
+		}
+		// renamed runs as the hook does, and is done when it returns.
+		renamed := func(to string) {
+			t.Helper()
+			e.MustTmux(t, "rename-window", "-t", win, to)
+			if _, stderr, code := e.tmuxAgent(t, "renamed", win); code != 0 {
+				t.Fatalf("renamed: exit %d, %s", code, stderr)
+			}
+		}
+		renamed("fold") // the same name: nothing changes
+		if got := names(); got != "fold fold fold-2" {
+			t.Fatalf("window, agent-h, agent-i = %q after a rename to the same name, want fold fold fold-2", got)
+		}
+		renamed("gold")
+		if got := names(); got != "gold gold gold-2" {
+			t.Fatalf("window, agent-h, agent-i = %q, want gold gold gold-2", got)
+		}
+		waitRenames("agent-h", "gold\n")
+		waitRenames("agent-i", "gold-2\n")
+	})
+	t.Run("names tmux would read as a flag or a format", func(t *testing.T) {
+		m := start("agent-m", "plain", "claude")
+		win := e.Display(t, m, "#{window_id}")
+		renamed := func(to string) {
+			t.Helper()
+			e.MustTmux(t, "rename-window", "-t", win, "--", to) // as prefix , does
+			if _, stderr, code := e.tmuxAgent(t, "renamed", win); code != 0 {
+				t.Fatalf("renamed: exit %d, %s", code, stderr)
+			}
+		}
+		for _, c := range []struct{ taken, rename, want string }{
+			{"-x", "-x", "-x-2"},
+			{"c#S", "c##S", "c#S-2"}, // ## is a literal #
+		} {
+			other := e.MustTmux(t, "new-window", "-d", "-P", "-F", "#{window_id}", "-t", "proj-a:")
+			e.MustTmux(t, "rename-window", "-t", other, "--", c.rename)
+			if got := e.Display(t, other, "#{window_name}"); got != c.taken {
+				t.Fatalf("fixture: window %q, want %q", got, c.taken)
+			}
+			renamed(c.rename)
+			if got := name(m) + " " + e.paneOpt(t, m, "@agent_name"); got != c.want+" "+c.want {
+				t.Errorf("window, agent = %q after a rename to %q, want %s", got, c.taken, c.want)
+			}
+		}
+		renamed("")
+		if got := e.paneOpt(t, m, "@agent_name"); got != "c#S-2" {
+			t.Errorf("agent = %q after a rename to nothing, want its name kept", got)
 		}
 	})
 	t.Run("the end gives the window back", func(t *testing.T) {

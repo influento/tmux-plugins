@@ -67,9 +67,9 @@ func (e *Env) SweepTitles(ctx context.Context) error {
 				if title == "" {
 					continue
 				}
-				_, err := e.Tmux.Run(ctx, "rename-window", "-t", w.id, title, ";",
+				_, err := e.Tmux.Run(ctx, append(renameWindow(w.id, title), ";",
 					"set-option", "-w", "-t", w.id, OptTitle, title, ";",
-					"set-option", "-p", "-t", p.id, optNamed, title)
+					"set-option", "-p", "-t", p.id, optNamed, title)...)
 				if err != nil && !isGone(err) {
 					return err
 				}
