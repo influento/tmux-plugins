@@ -3,7 +3,7 @@
 # <gate>/scripts/stop-hook.sh, and the gate is the folder it sits in. What it
 # does and why: ecosystems/CLAUDE.md in the workshop repo, "Stop hook".
 set -uo pipefail
-GATE=${1:-$(basename "$(dirname "$(dirname "$0")")")}
+GATE=$(basename "$(dirname "$(dirname "$0")")")
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "$0")/lib.sh"
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
@@ -60,7 +60,7 @@ esac
 seed_green "$GATE"
 # The checkouts this session worked in, each checked by its own copy of the
 # gate: another session's work in this project is not this one's to fix.
-# When worked-in.py cannot tell, this checkout, as before.
+# When worked-in.py cannot tell: this checkout.
 HERE=$(pwd -P)
 mapfile -t TOPS < <(printf '%s' "$IN" | python3 -I "$GATE/scripts/worked-in.py" "$GATE" 2>/dev/null || echo "$HERE")
 OUT="" RED=0
