@@ -45,6 +45,16 @@ case "$GATE" in
 esac
 
 IN=$(cat)
+# While the file that pause_file names exists, the project runs something that
+# the load of a gate run would disturb: every stop passes, and the next stop
+# after the file goes checks what changed meanwhile.
+PAUSE=$(conf_value pause_file)
+# shellcheck disable=SC2016,SC2088  # the conf's literal ~/ and $XDG_RUNTIME_DIR/
+case "$PAUSE" in
+  '~/'*) PAUSE=$HOME/${PAUSE#'~/'} ;;
+  '$XDG_RUNTIME_DIR/'*) PAUSE=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/${PAUSE#'$XDG_RUNTIME_DIR/'} ;;
+esac
+[ -z "$PAUSE" ] || [ ! -e "$PAUSE" ] || exit 0
 # On the default branch with no record of a passing run, the range --local has
 # without one, so that a commit the session makes from now on is in it.
 seed_green "$GATE"
@@ -55,7 +65,12 @@ HERE=$(pwd -P)
 mapfile -t TOPS < <(printf '%s' "$IN" | python3 -I "$GATE/scripts/worked-in.py" "$GATE" 2>/dev/null || echo "$HERE")
 OUT="" RED=0
 for TOP in "${TOPS[@]}"; do
-  RUN=$(cd "$TOP" && bash "$GATE/scripts/gate.sh" --local 2>&1) && continue
+  # A folder whose files are as they were at its last passing run passes
+  # again: the key is taken before the run, so a file that changes during it
+  # makes the next stop run.
+  KEY=$(cd "$TOP" && tree_key)
+  [ -z "$KEY" ] || [ "$KEY" != "$(cd "$TOP" && tree_green "$GATE")" ] || continue
+  RUN=$(cd "$TOP" && bash "$GATE/scripts/gate.sh" --local 2>&1) && { (cd "$TOP" && record_tree "$GATE" "$KEY"); continue; }
   RED=1
   [ "$TOP" = "$HERE" ] || RUN="== in $TOP =="$'\n'"$RUN"
   OUT+="${OUT:+$'\n'}$RUN"

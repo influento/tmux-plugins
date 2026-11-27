@@ -103,6 +103,54 @@ seed_green() {
   record_green "$1" "$(git rev-parse -q --verify "$(merge_base)^{commit}")"
 }
 
+# tree_key: the current folder, HEAD, the changes since HEAD, and each file
+# git does not track with its content, as one hash: the same key, the same
+# files for --local. The Stop hook skips a gate folder whose key its last
+# passing run recorded (ecosystems/CLAUDE.md in the workshop repo, "Stop
+# hook"). Nothing, so the gate runs, when any part cannot be read, before
+# the first commit, with submodules (a change inside one shows only as
+# "-dirty") and for an untracked name with a newline. hash-object without -w
+# writes nothing.
+tree_key() {
+  local top key
+  git rev-parse -q --verify HEAD >/dev/null 2>&1 || return 0
+  top=$(git rev-parse --show-toplevel 2>/dev/null) && [ ! -e "$top/.gitmodules" ] || return 0
+  key=$(set -o pipefail; tree_state "$top" | sha256sum) || return 0
+  printf '%s\n' "${key:0:40}"
+}
+# tree_state <top>: what tree_key hashes; fails when a part cannot be read.
+tree_state() {
+  local top="$1" list f rc=0
+  local -a names=() files=()
+  printf '%s\n' "$PWD" && git rev-parse HEAD && git diff HEAD --binary --no-ext-diff --no-textconv || return 1
+  list=$(mktemp) || return 1
+  git -C "$top" ls-files -z --others --exclude-standard > "$list" || rc=1
+  mapfile -d '' names < "$list" || rc=1
+  rm -f "$list"
+  [ "$rc" -eq 0 ] || return 1
+  for f in "${names[@]}"; do
+    [[ "$f" != *$'\n'* ]] || return 1
+    # A nested repository, such as a worktree inside the checkout, is a folder.
+    [[ "$f" == */ ]] || files+=("$f")
+  done
+  [ ${#files[@]} -gt 0 ] || return 0
+  printf '%s\n' "${files[@]}" && printf '%s\n' "${files[@]}" | git -C "$top" hash-object --stdin-paths
+}
+
+# tree_green <gate>: the key that the Stop hook's last passing run in this
+# checkout recorded. record_tree <gate> <key>: records it.
+tree_green() {
+  local f
+  f=$(git rev-parse --git-path "$1-green-tree" 2>/dev/null) && [ -f "$f" ] || return 0
+  head -n1 "$f" 2>/dev/null || true
+}
+record_tree() {
+  [ -n "${2:-}" ] || return 0
+  local f
+  f=$(git rev-parse --git-path "$1-green-tree" 2>/dev/null) || return 0
+  { printf '%s\n' "$2" > "$f.$$" && mv -f "$f.$$" "$f"; } 2>/dev/null || rm -f "$f.$$"
+}
+
 # changed_files <range> [<pathspec>...]: the files under the current folder
 # that changed since <range>, deleted ones too, and the files git does not
 # track, relative to the current folder, each once. git quotes a name with a
