@@ -26,7 +26,6 @@
       "Bash(go install *)",
       "Edit(/.claude/rules/workbench.md)",
       "Edit(/.claude/agents/wb-reviewer.md)",
-      "Edit(/.claude/agents/wb-demo.md)",
       "Edit(/.claude/agents/wb-judge.md)",
       "Edit(/.claude/agents/wb-worker.md)",
       "Edit(/.claude/hooks/workbench-review)",
