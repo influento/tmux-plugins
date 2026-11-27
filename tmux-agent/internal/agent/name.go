@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -22,15 +23,15 @@ import (
 
 // nameRow is one pane and its window, as names are read.
 type nameRow struct {
-	window, windowName, pane, name string
-	auto                           bool
+	window, windowName, pane, name, given string
+	auto                                  bool
 }
 
 // nameTable is every pane of the server, each once.
 type nameTable []nameRow
 
 func (e *Env) names(ctx context.Context) (nameTable, error) {
-	format := strings.Join([]string{"#{window_id}", "#{window_name}", "#{pane_id}", "#{" + optName + "}", "#{automatic-rename}"}, "\x1f")
+	format := strings.Join([]string{"#{window_id}", "#{window_name}", "#{pane_id}", "#{" + OptName + "}", "#{automatic-rename}", "#{" + OptNameGiven + "}"}, "\x1f")
 	out, err := e.Tmux.Output(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		return nil, err
@@ -38,12 +39,12 @@ func (e *Env) names(ctx context.Context) (nameTable, error) {
 	var t nameTable
 	seen := map[string]bool{}
 	for l := range strings.SplitSeq(out, "\n") {
-		f := strings.SplitN(l, "\x1f", 5)
-		if len(f) < 5 || seen[f[2]] { // a linked window lists its panes again
+		f := strings.SplitN(l, "\x1f", 6)
+		if len(f) < 6 || seen[f[2]] { // a linked window lists its panes again
 			continue
 		}
 		seen[f[2]] = true
-		t = append(t, nameRow{window: f[0], windowName: f[1], pane: f[2], name: f[3], auto: f[4] == "1"})
+		t = append(t, nameRow{window: f[0], windowName: f[1], pane: f[2], name: f[3], auto: f[4] == "1", given: f[5]})
 	}
 	return t, nil
 }
@@ -118,7 +119,7 @@ func (e *Env) nameRun(ctx context.Context, a Agent, given, resume string) (strin
 		want = e.projectName(ctx) + "-" + a.Name()
 	}
 	name := t.free(want, e.Pane, r.window)
-	if err := e.paneOpts(ctx, map[string]string{optName: name, optNameGiven: name}); err != nil {
+	if err := e.paneOpts(ctx, map[string]string{OptName: name, OptNameGiven: name}); err != nil {
 		return "", err
 	}
 	if t.otherAgent(e.Pane, r.window) || (name == l.windowName && !l.autoRename) {
@@ -150,9 +151,11 @@ func (e *Env) projectName(ctx context.Context) string {
 
 // Renamed gives the agents of window its new name: the first agent pane
 // the name, the others the name with a number. A name another window has
-// renames the window too, which runs this again. Each pane's watcher
-// types its agent's new name in. A window tmux names keeps its agents'
-// names: tmux renames it after the programs that run in it.
+// renames the window too, which runs this again. The watcher of each pane
+// whose agent's name is not typed in yet looks again: also when the user
+// leaves the pane (pane-focus-out), which can leave a draft behind. A
+// window tmux names keeps its agents' names: tmux renames it after the
+// programs that run in it.
 func (e *Env) Renamed(ctx context.Context, window string) error {
 	defer e.lock(ctx)()
 	t, err := e.names(ctx)
@@ -174,22 +177,32 @@ func (e *Env) Renamed(ctx context.Context, window string) error {
 			}
 		}
 		first = false
-		if name == r.name {
-			continue
+		if name != r.name {
+			if err := e.optsOf(ctx, r.pane, map[string]string{OptName: name}); err != nil {
+				return err
+			}
+			t[i].name = name
+			e.debugf("rename %s: %s to %s", r.pane, r.name, name)
 		}
-		if err := e.optsOf(ctx, r.pane, map[string]string{optName: name}); err != nil {
-			return err
+		if name != r.given {
+			e.wake(r.pane, wakeLook)
 		}
-		t[i].name = name
-		e.debugf("rename %s: %s to %s", r.pane, r.name, name)
-		e.wake(r.pane, wakeLook)
 	}
 	return nil
 }
 
+// A rename waits for a pause in the user's keys in the pane, so a key
+// pressed as the rename is typed never joins it: the rename of the window
+// is keys too. tmux keeps a client's last key in whole seconds.
+const (
+	keyPause   = 2 * time.Second // since the last key of a client that shows the pane
+	pauseRetry = time.Second     // when a look waits out the pause
+)
+
 // typeName types the pane's new name into its agent, once the agent
-// idles at an empty input box. Until then the name waits on the pane:
-// each look tries again. The caller holds the lock.
+// idles at an empty input box and the user's keys there pause. Until then
+// the name waits on the pane: each look tries again, and a look that
+// waits on the pause alone asks for another. The caller holds the lock.
 func (e *Env) typeName(ctx context.Context, w *watchState, l live) error {
 	n, ok := w.a.(Namer)
 	if !ok || l.name == "" || l.name == l.nameGiven || l.inMode || w.process <= 0 {
@@ -207,11 +220,39 @@ func (e *Env) typeName(ctx context.Context, w *watchState, l live) error {
 		e.debugf("rename %s to %s: the agent is not ready", e.Pane, l.name)
 		return nil
 	}
+	typing, err := e.typing(ctx)
+	if err != nil {
+		return err
+	}
+	if typing {
+		w.again.Reset(pauseRetry)
+		return nil
+	}
 	_, err = e.Tmux.Run(ctx, "send-keys", "-t", e.Pane, "-l", text, ";",
 		"send-keys", "-t", e.Pane, "Enter", ";",
-		"set-option", "-p", "-t", e.Pane, optNameGiven, l.name)
+		"set-option", "-p", "-t", e.Pane, OptNameGiven, l.name)
 	if err == nil {
 		e.debugf("rename %s: typed %q", e.Pane, text)
 	}
 	return err
+}
+
+// typing reports whether a client that shows the pane had a key within
+// keyPause.
+func (e *Env) typing(ctx context.Context) (bool, error) {
+	out, err := e.Tmux.Output(ctx, "list-clients", "-F", "#{pane_id}\x1f#{client_activity}")
+	if err != nil {
+		return false, err
+	}
+	now := e.now().Unix()
+	for l := range strings.SplitSeq(out, "\n") {
+		pane, at, ok := strings.Cut(l, "\x1f")
+		if !ok || pane != e.Pane {
+			continue
+		}
+		if sec, err := strconv.ParseInt(at, 10, 64); err == nil && now-sec < int64(keyPause/time.Second) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

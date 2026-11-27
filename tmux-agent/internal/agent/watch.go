@@ -69,7 +69,10 @@ func (e *Env) watch(ctx context.Context, a Agent, agentPid int, started <-chan i
 	exits := newExitWatch()
 	defer exits.close()
 
-	w := &watchState{a: a, agentPid: agentPid, process: agentPid, files: files, exits: exits, start: startFolder(agentPid)}
+	again := time.NewTimer(time.Hour)
+	again.Stop()
+	defer again.Stop()
+	w := &watchState{a: a, agentPid: agentPid, process: agentPid, files: files, exits: exits, start: startFolder(agentPid), again: again}
 	exits.set(w.pids(nil))
 	if err := e.look(ctx, w, true, false); err != nil {
 		if isGone(err) || ctx.Err() != nil {
@@ -92,6 +95,7 @@ func (e *Env) watch(ctx context.Context, a Agent, agentPid int, started <-chan i
 				continue
 			}
 			scan = scan || word != wakeLook
+		case <-again.C:
 		case p := <-files.changes:
 			if w.gitDir != "" && p == w.gitDir {
 				git = true
@@ -134,8 +138,9 @@ type watchState struct {
 	transcript string // the session's transcript the files follow
 	cwd        string // the folder the git folder was read for
 	gitDir     string
-	runs       []int  // the nested runs' pids
-	start      string // the folder the agent process started in
+	runs       []int       // the nested runs' pids
+	start      string      // the folder the agent process started in
+	again      *time.Timer // a look asked for another (typeName)
 }
 
 // pids are the processes to follow: the agent, when the watch ends with

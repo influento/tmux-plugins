@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -15,11 +16,14 @@ import (
 // names takes `<folder>-<agent>`, a second one there gets a number; a
 // window the user named gives its name. A rename of the window renames
 // the running agent, typed into its input box once it is empty; a name
-// another window has gets a number, on the window too. A run's end gives
+// another window has gets a number, on the window too. It waits for a
+// pause in the user's keys in the pane, and a rename a draft held is
+// tried again when the user leaves the pane. A run's end gives
 // a window that took the agent's name back to tmux. An agent with no name
 // of its own gets none, and its window keeps tmux's name.
 func TestRunNamesTheAgent(t *testing.T) {
 	e := newEnv(t)
+	e.MustTmux(t, "set-option", "-g", "focus-events", "on")
 	if _, stderr, code := e.tmuxAgent(t, "tmux-init"); code != 0 {
 		t.Fatalf("tmux-init: exit %d, %s", code, stderr)
 	}
@@ -187,6 +191,33 @@ func TestRunNamesTheAgent(t *testing.T) {
 		}
 		g := startIn(sub, "agent-g", "", "claude")
 		wantName("agent-g", g, "repo-c-claude")
+	})
+	t.Run("a rename waits for a pause in the user's keys", func(t *testing.T) {
+		k := start("agent-k", "keys", "claude")
+		e.MustTmux(t, "select-window", "-t", k)
+		client := e.Attach(t, "proj-a", 120, 40)
+		keyAt := time.Now()     // the key reaches tmux after this
+		client.Type(t, "x\x7f") // a key, and its erase: the box stays empty
+		e.MustTmux(t, "rename-window", "-t", k, "keys-b")
+		waitRenames("agent-k", "keys-b\n")
+		at, err := strconv.ParseInt(e.file(t, "agent-k.renamed_at"), 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gap := time.UnixMilli(at).Sub(keyAt); gap < time.Second {
+			t.Errorf("typed %v after the user's key, want a pause of 1s or more", gap)
+		}
+
+		typeLine("agent-k", k, "draft hello")
+		e.MustTmux(t, "rename-window", "-t", k, "keys-c")
+		tmuxtest.WaitFor(t, 10*time.Second, "the pane's new name", func() bool { return e.paneOpt(t, k, "@agent_name") == "keys-c" })
+		look("agent-k", k)
+		typeLine("agent-k", k, "clear")
+		if got := renames("agent-k"); got != "keys-b\n" {
+			t.Fatalf("renames over a draft: %q", got)
+		}
+		e.MustTmux(t, "select-window", "-t", a)
+		waitRenames("agent-k", "keys-b\nkeys-c\n")
 	})
 	t.Run("an agent with no name of its own", func(t *testing.T) {
 		f := start("agent-f", "", "fakeagent")

@@ -110,7 +110,7 @@ const usage = `usage:
                                        window's borders
   tmux-agent borders WINDOW            borders on for a split window, off otherwise
   tmux-agent renamed WINDOW            give the window's agents its new name (the
-                                       window-renamed hook)
+                                       window-renamed and pane-focus-out hooks)
   tmux-agent shell-init SHELL [NAME...]  shell functions that start agents through run
   tmux-agent tmux-init                 set tmux-agent's hooks, at index [10]
   tmux-agent subagents scan            fill the records of ended subagents from each
@@ -1776,6 +1776,7 @@ var tmuxHooks = []struct {
 	{"window-linked", "sidebar reload", true},
 	{"window-unlinked", "sidebar reload", true},
 	{"window-renamed", "renamed #{window_id}", false},
+	{"pane-focus-out", "renamed #{window_id}", false},
 }
 
 // tmuxInit sets tmux-agent's hooks at its own index, so prefix r leaves no
@@ -1796,6 +1797,10 @@ func (a *app) tmuxInit(ctx context.Context) error {
 			// runs in it: that names no agent, and only an open panel
 			// shows it.
 			cmd = fmt.Sprintf(`if-shell -F "#{?automatic-rename,#{%s},1}" '%s'`, sidebar.OptOpen, cmd)
+		case h.event == "pane-focus-out":
+			// Only a pane whose agent waits on its new name: the user
+			// may have left a draft that held it.
+			cmd = fmt.Sprintf(`if-shell -F "#{&&:#{%s},#{!=:#{%s},#{%s}}}" '%s'`, agent.OptName, agent.OptName, agent.OptNameGiven, cmd)
 		}
 		if h.event == "after-select-pane" {
 			cmd += " ; " + sidebar.RecordLast

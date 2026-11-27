@@ -344,7 +344,12 @@ Rules:
   adapter's rename (`/rename NAME`) once `Ready` says the agent idles (its
   status file: idle, or no status before the first turn) at an empty
   input box (read from the screen: a draft, vim's normal mode, a dialog
-  wait). `@agent_name_given` is the name typed last.
+  wait), and no client that shows the pane had a key for 2 s (tmux keeps
+  `client_activity` in seconds; a look that waits on that alone looks
+  again in 1 s). A rename a draft held is tried again when the user
+  leaves the pane (`pane-focus-out`, needs `focus-events`) or at the
+  watcher's next look. `@agent_name_given` is the name typed last. No
+  Claude Code command renames a running session from outside it.
 - An agent's own channel between its sessions (Claude Code's
   `SendMessage`) is the other way agents talk; `prompt` is the one for
   any agent and any caller. Each adapter that has one gives its address

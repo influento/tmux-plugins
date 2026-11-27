@@ -136,8 +136,8 @@ const (
 	optStarted    = "@agent_started"    // when the run started, unix seconds
 	optHeld       = "@agent_held"       // the turn ended, but heldRuns or heldHooks still run
 	optPromptGot  = "@agent_prompt_got" // the last prompt the agent took: unix ms, then its PromptKey
-	optName       = "@agent_name"       // the name the agent runs under, or will once it is typed
-	optNameGiven  = "@agent_name_given" // the name the agent got: at its start, or typed in last
+	OptName       = "@agent_name"       // the name the agent runs under, or will once it is typed
+	OptNameGiven  = "@agent_name_given" // the name the agent got: at its start, or typed in last
 	// OptTitle is the window option that holds the title an agent gave
 	// the window.
 	OptTitle = "@agent_title"
@@ -171,7 +171,7 @@ var liveFormat = strings.Join([]string{
 	"#{" + attention.OptNested + "}", "#{" + optHeld + "}", "#{pane_pid}",
 	"#{" + attention.OptContext + "}", "#{" + OptStarting + "}",
 	"#{" + attention.OptTask + "}", "#{" + attention.OptRole + "}",
-	"#{" + optName + "}", "#{" + optNameGiven + "}", "#{pane_in_mode}",
+	"#{" + OptName + "}", "#{" + OptNameGiven + "}", "#{pane_in_mode}",
 }, "\x1f")
 
 const liveFields = 28

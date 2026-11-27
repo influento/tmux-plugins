@@ -65,7 +65,8 @@ var agents = []string{"claude", "fakeagent"}
 //	        process (sessions/<pid>.json in $HOME/.claude) with the name
 //	        --name gave, idle, and draw an input box under that name.
 //	        Each line typed in and sent with Enter: "/rename NAME" renames
-//	        the session, appended to $STUB_DIR/$tag.renames; "draft TEXT"
+//	        the session, appended to $STUB_DIR/$tag.renames (its time in
+//	        ms in $tag.renamed_at); "draft TEXT"
 //	        draws TEXT in the box as a draft, "clear" an empty box again.
 //
 // It waits on a FIFO, not with sleep, so the terminal's signals reach no
@@ -222,6 +223,7 @@ case ${STUB_MODE:-exit} in
         "/rename "*)
           name=${line#/rename }
           printf '%s\n' "$name" >> "$d/$tag.renames"
+          date +%s%3N > "$d/$tag.renamed_at"
           status
           box ""
           ;;

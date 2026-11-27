@@ -271,7 +271,7 @@ func (e *Env) finish(a Agent, oneShot, killed bool, code int, desc string) {
 	if err := e.releaseTitle(ctx, e.Pane, l); err != nil {
 		e.logf("title end: %v", err)
 	}
-	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: "", optName: "", optNameGiven: "", attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "", attention.OptContext: ""}
+	opts := map[string]string{optRun: "", optOneShot: "", optResume: "", optStarted: "", optNamed: "", OptName: "", OptNameGiven: "", attention.OptSubagents: "", attention.OptNested: "", attention.OptNestedRoles: "", optHeld: "", attention.OptContext: ""}
 	end := EndKilled
 	if !killed {
 		end = EndExited
